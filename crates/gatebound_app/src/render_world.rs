@@ -5,7 +5,7 @@ use gatebound_core::{
 };
 use std::collections::BTreeMap;
 
-use crate::sim_runtime::SimResource;
+use crate::sim_runtime::{SelectedShip, SelectedStation, SimResource};
 use crate::view_mode::{CameraMode, CameraUiState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,8 +97,15 @@ pub fn draw_world_gizmos(
     sim: Res<SimResource>,
     ui_state: Res<CameraUiState>,
     cache: Res<ShipMotionCache>,
+    selected_station: Res<SelectedStation>,
+    selected_ship: Res<SelectedShip>,
 ) {
     let simulation = &sim.simulation;
+    let player_destination_station = selected_ship
+        .ship_id
+        .and_then(|ship_id| simulation.ships.get(&ship_id))
+        .and_then(|ship| ship.movement_queue.front())
+        .and_then(|segment| segment.to_anchor);
 
     for edge in &simulation.world.edges {
         let from = system_position(simulation, edge.a);
@@ -167,6 +174,20 @@ pub fn draw_world_gizmos(
                         3.8,
                         Color::srgba(0.78, 0.90, 1.0, 0.95),
                     );
+                    if selected_station.station_id == Some(station.id) {
+                        gizmos.circle_2d(
+                            Vec2::new(station.x as f32, station.y as f32),
+                            6.2,
+                            Color::srgba(0.95, 0.95, 0.35, 0.95),
+                        );
+                    }
+                    if player_destination_station == Some(station.id) {
+                        gizmos.circle_2d(
+                            Vec2::new(station.x as f32, station.y as f32),
+                            8.0,
+                            Color::srgba(0.35, 1.0, 0.6, 0.8),
+                        );
+                    }
                 }
             }
             let tick_phase = (simulation.tick % 120) as f32 / 120.0;

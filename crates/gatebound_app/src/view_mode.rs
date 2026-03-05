@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use gatebound_core::{Simulation, SystemId};
 
-use crate::sim_runtime::{SelectedStation, SimResource};
+use crate::sim_runtime::{SelectedStation, SimResource, StationUiState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
@@ -134,8 +134,11 @@ pub fn station_select_input_system(
     sim: Res<SimResource>,
     ui_state: Res<CameraUiState>,
     mut selected_station: ResMut<SelectedStation>,
+    mut station_ui: ResMut<StationUiState>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) {
+    let left_click = buttons.just_pressed(MouseButton::Left);
+    let right_click = buttons.just_pressed(MouseButton::Right);
+    if !(left_click || right_click) {
         return;
     }
     let CameraMode::System(system_id) = ui_state.mode else {
@@ -155,7 +158,21 @@ pub fn station_select_input_system(
     };
     if let Some(station_id) = pick_station(&sim.simulation, system_id, world_position) {
         selected_station.station_id = Some(station_id);
+        if right_click {
+            apply_station_context_open(&mut station_ui, station_id);
+        }
+    } else if right_click {
+        station_ui.context_menu_open = false;
+        station_ui.context_station_id = None;
     }
+}
+
+pub fn apply_station_context_open(
+    state: &mut StationUiState,
+    station_id: gatebound_core::StationId,
+) {
+    state.context_station_id = Some(station_id);
+    state.context_menu_open = true;
 }
 
 pub fn apply_zoom_controls(

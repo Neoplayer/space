@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use gatebound_core::{
-    Commodity, ContractOffer, ContractTypeStageA, GateId, OfferProblemTag, PriorityMode,
-    RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind, ShipId, Simulation, SlotType,
-    SystemId,
+    CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId, OfferProblemTag,
+    PriorityMode, RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind, ShipId, Simulation,
+    SlotType, SystemId,
 };
 use std::collections::VecDeque;
 
@@ -14,9 +14,11 @@ use crate::render_world::{
 use crate::sim_runtime::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_lease, hotkey_to_risk,
     panel_hotkey_to_index, ContractsFilterState, LeaseHotkey, OfferSortMode, RiskHotkey,
-    SimResource, UiKpiTracker,
+    SimResource, StationUiState, UiKpiTracker,
 };
-use crate::view_mode::{apply_escape, apply_system_click, CameraMode, ClickTracker};
+use crate::view_mode::{
+    apply_escape, apply_station_context_open, apply_system_click, CameraMode, ClickTracker,
+};
 
 #[allow(clippy::too_many_arguments)]
 fn build_hud_snapshot(
@@ -211,6 +213,9 @@ fn panel_hotkeys_toggle_expected_windows() {
     assert!(!panels.assets);
     apply_panel_toggle(&mut panels, 5);
     assert!(!panels.policies);
+    assert_eq!(panel_hotkey_to_index('6'), Some(6));
+    apply_panel_toggle(&mut panels, 6);
+    assert!(!panels.station_ops);
 }
 
 #[test]
@@ -471,6 +476,7 @@ fn fleet_snapshot_exposes_role_and_cargo_metadata() {
         ship.cargo = Some(gatebound_core::CargoLoad {
             commodity: Commodity::Parts,
             amount: 5.5,
+            source: gatebound_core::CargoSource::Spot,
         });
     }
     let snapshot = build_hud_snapshot(
@@ -851,4 +857,113 @@ fn hud_selected_system_lease_prices_rendered() {
         .lease_market_lines
         .iter()
         .any(|line| line.starts_with("Storage")));
+}
+
+#[test]
+fn right_click_station_opens_context_menu_state() {
+    let mut ui = StationUiState::default();
+    assert!(!ui.context_menu_open);
+    apply_station_context_open(&mut ui, gatebound_core::StationId(7));
+    assert!(ui.context_menu_open);
+    assert_eq!(ui.context_station_id, Some(gatebound_core::StationId(7)));
+}
+
+#[test]
+fn station_context_fly_command_sets_ship_route() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 88);
+    let ship_id = ShipId(0);
+    let target_station = sim
+        .world
+        .first_station(SystemId(1))
+        .or_else(|| sim.world.first_station(SystemId(0)))
+        .expect("target station should exist");
+
+    sim.command_fly_to_station(ship_id, target_station)
+        .expect("fly command should succeed");
+    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    assert!(
+        ship.current_target.is_some() || !ship.movement_queue.is_empty(),
+        "fly command should produce active movement state"
+    );
+}
+
+#[test]
+fn auto_dock_becomes_true_on_station_arrival() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 91);
+    let ship_id = ShipId(0);
+    let target_station = sim
+        .world
+        .first_station(SystemId(1))
+        .or_else(|| sim.world.first_station(SystemId(0)))
+        .expect("target station should exist");
+
+    sim.command_fly_to_station(ship_id, target_station)
+        .expect("fly command should succeed");
+    assert!(
+        !sim.is_ship_docked_at(ship_id, target_station),
+        "ship should not be docked immediately after command"
+    );
+
+    for _ in 0..400 {
+        sim.step_tick();
+        if sim.is_ship_docked_at(ship_id, target_station) {
+            break;
+        }
+    }
+    assert!(
+        sim.is_ship_docked_at(ship_id, target_station),
+        "ship should eventually auto-dock at destination station"
+    );
+}
+
+#[test]
+fn station_trade_actions_change_market_and_cargo_state() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.pressure.market_fee_rate = 0.1;
+    let mut sim = Simulation::new(cfg, 99);
+    let ship_id = ShipId(0);
+    let station_id = sim
+        .world
+        .first_station(SystemId(0))
+        .expect("station should exist");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.current_station = Some(station_id);
+        ship.location = SystemId(0);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.current_segment_kind = None;
+        ship.movement_queue.clear();
+    }
+
+    let stock_before = sim
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .unwrap_or(0.0);
+    sim.player_buy(ship_id, station_id, Commodity::Fuel, 6.0)
+        .expect("buy should pass");
+    sim.player_sell(ship_id, station_id, Commodity::Fuel, 2.0)
+        .expect("sell should pass");
+
+    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    assert!(
+        ship.cargo.is_some(),
+        "ship should retain partial cargo after sell"
+    );
+    assert_eq!(
+        ship.cargo.map(|cargo| cargo.source),
+        Some(CargoSource::Spot),
+        "spot trading should keep spot cargo source"
+    );
+    let stock_after = sim
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .unwrap_or(0.0);
+    assert!(
+        stock_after < stock_before,
+        "net buy should reduce station stock"
+    );
 }

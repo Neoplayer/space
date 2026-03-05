@@ -17,7 +17,7 @@ use sim_runtime::{
     apply_time_controls, drive_simulation, handle_lease_hotkeys, handle_panel_hotkeys,
     handle_risk_hotkeys, sync_selected_station, sync_selected_system, ContractsFilterState,
     LeaseSelection, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource,
-    UiKpiTracker, UiPanelState,
+    StationUiState, UiKpiTracker, UiPanelState,
 };
 use view_mode::{
     apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
@@ -41,6 +41,7 @@ pub fn run() {
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedStation::default())
+        .insert_resource(StationUiState::default())
         .insert_resource(UiKpiTracker::default())
         .insert_resource(HudMessages::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {

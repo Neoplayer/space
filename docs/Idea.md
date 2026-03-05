@@ -35,7 +35,7 @@ NPC-компании добывают, производят, перевозят 
 - Формат проекта в текущем цикле: **single-player only**.
 - Core loop: экономика и логистика, **без боевой петли**.
 - Для Stage A приоритет: скорость итераций, ясная управляемость и проверяемый баланс.
-- Решения “не сейчас”: мультиплеер, full manual routing, тактические бои.
+- Решения “не сейчас”: мультиплеер, full manual free-flight routing, тактические бои.
 
 ### 2.2) Term Units (Stage A)
 - `tick = 1 second`
@@ -48,13 +48,13 @@ NPC-компании добывают, производят, перевозят 
 - `RiskStageA = { gate_congestion, dock_congestion, fuel_shock }`
 - In Scope:
   - Delivery/Supply контракты
-  - policy-based autopilot
+  - manual station commands (`Fly to station`) + automatic gate routing
   - lease + slot pricing
   - congestion + fuel shock
 - Out of Scope:
   - Route Contract / Station Service
   - station construction
-  - full manual routing
+  - full manual free-flight routing
   - reliability failures / piracy / storms
   - multiplayer / combat loop
 
@@ -231,9 +231,9 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Stage A baseline (каноничный):**
   - 3-7 систем
   - 2 “центральных” хаба
-  - 2 компании-перевозчика (по 2-4 корабля)
-  - 1 компания-производитель
-  - 1 добытчик
+  - 5 компаний (1 игрок + 4 NPC: 2 hauler, 1 miner, 1 industrial)
+  - 1 корабль игрока (стартовый)
+  - 60 NPC trade-кораблей в живой экономике
 - **Stage B+ / расширенный балансный сценарий:**
   - 5-7 систем
   - 2 “центральных” хаба
@@ -304,6 +304,10 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - штрафы за недопоставку
 - бонус за стабильность
 
+Текущий execution-loop Stage A (реализован):
+- `accept -> fly to A -> load -> fly to B -> unload -> payout/penalty`
+- для `Delivery` и `Supply` нет авто-завершения “по прибытии” — прогресс идёт только через явные `load/unload` действия.
+
 **Stage B+ / advanced toggles (не часть Stage A baseline):**
 3) **Route Contract (обслуживание линии)**
 - поддерживать линию A↔B с частотой F
@@ -349,24 +353,17 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - reliability (поломки позже)
 - crew cost (можно абстрактно)
 
-### 10.2) Расписание / автопилот
-Игрок задаёт поведение корабля:
-- задаёт **регулярный маршрут** (route loop) для повторяемого исполнения
-- определяет точки маршрута и порядок обхода
-- задаёт политику риска/маржи/лимита прыжков для этого маршрута
-- при необходимости назначает целевую систему, после чего маршрут строится автоматически (`auto path`)
+### 10.2) Командное управление / автопилот
+Игрок в Stage A управляет кораблём в **командном station-loop**:
+- выбирает станцию и отдаёт команду `Fly to station`;
+- межсистемный путь через ворота строится автоматически;
+- свободного steering/free-flight внутри системы нет.
 
-Автопилот в текущем цикле — **policy-based**:
-- игрок настраивает политики (`min_margin`, `max_risk`, `max_hops`, `priority_mode`);
-- флот исполняет **один и тот же маршрут циклично** по этим правилам;
-- это снижает микроменеджмент без потери стратегического контроля.
+`Full manual free-flight routing` (задавать каждый микросегмент вручную) в Stage A не используется.
 
-`Full manual routing` (задавать каждый прыжок вручную) в Stage A не используется.
-
-Базовый паттерн Stage A:
-- игрок назначает кораблю маршрут A -> B -> C -> A;
-- корабль повторяет цикл, пока не сработает стоп-условие (убыток/риск/ручная команда);
-- автопилот пересчитывает сегменты при disruptions, но сохраняет маршрутный цикл.
+Роль автопилота в текущем цикле:
+- **NPC-флот** продолжает policy-driven торговый поток и поддерживает “живой” рынок;
+- **игрок** выполняет контракты и торговлю через явные команды и station interaction loop.
 
 Межсистемный перелёт всегда **многошаговый**:
 - движение внутри системы к нужным воротам;
@@ -489,6 +486,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - корабли, траектории, очереди у доков/ворот
 - прогресс multi-hop маршрута по сегментам
 - heatmap цен / спроса
+- right-click по станции -> context menu (`Fly to station`, `Open station UI`)
 
 3) **Contracts Board**
 - фильтры: прибыль/тонна, риск, дедлайн, маршрут через ворота
@@ -522,11 +520,19 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - режим повтора (`loop` в Stage A по умолчанию)
 - сравнительный KPI: manual vs policy режим
 
+8) **Station Operations** (реализованный Stage A loop)
+- статус дока выбранного ship/station
+- торговля spot-товарами (`Buy`/`Sell`)
+- контрактные действия (`Load contract`/`Unload contract`)
+- управление объёмом: пресеты `25%/50%/100%` + numeric input
+- авто-стыковка по прибытии на станцию (без отдельной кнопки Dock)
+
 ### Визуальные подсказки
 - очереди доков/ворот — видно прямо на системной карте
 - “простои заводов” — красный индикатор на модуле
 - “переполненный склад” — мигает/сигнал
 - маршруты с риском срыва — предупреждение в Contracts/Fleet
+- подсветка выбранной станции и целевой станции для выбранного player-корабля
 
 ---
 
@@ -549,6 +555,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - комиссия рынка
   - плата за ворота
   - стоимость простоя/штрафы
+- `CargoSource`-ограничение: контрактный груз нельзя продавать как spot-груз.
 - Ограничить “идеальный арбитраж” через:
   - задержки информации (цены обновляются раз в N секунд)
   - лимит объёма сделки (market depth)
@@ -566,21 +573,20 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ## 17) MVP (реалистичный)
 ### Stage A (играбельный кластер)
 - локальный кластер 3-7 систем в рамках архитектуры полной галактики;
-- 2 NPC перевозчика (по 2-4 корабля);
-- 1 добытчик + 1 производитель;
+- 4 NPC компании (2 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
 - фиксированные 7 товарных категорий: Ore, Ice, Gas, Metal, Fuel, Parts, Electronics;
 - 1 добыча -> 1 переработка -> 1 потребитель;
 - контракты только Delivery + Supply;
-- покупка игроком 1 корабля;
+- игрок стартует с 1 кораблём;
 - lease + slot pricing (без station construction);
 - док-очереди/ворота + базовые цены, зависящие от запасов и времени доставки.
-- policy-based autopilot (без full manual routing).
+- command-based manual station loop для игрока (`Fly to station`) + автоматическая маршрутизация через ворота.
 - single-player only.
 
 | Stage A In Scope | Stage A Out of Scope |
 | --- | --- |
 | Delivery / Supply контракты | Route Contract / Station Service |
-| Policy-based autopilot | Full manual routing |
+| Manual station commands + automatic gate routing | Full manual free-flight routing |
 | Lease + slot pricing | Station construction |
 | Gate/Dock congestion + Fuel shock | Reliability failures / Piracy / Storms |
 
@@ -621,20 +627,24 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - `ContractTypeStageA` (`Delivery | Supply`)
 - `RiskStageA` (`gate_congestion`, `dock_congestion`, `fuel_shock`)
 - `Market` (на станции/планете)
-- `Contract` (job)
+- `Contract` + `ContractProgress` (`AwaitPickup | InTransit | Completed | Failed`)
+- `CargoLoad` + `CargoSource` (`Spot | Contract { contract_id }`)
 - `CameraState` (`GalaxyView | SystemView(system_id)`, `zoom_level`, `zoom_min`, `zoom_max`, `snap_thresholds`)
+- `StationUiState` (context menu + station operations panel)
 
 ### 18.3) Логика контрактов
-- контракт превращается в `Job`:
-  - pickup task
-  - travel segments (in-system move, gate queue, warp jump, arrival)
-  - unload task
-- корабль держит `JobQueue`
+- `accept_contract_offer` назначает контракт в `AwaitPickup` без авто-завершения.
+- Игроковый поток контракта: `accept -> fly -> load -> fly -> unload`.
+- `Delivery` закрывается и выплачивается только после явного `unload` в destination.
+- `Supply` считается по объёму явных unload в цикле и применяет cycle payout/penalty.
+- Контрактный груз маркируется источником (`CargoSource::Contract`) и не смешивается со spot-продажей.
 
 ### 18.4) Маршрутизация
 - межсистемный путь = поиск пути по графу ворот (Dijkstra/A*)
 - внутри системы: движение к целевым точкам (станция/ворота/орбитальный узел)
 - маршрут хранится как `RoutePlan { segments[], eta_ticks, risk_score }`
+- игрок задаёт только целевую станцию (`Fly to station`), детальный gate-route строится автоматически
+- NPC-флот сохраняет автономный policy-driven trade flow
 - при блокировке ребра/ворот: автоматический re-route с уведомлением игрока
 
 ### 18.5) Тестовые инварианты и performance budget
@@ -652,12 +662,12 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Pressure loop tests**:
   - повторные SLA-срывы увеличивают штрафы по кривой;
   - штрафы не дают мгновенный hard fail run.
-- **Autopilot policy tests**:
-  - смена policy меняет выбор маршрутов/контрактов;
-  - `manual_actions_per_min` падает относительно manual baseline.
-- **Route loop tests**:
-  - корабль повторяет заданный маршрут циклично;
-  - при disruptions выполняется re-route сегмента без потери цикла.
+- **Manual command loop tests**:
+  - player ship летит только по явной команде к станции;
+  - на прибытии доступна авто-стыковка и station actions.
+- **NPC autopilot tests**:
+  - NPC-поток торговли и маршрутизации стабилен при изменении policy/рисков;
+  - при disruptions выполняется re-route без поломки экономического потока.
 - **Market intel tests**:
   - локальные рынки всегда точные;
   - удалённые рынки имеют staleness/confidence.
@@ -674,6 +684,21 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Performance targets**:
   - desktop-профиль: целевые 60 FPS;
   - 300-600 активных кораблей в базовом сценарии.
+
+### 18.6) Публичные API и snapshot-совместимость (реализовано)
+- Core API для player loop:
+  - `command_fly_to_station`
+  - `player_buy`, `player_sell`
+  - `player_contract_load`, `player_contract_unload`
+  - `is_ship_docked_at`
+- Ошибки/результаты действий:
+  - `CommandError`
+  - `TradeError`
+  - `TradeReceipt`
+  - `ContractActionError`
+- Snapshot:
+  - сохранение: версия `v4`
+  - загрузка: поддержка `v3` и `v4` (обратная совместимость при загрузке)
 
 ---
 
@@ -701,5 +726,38 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - Игрок — не “избранный”, а новый участник рынка.
 - Основная “боёвка” — это **борьба за throughput** (ворота/доки/склады), а не пушки.
 - 2D top-down делает симуляцию **читабельной** и дешёвой в производстве.
+
+---
+
+## 22) Текущее состояние и перспективы (март 2026)
+### 22.1) Текущее состояние
+- **Реализовано**
+  - один игроковый корабль на старте + нормализация до single player ship при загрузке snapshot;
+  - command-based manual station loop для игрока (`Fly to station`);
+  - station trading loop (`Buy`/`Sell`) и explicit contract actions (`Load`/`Unload`);
+  - `CargoSource`-lock: контрактный груз нельзя продать как spot;
+  - snapshot `v4` + backward-load пути для `v3`.
+- **В работе**
+  - UX-полировка station operations (согласованность context/panel state);
+  - более точные quantity-presets под разные действия;
+  - расширение интеграционных UI-тестов station-loop.
+- **Перспектива**
+  - масштабирование gameplay от single-ship command loop к multi-ship orchestration;
+  - расширение контрактного рынка и инфраструктурной экономики без ломки текущей архитектуры.
+
+### 22.2) Перспективы (Roadmap)
+- **Ближайшие итерации (Stage A+)**
+  - UX и тесты station loop, чтобы снизить friction ручных операций;
+  - более прозрачный прогресс контрактов в UI (pickup/in-transit/unload), чтобы повысить управляемость;
+  - QoL для single-ship flow (быстрые действия и меньше лишних кликов), опираясь на текущие core API.
+- **Stage B**
+  - multi-ship player fleet и диспетчеризация нескольких кораблей; ценность: рост масштаба решений, зависимость: текущие контрактные и route API;
+  - Route/Service contracts; ценность: новые бизнес-модели, зависимость: текущая модель Delivery/Supply + market loop;
+  - station construction; ценность: инфраструктурный контроль throughput, зависимость: уже существующие lease/slot механики;
+  - масштабирование к full galaxy; ценность: стратегическая глубина, зависимость: детерминированный кластерный simulation core.
+- **Дальний горизонт**
+  - расширенные рыночные механики (глубина, инструменты хеджа, сложные профили спроса); ценность: richer economy gameplay, зависимость: текущие market/price/pressure подсистемы;
+  - deeper infrastructure economy (пакеты сервисов, тарифы, контрактные SLA-экосистемы); ценность: долгие стратегии владения узлами, зависимость: текущие slot/gate/dock bottleneck модели;
+  - крупномасштабная симуляция и аналитика (сценарии 200+ систем, продвинутые KPI/диагностика); ценность: управляемый late-game, зависимость: существующий deterministic tick core и telemetry метрики.
 
 ---

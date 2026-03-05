@@ -417,6 +417,21 @@ pub enum ShipRole {
 pub struct CargoLoad {
     pub commodity: Commodity,
     pub amount: f64,
+    pub source: CargoSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CargoSource {
+    Spot,
+    Contract { contract_id: ContractId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractProgress {
+    AwaitPickup,
+    InTransit,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -582,6 +597,55 @@ pub enum OfferError {
     ShipBusy,
     InvalidAssignment,
     InsufficientStock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandError {
+    UnknownShip,
+    UnknownStation,
+    InvalidAssignment,
+    ShipBusy,
+    NoRoute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeError {
+    UnknownShip,
+    UnknownStation,
+    InvalidAssignment,
+    NotDocked,
+    InvalidQuantity,
+    InsufficientStock,
+    InsufficientCapital,
+    InsufficientCargo,
+    CargoCapacityExceeded,
+    CommodityMismatch,
+    ContractCargoLocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractActionError {
+    UnknownShip,
+    UnknownContract,
+    InvalidAssignment,
+    NotAssignedShip,
+    NotDocked,
+    InvalidQuantity,
+    ContractState,
+    InsufficientStock,
+    InsufficientCargo,
+    CargoCapacityExceeded,
+    CommodityMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TradeReceipt {
+    pub commodity: Commodity,
+    pub quantity: f64,
+    pub unit_price: f64,
+    pub gross: f64,
+    pub fee: f64,
+    pub net_cash_delta: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1162,6 +1226,7 @@ pub struct MarketBook {
 pub struct Contract {
     pub id: ContractId,
     pub kind: ContractTypeStageA,
+    pub progress: ContractProgress,
     pub commodity: Commodity,
     pub origin: SystemId,
     pub destination: SystemId,
@@ -1174,6 +1239,8 @@ pub struct Contract {
     pub payout: f64,
     pub penalty: f64,
     pub assigned_ship: Option<ShipId>,
+    pub loaded_amount: f64,
+    pub delivered_cycle_amount: f64,
     pub delivered_amount: f64,
     pub missed_cycles: u32,
     pub completed: bool,
@@ -1295,6 +1362,7 @@ impl Simulation {
                 Contract {
                     id: ContractId(0),
                     kind: ContractTypeStageA::Delivery,
+                    progress: ContractProgress::AwaitPickup,
                     commodity: Commodity::Fuel,
                     origin: SystemId(0),
                     destination: SystemId(1),
@@ -1307,6 +1375,8 @@ impl Simulation {
                     payout: 50.0,
                     penalty: 25.0,
                     assigned_ship: Some(ShipId(0)),
+                    loaded_amount: 0.0,
+                    delivered_cycle_amount: 0.0,
                     delivered_amount: 0.0,
                     missed_cycles: 0,
                     completed: false,
@@ -1384,6 +1454,7 @@ impl Simulation {
                 completed_cycle: None,
             },
         ];
+        simulation.normalize_player_ship_roster();
         simulation.refresh_contract_offers();
         simulation
     }
@@ -1501,7 +1572,7 @@ impl Simulation {
 
     pub fn save_snapshot(&self, path: &Path) -> Result<(), SnapshotError> {
         let state = self.serialize_state();
-        let json = format!("{{\"version\":3,\"state\":\"{state}\"}}\n");
+        let json = format!("{{\"version\":4,\"state\":\"{state}\"}}\n");
         fs::write(path, json).map_err(|e| SnapshotError::Io(format!("save failed: {e}")))
     }
 
@@ -1510,20 +1581,146 @@ impl Simulation {
             fs::read_to_string(path).map_err(|e| SnapshotError::Io(format!("load failed: {e}")))?;
         let version = extract_json_u32_field(&payload, "version")
             .ok_or_else(|| SnapshotError::Parse("missing version field".to_string()))?;
-        if version != 3 {
+        if !(version == 3 || version == 4) {
             return Err(SnapshotError::Parse(format!(
                 "unsupported snapshot version: {version}"
             )));
         }
         let state = extract_json_string_field(&payload, "state")
             .ok_or_else(|| SnapshotError::Parse("missing state field".to_string()))?;
-        Self::deserialize_state(&state, config)
+        Self::deserialize_state(&state, config, version)
     }
 
     pub fn snapshot_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.serialize_state().hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn normalize_player_ship_roster(&mut self) {
+        let mut player_candidates = self
+            .ships
+            .iter()
+            .filter(|(_, ship)| {
+                ship.company_id == CompanyId(0) || ship.role == ShipRole::PlayerContract
+            })
+            .map(|(ship_id, _)| *ship_id)
+            .collect::<Vec<_>>();
+        player_candidates.sort_by_key(|ship_id| ship_id.0);
+
+        if player_candidates.is_empty() {
+            let player_location = self
+                .world
+                .systems
+                .first()
+                .map(|system| system.id)
+                .unwrap_or(SystemId(0));
+            let ship_id = ShipId(
+                self.ships
+                    .keys()
+                    .map(|id| id.0)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1),
+            );
+            self.ships.insert(
+                ship_id,
+                Ship {
+                    id: ship_id,
+                    company_id: CompanyId(0),
+                    role: ShipRole::PlayerContract,
+                    location: player_location,
+                    current_station: self.world.first_station(player_location),
+                    eta_ticks_remaining: 0,
+                    sub_light_speed: 18.0,
+                    cargo_capacity: 18.0,
+                    cargo: None,
+                    trade_order_id: None,
+                    movement_queue: VecDeque::new(),
+                    segment_eta_remaining: 0,
+                    segment_progress_total: 0,
+                    current_segment_kind: None,
+                    active_contract: None,
+                    route_cursor: 0,
+                    policy: AutopilotPolicy {
+                        waypoints: vec![player_location],
+                        ..AutopilotPolicy::default()
+                    },
+                    planned_path: Vec::new(),
+                    current_target: None,
+                    last_gate_arrival: None,
+                    last_risk_score: 0.0,
+                    reroutes: 0,
+                },
+            );
+            player_candidates.push(ship_id);
+        }
+
+        player_candidates.sort_by_key(|ship_id| ship_id.0);
+        let keep_player_ship = player_candidates[0];
+
+        for ship in self.ships.values_mut() {
+            if ship.id != keep_player_ship
+                && (ship.company_id == CompanyId(0) || ship.role == ShipRole::PlayerContract)
+            {
+                if ship.company_id == CompanyId(0) {
+                    ship.company_id = CompanyId(1);
+                }
+                ship.role = ShipRole::NpcTrade;
+                ship.active_contract = None;
+                ship.trade_order_id = None;
+                ship.cargo = None;
+            }
+        }
+
+        if let Some(ship) = self.ships.get_mut(&keep_player_ship) {
+            ship.company_id = CompanyId(0);
+            ship.role = ShipRole::PlayerContract;
+            ship.trade_order_id = None;
+            ship.active_contract = None;
+        }
+
+        for ship in self.ships.values_mut() {
+            if ship.id != keep_player_ship {
+                ship.active_contract = None;
+            }
+        }
+
+        let mut keep_assigned = false;
+        let mut contract_ids = self.contracts.keys().copied().collect::<Vec<_>>();
+        contract_ids.sort_by_key(|contract_id| contract_id.0);
+        for contract_id in contract_ids {
+            let Some(contract) = self.contracts.get(&contract_id).cloned() else {
+                continue;
+            };
+            let was_player_assigned = contract
+                .assigned_ship
+                .is_some_and(|ship_id| player_candidates.contains(&ship_id));
+            if !was_player_assigned {
+                continue;
+            }
+
+            if contract.completed || contract.failed {
+                if let Some(item) = self.contracts.get_mut(&contract_id) {
+                    item.assigned_ship = None;
+                }
+                continue;
+            }
+
+            if !keep_assigned {
+                if let Some(item) = self.contracts.get_mut(&contract_id) {
+                    item.assigned_ship = Some(keep_player_ship);
+                }
+                if let Some(ship) = self.ships.get_mut(&keep_player_ship) {
+                    ship.active_contract = Some(contract_id);
+                }
+                keep_assigned = true;
+            } else if let Some(item) = self.contracts.get_mut(&contract_id) {
+                item.assigned_ship = None;
+                item.progress = ContractProgress::AwaitPickup;
+                item.loaded_amount = 0.0;
+            }
+        }
     }
 
     pub fn market_intel(&self, system_id: SystemId, local_cluster: bool) -> Option<MarketIntel> {
@@ -1579,6 +1776,478 @@ impl Simulation {
         self.world.station_coords(station_id)
     }
 
+    pub fn is_ship_docked_at(&self, ship_id: ShipId, station_id: StationId) -> bool {
+        self.ships
+            .get(&ship_id)
+            .map(|ship| {
+                ship.current_station == Some(station_id)
+                    && ship.eta_ticks_remaining == 0
+                    && ship.segment_eta_remaining == 0
+                    && ship.movement_queue.is_empty()
+                    && ship.current_segment_kind.is_none()
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn command_fly_to_station(
+        &mut self,
+        ship_id: ShipId,
+        station_id: StationId,
+    ) -> Result<(), CommandError> {
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(CommandError::UnknownShip);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(CommandError::InvalidAssignment);
+        }
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
+            return Err(CommandError::UnknownStation);
+        }
+        if ship_snapshot.segment_eta_remaining > 0
+            || ship_snapshot.eta_ticks_remaining > 0
+            || !ship_snapshot.movement_queue.is_empty()
+        {
+            return Err(CommandError::ShipBusy);
+        }
+
+        let origin_station = ship_snapshot
+            .current_station
+            .or_else(|| self.world.first_station(ship_snapshot.location))
+            .ok_or(CommandError::NoRoute)?;
+        if origin_station == station_id {
+            return Ok(());
+        }
+
+        let route = self
+            .build_station_route_with_speed(
+                origin_station,
+                station_id,
+                ship_snapshot.policy.clone(),
+                ship_snapshot.sub_light_speed,
+            )
+            .ok_or(CommandError::NoRoute)?;
+
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            ship.last_risk_score = route.risk_score;
+            ship.movement_queue = VecDeque::from(route.segments.clone());
+            ship.planned_path = route.segments.iter().map(|segment| segment.to).collect();
+            ship.segment_eta_remaining = 0;
+            ship.segment_progress_total = 0;
+            ship.current_segment_kind = None;
+            ship.current_target = None;
+            ship.eta_ticks_remaining = 0;
+            ship.last_gate_arrival = None;
+        }
+        let dock_delay_factor = self
+            .modifiers
+            .iter()
+            .filter(|m| m.risk == RiskStageA::DockCongestion)
+            .map(|m| m.magnitude)
+            .fold(1.0_f64, f64::max);
+        self.start_next_movement_segment(ship_id, dock_delay_factor);
+        Ok(())
+    }
+
+    pub fn player_buy(
+        &mut self,
+        ship_id: ShipId,
+        station_id: StationId,
+        commodity: Commodity,
+        quantity: f64,
+    ) -> Result<TradeReceipt, TradeError> {
+        if quantity <= 0.0 {
+            return Err(TradeError::InvalidQuantity);
+        }
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(TradeError::UnknownShip);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(TradeError::InvalidAssignment);
+        }
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
+            return Err(TradeError::UnknownStation);
+        }
+        if !self.is_ship_docked_at(ship_id, station_id) {
+            return Err(TradeError::NotDocked);
+        }
+
+        let Some(price) = self
+            .markets
+            .get(&station_id)
+            .and_then(|book| book.goods.get(&commodity))
+            .map(|state| state.price)
+        else {
+            return Err(TradeError::InsufficientStock);
+        };
+        let available = self
+            .markets
+            .get(&station_id)
+            .and_then(|book| book.goods.get(&commodity))
+            .map(|state| state.stock)
+            .unwrap_or(0.0);
+        if available + 1e-9 < quantity {
+            return Err(TradeError::InsufficientStock);
+        }
+
+        if let Some(cargo) = ship_snapshot.cargo {
+            if cargo.commodity != commodity {
+                return Err(TradeError::CommodityMismatch);
+            }
+            if cargo.source != CargoSource::Spot {
+                return Err(TradeError::ContractCargoLocked);
+            }
+            if cargo.amount + quantity > ship_snapshot.cargo_capacity + 1e-9 {
+                return Err(TradeError::CargoCapacityExceeded);
+            }
+        } else if quantity > ship_snapshot.cargo_capacity + 1e-9 {
+            return Err(TradeError::CargoCapacityExceeded);
+        }
+
+        let gross = quantity * price;
+        let fee = gross * self.config.pressure.market_fee_rate;
+        let total_cost = gross + fee;
+        if self.capital + 1e-9 < total_cost {
+            return Err(TradeError::InsufficientCapital);
+        }
+
+        if let Some(state) = self
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(&commodity))
+        {
+            state.stock = (state.stock - quantity).max(0.0);
+            state.cycle_outflow += quantity;
+        }
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            match &mut ship.cargo {
+                Some(cargo) => {
+                    cargo.amount += quantity;
+                }
+                None => {
+                    ship.cargo = Some(CargoLoad {
+                        commodity,
+                        amount: quantity,
+                        source: CargoSource::Spot,
+                    });
+                }
+            }
+        }
+        self.capital -= total_cost;
+
+        Ok(TradeReceipt {
+            commodity,
+            quantity,
+            unit_price: price,
+            gross,
+            fee,
+            net_cash_delta: -total_cost,
+        })
+    }
+
+    pub fn player_sell(
+        &mut self,
+        ship_id: ShipId,
+        station_id: StationId,
+        commodity: Commodity,
+        quantity: f64,
+    ) -> Result<TradeReceipt, TradeError> {
+        if quantity <= 0.0 {
+            return Err(TradeError::InvalidQuantity);
+        }
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(TradeError::UnknownShip);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(TradeError::InvalidAssignment);
+        }
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
+            return Err(TradeError::UnknownStation);
+        }
+        if !self.is_ship_docked_at(ship_id, station_id) {
+            return Err(TradeError::NotDocked);
+        }
+
+        let Some(cargo) = ship_snapshot.cargo else {
+            return Err(TradeError::InsufficientCargo);
+        };
+        if cargo.commodity != commodity {
+            return Err(TradeError::CommodityMismatch);
+        }
+        if cargo.source != CargoSource::Spot {
+            return Err(TradeError::ContractCargoLocked);
+        }
+        if cargo.amount + 1e-9 < quantity {
+            return Err(TradeError::InsufficientCargo);
+        }
+
+        let price = self
+            .markets
+            .get(&station_id)
+            .and_then(|book| book.goods.get(&commodity))
+            .map(|state| state.price)
+            .unwrap_or(0.0);
+        let gross = quantity * price;
+        let fee = gross * self.config.pressure.market_fee_rate;
+        let net_revenue = gross - fee;
+
+        if let Some(state) = self
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(&commodity))
+        {
+            state.stock += quantity;
+            state.cycle_inflow += quantity;
+        }
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            if let Some(ship_cargo) = &mut ship.cargo {
+                ship_cargo.amount = (ship_cargo.amount - quantity).max(0.0);
+                if ship_cargo.amount <= 1e-9 {
+                    ship.cargo = None;
+                }
+            }
+        }
+        self.capital += net_revenue;
+
+        Ok(TradeReceipt {
+            commodity,
+            quantity,
+            unit_price: price,
+            gross,
+            fee,
+            net_cash_delta: net_revenue,
+        })
+    }
+
+    pub fn player_contract_load(
+        &mut self,
+        ship_id: ShipId,
+        contract_id: ContractId,
+        quantity: f64,
+    ) -> Result<(), ContractActionError> {
+        if quantity <= 0.0 {
+            return Err(ContractActionError::InvalidQuantity);
+        }
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(ContractActionError::UnknownShip);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(ContractActionError::InvalidAssignment);
+        }
+        let Some(contract_snapshot) = self.contracts.get(&contract_id).cloned() else {
+            return Err(ContractActionError::UnknownContract);
+        };
+        if contract_snapshot.assigned_ship != Some(ship_id) {
+            return Err(ContractActionError::NotAssignedShip);
+        }
+        if contract_snapshot.completed || contract_snapshot.failed {
+            return Err(ContractActionError::ContractState);
+        }
+        if contract_snapshot.progress != ContractProgress::AwaitPickup {
+            return Err(ContractActionError::ContractState);
+        }
+        if !self.is_ship_docked_at(ship_id, contract_snapshot.origin_station) {
+            return Err(ContractActionError::NotDocked);
+        }
+
+        let Some(available) = self
+            .markets
+            .get(&contract_snapshot.origin_station)
+            .and_then(|book| book.goods.get(&contract_snapshot.commodity))
+            .map(|state| state.stock)
+        else {
+            return Err(ContractActionError::InsufficientStock);
+        };
+
+        if let Some(cargo) = ship_snapshot.cargo {
+            if cargo.commodity != contract_snapshot.commodity {
+                return Err(ContractActionError::CommodityMismatch);
+            }
+            if cargo.source
+                != (CargoSource::Contract {
+                    contract_id: contract_snapshot.id,
+                })
+            {
+                return Err(ContractActionError::ContractState);
+            }
+            if cargo.amount + quantity > ship_snapshot.cargo_capacity + 1e-9 {
+                return Err(ContractActionError::CargoCapacityExceeded);
+            }
+        } else if quantity > ship_snapshot.cargo_capacity + 1e-9 {
+            return Err(ContractActionError::CargoCapacityExceeded);
+        }
+
+        let remaining_target = if contract_snapshot.kind == ContractTypeStageA::Delivery {
+            (contract_snapshot.quantity
+                - contract_snapshot.delivered_amount
+                - contract_snapshot.loaded_amount)
+                .max(0.0)
+        } else {
+            (contract_snapshot.per_cycle
+                - contract_snapshot.delivered_cycle_amount
+                - contract_snapshot.loaded_amount)
+                .max(0.0)
+        };
+        if remaining_target <= 1e-9 {
+            return Err(ContractActionError::ContractState);
+        }
+        let amount = quantity.min(remaining_target).min(available);
+        if amount <= 1e-9 {
+            return Err(ContractActionError::InsufficientStock);
+        }
+
+        if let Some(state) = self
+            .markets
+            .get_mut(&contract_snapshot.origin_station)
+            .and_then(|book| book.goods.get_mut(&contract_snapshot.commodity))
+        {
+            state.stock = (state.stock - amount).max(0.0);
+            state.cycle_outflow += amount;
+        }
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            match &mut ship.cargo {
+                Some(cargo) => cargo.amount += amount,
+                None => {
+                    ship.cargo = Some(CargoLoad {
+                        commodity: contract_snapshot.commodity,
+                        amount,
+                        source: CargoSource::Contract {
+                            contract_id: contract_snapshot.id,
+                        },
+                    });
+                }
+            }
+        }
+        if let Some(contract) = self.contracts.get_mut(&contract_snapshot.id) {
+            contract.loaded_amount += amount;
+            if contract.loaded_amount > 0.0 {
+                contract.progress = ContractProgress::InTransit;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn player_contract_unload(
+        &mut self,
+        ship_id: ShipId,
+        contract_id: ContractId,
+        quantity: f64,
+    ) -> Result<(), ContractActionError> {
+        if quantity <= 0.0 {
+            return Err(ContractActionError::InvalidQuantity);
+        }
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(ContractActionError::UnknownShip);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(ContractActionError::InvalidAssignment);
+        }
+        let Some(contract_snapshot) = self.contracts.get(&contract_id).cloned() else {
+            return Err(ContractActionError::UnknownContract);
+        };
+        if contract_snapshot.assigned_ship != Some(ship_id) {
+            return Err(ContractActionError::NotAssignedShip);
+        }
+        if contract_snapshot.completed || contract_snapshot.failed {
+            return Err(ContractActionError::ContractState);
+        }
+        if contract_snapshot.progress != ContractProgress::InTransit {
+            return Err(ContractActionError::ContractState);
+        }
+        if !self.is_ship_docked_at(ship_id, contract_snapshot.destination_station) {
+            return Err(ContractActionError::NotDocked);
+        }
+
+        let Some(cargo) = ship_snapshot.cargo else {
+            return Err(ContractActionError::InsufficientCargo);
+        };
+        if cargo.commodity != contract_snapshot.commodity {
+            return Err(ContractActionError::CommodityMismatch);
+        }
+        if cargo.source
+            != (CargoSource::Contract {
+                contract_id: contract_snapshot.id,
+            })
+        {
+            return Err(ContractActionError::ContractState);
+        }
+        if cargo.amount <= 1e-9 || contract_snapshot.loaded_amount <= 1e-9 {
+            return Err(ContractActionError::InsufficientCargo);
+        }
+
+        let amount = quantity
+            .min(cargo.amount)
+            .min(contract_snapshot.loaded_amount);
+        if amount <= 1e-9 {
+            return Err(ContractActionError::InsufficientCargo);
+        }
+
+        if let Some(state) = self
+            .markets
+            .get_mut(&contract_snapshot.destination_station)
+            .and_then(|book| book.goods.get_mut(&contract_snapshot.commodity))
+        {
+            state.stock += amount;
+            state.cycle_inflow += amount;
+        }
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            if let Some(ship_cargo) = &mut ship.cargo {
+                ship_cargo.amount = (ship_cargo.amount - amount).max(0.0);
+                if ship_cargo.amount <= 1e-9 {
+                    ship.cargo = None;
+                }
+            }
+        }
+
+        let mut delivery_completed = false;
+        if let Some(contract) = self.contracts.get_mut(&contract_snapshot.id) {
+            contract.loaded_amount = (contract.loaded_amount - amount).max(0.0);
+            contract.delivered_amount += amount;
+            if contract.kind == ContractTypeStageA::Supply {
+                contract.delivered_cycle_amount += amount;
+            }
+            if contract.kind == ContractTypeStageA::Delivery
+                && contract.delivered_amount + 1e-9 >= contract.quantity
+            {
+                contract.delivered_amount = contract.quantity;
+                contract.completed = true;
+                contract.failed = false;
+                contract.progress = ContractProgress::Completed;
+                delivery_completed = true;
+            } else if contract.loaded_amount <= 1e-9 {
+                contract.progress = ContractProgress::AwaitPickup;
+            } else {
+                contract.progress = ContractProgress::InTransit;
+            }
+        }
+
+        if delivery_completed {
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                ship.active_contract = None;
+            }
+            let net_payout = self.apply_market_fee(contract_snapshot.payout);
+            self.capital += net_payout;
+            self.record_ship_profit(ship_id, net_payout);
+            self.sla_successes = self.sla_successes.saturating_add(1);
+        }
+
+        Ok(())
+    }
+
     pub fn build_station_route(
         &self,
         origin_station: StationId,
@@ -1623,6 +2292,7 @@ impl Simulation {
             Contract {
                 id: next_id,
                 kind: ContractTypeStageA::Supply,
+                progress: ContractProgress::AwaitPickup,
                 commodity,
                 origin,
                 destination,
@@ -1635,6 +2305,8 @@ impl Simulation {
                 payout: 20.0,
                 penalty: 10.0,
                 assigned_ship: None,
+                loaded_amount: 0.0,
+                delivered_cycle_amount: 0.0,
                 delivered_amount: 0.0,
                 missed_cycles: 0,
                 completed: false,
@@ -1685,25 +2357,6 @@ impl Simulation {
         if ship_snapshot.active_contract.is_some() || ship_snapshot.eta_ticks_remaining > 0 {
             return Err(OfferError::ShipBusy);
         }
-        if offer.kind == ContractTypeStageA::Delivery {
-            let available = self
-                .markets
-                .get(&offer.origin_station)
-                .and_then(|book| book.goods.get(&offer.commodity))
-                .map(|state| state.stock)
-                .unwrap_or(0.0);
-            if available + 1e-9 < offer.quantity {
-                return Err(OfferError::InsufficientStock);
-            }
-            if let Some(state) = self
-                .markets
-                .get_mut(&offer.origin_station)
-                .and_then(|book| book.goods.get_mut(&offer.commodity))
-            {
-                state.stock = (state.stock - offer.quantity).max(0.0);
-                state.cycle_outflow += offer.quantity;
-            }
-        }
 
         let contract_id = ContractId(
             self.contracts
@@ -1720,6 +2373,7 @@ impl Simulation {
             Contract {
                 id: contract_id,
                 kind: offer.kind,
+                progress: ContractProgress::AwaitPickup,
                 commodity: offer.commodity,
                 origin: offer.origin,
                 destination: offer.destination,
@@ -1734,6 +2388,8 @@ impl Simulation {
                 payout: offer.payout,
                 penalty: offer.penalty,
                 assigned_ship: Some(ship_id),
+                loaded_amount: 0.0,
+                delivered_cycle_amount: 0.0,
                 delivered_amount: 0.0,
                 missed_cycles: 0,
                 completed: false,
@@ -1744,7 +2400,6 @@ impl Simulation {
         if let Some(ship) = self.ships.get_mut(&ship_id) {
             ship.active_contract = Some(contract_id);
             ship.route_cursor = 0;
-            ship.policy.waypoints = vec![ship.location, offer.destination];
         }
 
         self.contract_offers.remove(&offer_id);
@@ -2094,82 +2749,24 @@ impl Simulation {
                 continue;
             }
 
-            if ship_snapshot.active_contract.is_none() {
-                let idle_ticks = self.ship_idle_ticks_cycle.entry(ship_id).or_insert(0);
-                *idle_ticks = idle_ticks
-                    .saturating_add(1)
-                    .min(self.config.time.cycle_ticks.max(1));
-            }
-
-            let (target_system, target_station) =
-                if let Some(contract_id) = ship_snapshot.active_contract {
-                    let Some(contract) = self.contracts.get(&contract_id) else {
-                        continue;
-                    };
-                    (contract.destination, contract.destination_station)
-                } else {
-                    let Some(target) = self.next_waypoint(ship_id) else {
-                        continue;
-                    };
-                    let Some(target_station) = self.world.first_station(target) else {
-                        continue;
-                    };
-                    (target, target_station)
-                };
-
-            if ship_snapshot.active_contract.is_some()
-                && ship_snapshot.current_station == Some(target_station)
-            {
-                continue;
-            }
-
-            if ship_snapshot.active_contract.is_none() && ship_snapshot.location == target_system {
-                if let Some(ship) = self.ships.get_mut(&ship_id) {
-                    if !ship.policy.waypoints.is_empty() {
-                        ship.route_cursor = (ship.route_cursor + 1) % ship.policy.waypoints.len();
-                    }
-                }
-                continue;
-            }
-
-            let origin_station = self
-                .ships
-                .get(&ship_id)
-                .and_then(|ship| ship.current_station)
-                .or_else(|| self.world.first_station(ship_snapshot.location))
-                .unwrap_or(target_station);
-            let route = match self.build_station_route_with_speed(
-                origin_station,
-                target_station,
-                ship_snapshot.policy.clone(),
-                ship_snapshot.sub_light_speed,
-            ) {
-                Some(route) => route,
-                None => {
+            if let Some(contract_id) = ship_snapshot.active_contract {
+                let should_clear = self.contracts.get(&contract_id).is_none_or(|contract| {
+                    matches!(
+                        contract.progress,
+                        ContractProgress::Completed | ContractProgress::Failed
+                    )
+                });
+                if should_clear {
                     if let Some(ship) = self.ships.get_mut(&ship_id) {
-                        ship.reroutes = ship.reroutes.saturating_add(1);
+                        ship.active_contract = None;
                     }
-                    self.reroute_count = self.reroute_count.saturating_add(1);
-                    continue;
                 }
-            };
-
-            if route.risk_score > ship_snapshot.policy.max_risk_score {
-                continue;
             }
 
-            if let Some(ship) = self.ships.get_mut(&ship_id) {
-                ship.last_risk_score = route.risk_score;
-                ship.movement_queue = VecDeque::from(route.segments.clone());
-                ship.planned_path = route.segments.iter().map(|segment| segment.to).collect();
-                ship.segment_eta_remaining = 0;
-                ship.segment_progress_total = 0;
-                ship.current_segment_kind = None;
-                ship.current_target = None;
-                ship.eta_ticks_remaining = 0;
-                ship.last_gate_arrival = None;
-            }
-            self.start_next_movement_segment(ship_id, dock_delay_factor);
+            let idle_ticks = self.ship_idle_ticks_cycle.entry(ship_id).or_insert(0);
+            *idle_ticks = idle_ticks
+                .saturating_add(1)
+                .min(self.config.time.cycle_ticks.max(1));
         }
     }
 
@@ -2270,100 +2867,27 @@ impl Simulation {
                     let Some(ship_id) = snapshot.assigned_ship else {
                         continue;
                     };
-                    let arrived = self
-                        .ships
-                        .get(&ship_id)
-                        .map(|s| {
-                            s.current_station == Some(snapshot.destination_station)
-                                && s.eta_ticks_remaining == 0
-                                && s.movement_queue.is_empty()
-                                && s.current_segment_kind.is_none()
-                        })
-                        .unwrap_or(false);
-
-                    if arrived {
-                        if let Some(state) = self
-                            .markets
-                            .get_mut(&snapshot.destination_station)
-                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
-                        {
-                            state.stock += snapshot.quantity;
-                            state.cycle_inflow += snapshot.quantity;
-                        }
-                        if let Some(c) = self.contracts.get_mut(&cid) {
-                            c.completed = true;
-                            c.delivered_amount = c.quantity;
-                        }
-                        if let Some(ship) = self.ships.get_mut(&ship_id) {
-                            ship.active_contract = None;
-                        }
-                        let net_payout = self.apply_market_fee(snapshot.payout);
-                        self.capital += net_payout;
-                        self.record_ship_profit(ship_id, net_payout);
-                        self.sla_successes = self.sla_successes.saturating_add(1);
-                    } else if self.tick > snapshot.deadline_tick {
+                    if self.tick > snapshot.deadline_tick {
                         let penalty_mult = self.penalty_multiplier(snapshot.missed_cycles as usize);
                         self.capital -= snapshot.penalty * penalty_mult;
                         if let Some(c) = self.contracts.get_mut(&cid) {
                             c.failed = true;
                             c.missed_cycles = c.missed_cycles.saturating_add(1);
+                            c.progress = ContractProgress::Failed;
+                            c.loaded_amount = 0.0;
                         }
                         if let Some(ship) = self.ships.get_mut(&ship_id) {
                             ship.active_contract = None;
+                            if let Some(cargo) = ship.cargo {
+                                if cargo.source == (CargoSource::Contract { contract_id: cid }) {
+                                    ship.cargo = None;
+                                }
+                            }
                         }
                         self.sla_failures = self.sla_failures.saturating_add(1);
                     }
                 }
-                ContractTypeStageA::Supply => {
-                    let delivered = snapshot.assigned_ship.and_then(|ship_id| {
-                        self.ships.get(&ship_id).map(|s| {
-                            s.current_station == Some(snapshot.destination_station)
-                                && s.eta_ticks_remaining == 0
-                                && s.movement_queue.is_empty()
-                                && s.current_segment_kind.is_none()
-                        })
-                    });
-                    if delivered == Some(true) {
-                        let delivered_so_far = self
-                            .contracts
-                            .get(&cid)
-                            .map(|contract| contract.delivered_amount)
-                            .unwrap_or(0.0);
-                        let remaining = (snapshot.per_cycle - delivered_so_far).max(0.0);
-                        if remaining <= 0.0 {
-                            continue;
-                        }
-                        let available = self
-                            .markets
-                            .get(&snapshot.origin_station)
-                            .and_then(|book| book.goods.get(&snapshot.commodity))
-                            .map(|state| state.stock)
-                            .unwrap_or(0.0);
-                        let transfer = remaining.min(available);
-                        if transfer <= 0.0 {
-                            continue;
-                        }
-                        if let Some(origin) = self
-                            .markets
-                            .get_mut(&snapshot.origin_station)
-                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
-                        {
-                            origin.stock = (origin.stock - transfer).max(0.0);
-                            origin.cycle_outflow += transfer;
-                        }
-                        if let Some(destination) = self
-                            .markets
-                            .get_mut(&snapshot.destination_station)
-                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
-                        {
-                            destination.stock += transfer;
-                            destination.cycle_inflow += transfer;
-                        }
-                        if let Some(contract) = self.contracts.get_mut(&cid) {
-                            contract.delivered_amount += transfer;
-                        }
-                    }
-                }
+                ContractTypeStageA::Supply => {}
             }
         }
     }
@@ -2382,7 +2906,7 @@ impl Simulation {
             }
 
             let delta = current
-                .delivered_amount
+                .delivered_cycle_amount
                 .min(self.config.pressure.market_depth_per_cycle);
             if delta >= current.per_cycle {
                 let net_payout = self.apply_market_fee(current.payout);
@@ -2402,15 +2926,20 @@ impl Simulation {
             }
 
             if let Some(contract) = self.contracts.get_mut(&cid) {
-                contract.delivered_amount = 0.0;
+                contract.delivered_cycle_amount = 0.0;
                 contract.last_eval_cycle = self.cycle;
                 if self.cycle >= u64::from(contract.total_cycles.max(1)) {
                     contract.completed = true;
+                    contract.progress = ContractProgress::Completed;
                     if let Some(ship_id) = contract.assigned_ship {
                         if let Some(ship) = self.ships.get_mut(&ship_id) {
                             ship.active_contract = None;
                         }
                     }
+                } else if contract.loaded_amount <= 1e-9 {
+                    contract.progress = ContractProgress::AwaitPickup;
+                } else {
+                    contract.progress = ContractProgress::InTransit;
                 }
             }
         }
@@ -3000,7 +3529,11 @@ impl Simulation {
                 ship.policy.max_hops = 6;
                 if ship.current_station == Some(source_station) {
                     stage = TradeOrderStage::ToDropoff;
-                    ship.cargo = Some(CargoLoad { commodity, amount });
+                    ship.cargo = Some(CargoLoad {
+                        commodity,
+                        amount,
+                        source: CargoSource::Spot,
+                    });
                     ship.movement_queue = VecDeque::from(route_to_destination.segments.clone());
                 } else {
                     ship.movement_queue = VecDeque::from(route_to_source.segments.clone());
@@ -3052,6 +3585,7 @@ impl Simulation {
                         ship.cargo = Some(CargoLoad {
                             commodity: order.commodity,
                             amount: order.amount,
+                            source: CargoSource::Spot,
                         });
                     }
                     if let Some(item) = self.trade_orders.get_mut(&order_id) {
@@ -3381,17 +3915,6 @@ impl Simulation {
         (distance / speed).ceil().max(1.0) as u32
     }
 
-    fn next_waypoint(&self, ship_id: ShipId) -> Option<SystemId> {
-        let ship = self.ships.get(&ship_id)?;
-        if ship.policy.waypoints.is_empty() {
-            return None;
-        }
-        ship.policy
-            .waypoints
-            .get(ship.route_cursor % ship.policy.waypoints.len())
-            .copied()
-    }
-
     fn record_ship_profit(&mut self, ship_id: ShipId, net_payout: f64) {
         let runs = self.ship_runs_completed.entry(ship_id).or_insert(0);
         *runs = runs.saturating_add(1);
@@ -3403,11 +3926,13 @@ impl Simulation {
         let mut queue = Vec::new();
         if let Some(contract_id) = ship.active_contract {
             if let Some(contract) = self.contracts.get(&contract_id) {
-                queue.push(FleetJobStep {
-                    kind: FleetJobKind::Pickup,
-                    system: contract.origin,
-                    eta_ticks: 0,
-                });
+                if contract.progress == ContractProgress::AwaitPickup {
+                    queue.push(FleetJobStep {
+                        kind: FleetJobKind::Pickup,
+                        system: contract.origin,
+                        eta_ticks: 0,
+                    });
+                }
             }
         }
         let mut eta_cursor = ship.segment_eta_remaining;
@@ -3429,11 +3954,16 @@ impl Simulation {
         }
         if let Some(contract_id) = ship.active_contract {
             if let Some(contract) = self.contracts.get(&contract_id) {
-                queue.push(FleetJobStep {
-                    kind: FleetJobKind::Unload,
-                    system: contract.destination,
-                    eta_ticks: eta_cursor,
-                });
+                if matches!(
+                    contract.progress,
+                    ContractProgress::InTransit | ContractProgress::AwaitPickup
+                ) {
+                    queue.push(FleetJobStep {
+                        kind: FleetJobKind::Unload,
+                        system: contract.destination,
+                        eta_ticks: eta_cursor,
+                    });
+                }
             }
         }
         if let Some(loop_target) = ship.policy.waypoints.first().copied() {
@@ -3506,8 +4036,12 @@ impl Simulation {
                 .map(|cargo| commodity_code(cargo.commodity))
                 .unwrap_or("none");
             let cargo_amount = ship.cargo.map(|cargo| cargo.amount).unwrap_or(0.0);
+            let cargo_source = ship
+                .cargo
+                .map(|cargo| cargo_source_code(cargo.source))
+                .unwrap_or_else(|| "none".to_string());
             ships.push_str(&format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 ship.id.0,
                 ship.location.0,
                 ship.eta_ticks_remaining,
@@ -3519,6 +4053,7 @@ impl Simulation {
                 cargo_code,
                 cargo_amount,
                 ship.trade_order_id.map_or(u64::MAX, |x| x.0),
+                cargo_source,
             ));
         }
 
@@ -3562,7 +4097,7 @@ impl Simulation {
         let mut contracts = String::new();
         for contract in self.contracts.values() {
             contracts.push_str(&format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 contract.id.0,
                 contract_type_code(contract.kind),
                 commodity_code(contract.commodity),
@@ -3584,6 +4119,9 @@ impl Simulation {
                 contract.completed as u8,
                 contract.failed as u8,
                 contract.last_eval_cycle,
+                contract_progress_code(contract.progress),
+                contract.loaded_amount,
+                contract.delivered_cycle_amount,
             ));
         }
 
@@ -3783,7 +4321,11 @@ impl Simulation {
         )
     }
 
-    fn deserialize_state(state: &str, config: RuntimeConfig) -> Result<Self, SnapshotError> {
+    fn deserialize_state(
+        state: &str,
+        config: RuntimeConfig,
+        snapshot_version: u32,
+    ) -> Result<Self, SnapshotError> {
         let mut simulation = Simulation::new(config.clone(), config.galaxy.seed);
 
         let map = parse_semicolon_map(state);
@@ -3933,6 +4475,15 @@ impl Simulation {
                         ship.cargo = if parts[8] == "none" {
                             None
                         } else {
+                            let source = if snapshot_version >= 4 && parts.len() >= 12 {
+                                cargo_source_from_code(parts[11]).ok_or_else(|| {
+                                    SnapshotError::Parse(
+                                        "ship cargo source parse failed".to_string(),
+                                    )
+                                })?
+                            } else {
+                                CargoSource::Spot
+                            };
                             Some(CargoLoad {
                                 commodity: commodity_from_code(parts[8]).ok_or_else(|| {
                                     SnapshotError::Parse(
@@ -3944,6 +4495,7 @@ impl Simulation {
                                         "ship cargo amount parse failed".to_string(),
                                     )
                                 })?,
+                                source,
                             })
                         };
                         let trade_order_raw: u64 = parts[10].parse().map_err(|_| {
@@ -4025,7 +4577,7 @@ impl Simulation {
             simulation.contracts.clear();
             for row in contracts_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 19 {
+                if parts.len() != 19 && parts.len() != 22 {
                     return Err(SnapshotError::Parse(format!("bad contract row: {row}")));
                 }
                 let id: usize = parts[0]
@@ -4081,6 +4633,33 @@ impl Simulation {
                 let last_eval_cycle: u64 = parts[18]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("contract eval parse failed".to_string()))?;
+                let progress = if parts.len() >= 22 {
+                    contract_progress_from_code(parts[19]).ok_or_else(|| {
+                        SnapshotError::Parse("contract progress parse failed".to_string())
+                    })?
+                } else if completed {
+                    ContractProgress::Completed
+                } else if failed {
+                    ContractProgress::Failed
+                } else {
+                    ContractProgress::AwaitPickup
+                };
+                let loaded_amount: f64 = if parts.len() >= 22 {
+                    parts[20].parse().map_err(|_| {
+                        SnapshotError::Parse("contract loaded_amount parse failed".to_string())
+                    })?
+                } else {
+                    0.0
+                };
+                let delivered_cycle_amount: f64 = if parts.len() >= 22 {
+                    parts[21].parse().map_err(|_| {
+                        SnapshotError::Parse(
+                            "contract delivered_cycle_amount parse failed".to_string(),
+                        )
+                    })?
+                } else {
+                    0.0
+                };
                 let assigned_ship = if assigned_ship_raw == usize::MAX {
                     None
                 } else {
@@ -4092,6 +4671,7 @@ impl Simulation {
                     Contract {
                         id: ContractId(id),
                         kind,
+                        progress,
                         commodity,
                         origin: SystemId(origin),
                         destination: SystemId(destination),
@@ -4104,6 +4684,8 @@ impl Simulation {
                         payout,
                         penalty,
                         assigned_ship,
+                        loaded_amount,
+                        delivered_cycle_amount,
                         delivered_amount,
                         missed_cycles,
                         completed,
@@ -4530,6 +5112,8 @@ impl Simulation {
             }
         }
 
+        simulation.normalize_player_ship_roster();
+
         Ok(simulation)
     }
 }
@@ -4849,6 +5433,27 @@ fn ship_role_from_code(raw: &str) -> Option<ShipRole> {
     }
 }
 
+fn cargo_source_code(source: CargoSource) -> String {
+    match source {
+        CargoSource::Spot => "spot".to_string(),
+        CargoSource::Contract { contract_id } => format!("contract-{}", contract_id.0),
+    }
+}
+
+fn cargo_source_from_code(raw: &str) -> Option<CargoSource> {
+    if raw == "spot" {
+        return Some(CargoSource::Spot);
+    }
+    let contract_prefix = "contract-";
+    if let Some(raw_id) = raw.strip_prefix(contract_prefix) {
+        let contract_id = raw_id.parse::<usize>().ok()?;
+        return Some(CargoSource::Contract {
+            contract_id: ContractId(contract_id),
+        });
+    }
+    None
+}
+
 fn trade_order_stage_code(stage: TradeOrderStage) -> &'static str {
     match stage {
         TradeOrderStage::ToPickup => "to_pickup",
@@ -4930,6 +5535,25 @@ fn contract_type_from_code(raw: &str) -> Option<ContractTypeStageA> {
     match raw {
         "delivery" => Some(ContractTypeStageA::Delivery),
         "supply" => Some(ContractTypeStageA::Supply),
+        _ => None,
+    }
+}
+
+fn contract_progress_code(progress: ContractProgress) -> &'static str {
+    match progress {
+        ContractProgress::AwaitPickup => "await_pickup",
+        ContractProgress::InTransit => "in_transit",
+        ContractProgress::Completed => "completed",
+        ContractProgress::Failed => "failed",
+    }
+}
+
+fn contract_progress_from_code(raw: &str) -> Option<ContractProgress> {
+    match raw {
+        "await_pickup" => Some(ContractProgress::AwaitPickup),
+        "in_transit" => Some(ContractProgress::InTransit),
+        "completed" => Some(ContractProgress::Completed),
+        "failed" => Some(ContractProgress::Failed),
         _ => None,
     }
 }
@@ -5695,9 +6319,6 @@ mod tests {
         if let Some(ship) = sim.ships.get_mut(&ship_id) {
             ship.active_contract = None;
             ship.location = SystemId(0);
-            ship.policy.waypoints = vec![SystemId(1)];
-            ship.policy.max_risk_score = 10.0;
-            ship.route_cursor = 0;
             ship.movement_queue.clear();
             ship.segment_eta_remaining = 0;
             ship.segment_progress_total = 0;
@@ -5705,8 +6326,10 @@ mod tests {
             ship.current_target = None;
             ship.last_gate_arrival = fallback_gate;
         }
+        let destination_station = station_for_system(&sim, SystemId(1));
 
-        sim.update_ship_movements();
+        sim.command_fly_to_station(ship_id, destination_station)
+            .expect("player command must start route");
 
         let ship = sim.ships.get(&ship_id).expect("ship should exist");
         assert_eq!(ship.last_gate_arrival, None);
@@ -5842,7 +6465,7 @@ mod tests {
     }
 
     #[test]
-    fn delivery_completes_only_after_destination_station_reached() {
+    fn delivery_requires_explicit_pickup_and_dropoff_actions() {
         let mut cfg = stage_a_config();
         cfg.pressure.ship_upkeep_per_tick = 0.0;
         cfg.pressure.gate_fee_per_jump = 0.0;
@@ -5870,36 +6493,76 @@ mod tests {
             contract.destination_station = destination_station;
             contract.assigned_ship = Some(ShipId(0));
             contract.deadline_tick = 10_000;
+            contract.progress = ContractProgress::AwaitPickup;
+            contract.loaded_amount = 0.0;
+            contract.delivered_amount = 0.0;
         }
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.location = SystemId(0);
+            ship.current_station = sim.world.first_station(SystemId(0));
             ship.active_contract = Some(ContractId(0));
             ship.policy.max_hops = 16;
         }
 
-        let mut observed_destination_system_before_completion = false;
+        for _ in 0..40 {
+            sim.step_tick();
+        }
+        assert!(
+            !sim.contracts
+                .get(&ContractId(0))
+                .expect("contract should exist")
+                .completed,
+            "delivery must not complete without explicit load/unload"
+        );
+
+        let load_amount = sim
+            .contracts
+            .get(&ContractId(0))
+            .map(|contract| contract.quantity)
+            .unwrap_or(0.0);
+        sim.player_contract_load(ShipId(0), ContractId(0), load_amount)
+            .expect("load should work at origin station");
+
+        let origin_station = sim
+            .ships
+            .get(&ShipId(0))
+            .and_then(|ship| ship.current_station)
+            .expect("ship should stay at origin station after load");
+        if origin_station != destination_station {
+            for _ in 0..40 {
+                sim.step_tick();
+            }
+            assert_eq!(
+                sim.ships
+                    .get(&ShipId(0))
+                    .and_then(|ship| ship.current_station),
+                Some(origin_station),
+                "player ship must stay idle until explicit fly command"
+            );
+        }
+
+        sim.command_fly_to_station(ShipId(0), destination_station)
+            .expect("player flight command should start route");
+
         for _ in 0..200 {
             sim.step_tick();
-            let ship = sim.ships.get(&ShipId(0)).expect("ship should exist");
-            let contract = sim
-                .contracts
-                .get(&ContractId(0))
-                .expect("contract should exist");
-            if ship.location == destination_system && !contract.completed {
-                observed_destination_system_before_completion = true;
-            }
-            if contract.completed {
+            if sim
+                .ships
+                .get(&ShipId(0))
+                .is_some_and(|ship| ship.current_station == Some(destination_station))
+            {
                 break;
             }
         }
-        let contract = sim
-            .contracts
-            .get(&ContractId(0))
-            .expect("contract should exist");
-        assert!(contract.completed, "contract should eventually complete");
+
+        sim.player_contract_unload(ShipId(0), ContractId(0), load_amount)
+            .expect("unload should complete contract");
         assert!(
-            observed_destination_system_before_completion,
-            "arrival to destination system must not auto-complete before final station segment"
+            sim.contracts
+                .get(&ContractId(0))
+                .expect("contract should exist")
+                .completed,
+            "delivery should complete after explicit unload"
         );
     }
 
@@ -5910,13 +6573,16 @@ mod tests {
         cfg.pressure.gate_fee_per_jump = 4.0;
         let mut sim = Simulation::new(cfg, 331);
         sim.ships.retain(|id, _| *id == ShipId(0));
+        if sim.world.system_count() < 2 {
+            return;
+        }
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.active_contract = None;
             ship.location = SystemId(0);
-            ship.policy.waypoints = vec![SystemId(1)];
-            ship.route_cursor = 0;
-            ship.policy.max_risk_score = 10.0;
         }
+        let destination_station = station_for_system(&sim, SystemId(1));
+        sim.command_fly_to_station(ShipId(0), destination_station)
+            .expect("player command should build route");
         let route = sim
             .route_for_ship(ShipId(0), SystemId(1))
             .expect("route should exist");
@@ -6016,15 +6682,23 @@ mod tests {
         let cfg = stage_a_config();
         let mut sim = Simulation::new(cfg.clone(), 337);
         sim.ships.retain(|id, _| *id == ShipId(0));
+        if sim.world.system_count() < 2 {
+            return;
+        }
         let gate_id = sim.world.edges.first().map(|edge| edge.id);
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.active_contract = None;
             ship.location = SystemId(0);
-            ship.policy.waypoints = vec![SystemId(1)];
-            ship.route_cursor = 0;
-            ship.policy.max_risk_score = 10.0;
+            ship.current_station = sim.world.first_station(SystemId(0));
+            ship.segment_eta_remaining = 0;
+            ship.segment_progress_total = 0;
+            ship.current_segment_kind = None;
+            ship.movement_queue.clear();
             ship.last_gate_arrival = gate_id;
         }
+        let destination_station = station_for_system(&sim, SystemId(1));
+        sim.command_fly_to_station(ShipId(0), destination_station)
+            .expect("player command should build route before snapshot");
         sim.step_tick();
         let ship_before = sim
             .ships
@@ -6438,13 +7112,16 @@ mod tests {
         cfg.pressure.gate_fee_per_jump = 3.5;
         let mut sim = Simulation::new(cfg, 109);
         sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        if sim.world.system_count() < 2 {
+            return;
+        }
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.active_contract = None;
             ship.location = SystemId(0);
-            ship.policy.waypoints = vec![SystemId(1)];
-            ship.route_cursor = 0;
-            ship.policy.max_risk_score = 10.0;
         }
+        let destination_station = station_for_system(&sim, SystemId(1));
+        sim.command_fly_to_station(ShipId(0), destination_station)
+            .expect("player command should start warp route");
         let before = sim.capital;
         for _ in 0..32 {
             sim.step_tick();
@@ -6475,6 +7152,10 @@ mod tests {
             contract.assigned_ship = Some(ShipId(0));
             contract.payout = 100.0;
             contract.deadline_tick = 1_000;
+            contract.progress = ContractProgress::InTransit;
+            contract.quantity = 10.0;
+            contract.loaded_amount = 10.0;
+            contract.delivered_amount = 0.0;
         }
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.location = SystemId(0);
@@ -6484,10 +7165,18 @@ mod tests {
             ship.current_segment_kind = None;
             ship.movement_queue.clear();
             ship.active_contract = Some(ContractId(0));
+            ship.cargo = Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 10.0,
+                source: CargoSource::Contract {
+                    contract_id: ContractId(0),
+                },
+            });
         }
 
         let before = sim.capital;
-        sim.step_tick();
+        sim.player_contract_unload(ShipId(0), ContractId(0), 10.0)
+            .expect("explicit unload should settle payout");
         let delta = sim.capital - before;
         assert!(
             (delta - 80.0).abs() < 1e-6,
@@ -6512,6 +7201,176 @@ mod tests {
         assert!(
             sim.capital < before,
             "depth cap should turn apparent full delivery into shortfall penalty"
+        );
+    }
+
+    #[test]
+    fn explicit_supply_unload_drives_cycle_payout() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        cfg.pressure.gate_fee_per_jump = 0.0;
+        cfg.pressure.market_fee_rate = 0.0;
+        let mut sim = Simulation::new(cfg, 129);
+        sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        let cid = sim.create_supply_contract(SystemId(0), SystemId(1), 5.0, 3);
+        let destination_station = station_for_system(&sim, SystemId(1));
+        if let Some(contract) = sim.contracts.get_mut(&cid) {
+            contract.assigned_ship = Some(ShipId(0));
+            contract.progress = ContractProgress::InTransit;
+            contract.payout = 40.0;
+            contract.penalty = 10.0;
+            contract.loaded_amount = 5.0;
+            contract.delivered_cycle_amount = 0.0;
+        }
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.current_station = Some(destination_station);
+            ship.location = SystemId(1);
+            ship.eta_ticks_remaining = 0;
+            ship.segment_eta_remaining = 0;
+            ship.current_segment_kind = None;
+            ship.movement_queue.clear();
+            ship.active_contract = Some(cid);
+            ship.cargo = Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 5.0,
+                source: CargoSource::Contract { contract_id: cid },
+            });
+        }
+
+        sim.player_contract_unload(ShipId(0), cid, 5.0)
+            .expect("supply unload should succeed");
+        let before = sim.capital;
+        sim.step_cycle();
+        assert!(
+            sim.capital > before,
+            "cycle payout should require explicit unload contribution"
+        );
+    }
+
+    #[test]
+    fn player_trade_enforces_docked_capacity_and_contract_lock() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.market_fee_rate = 0.1;
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        let mut sim = Simulation::new(cfg, 133);
+        sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        let station_id = station_for_system(&sim, SystemId(0));
+        let other_station = station_for_system(&sim, SystemId(1));
+        let fuel_price = sim
+            .markets
+            .get(&station_id)
+            .and_then(|book| book.goods.get(&Commodity::Fuel))
+            .map(|state| state.price)
+            .unwrap_or(0.0);
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.current_station = Some(station_id);
+            ship.location = SystemId(0);
+            ship.eta_ticks_remaining = 0;
+            ship.segment_eta_remaining = 0;
+            ship.current_segment_kind = None;
+            ship.movement_queue.clear();
+            ship.active_contract = None;
+        }
+
+        assert_eq!(
+            sim.player_buy(ShipId(0), other_station, Commodity::Fuel, 1.0),
+            Err(TradeError::NotDocked)
+        );
+
+        let before_buy = sim.capital;
+        let buy = sim
+            .player_buy(ShipId(0), station_id, Commodity::Fuel, 10.0)
+            .expect("buy should work");
+        assert!(
+            (buy.net_cash_delta + 10.0 * fuel_price * 1.1).abs() < 1e-6,
+            "buy should apply fee to total cost"
+        );
+        assert!(sim.capital < before_buy);
+
+        let before_sell = sim.capital;
+        let sell = sim
+            .player_sell(ShipId(0), station_id, Commodity::Fuel, 5.0)
+            .expect("sell should work");
+        assert!(
+            (sell.net_cash_delta - 5.0 * fuel_price * 0.9).abs() < 1e-6,
+            "sell should apply fee to proceeds"
+        );
+        assert!(sim.capital > before_sell);
+
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.cargo = Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 2.0,
+                source: CargoSource::Contract {
+                    contract_id: ContractId(99),
+                },
+            });
+        }
+        assert_eq!(
+            sim.player_sell(ShipId(0), station_id, Commodity::Fuel, 1.0),
+            Err(TradeError::ContractCargoLocked)
+        );
+    }
+
+    #[test]
+    fn snapshot_v3_payload_loads_with_defaults_for_v4_fields() {
+        let cfg = stage_a_config();
+        let sim = Simulation::new(cfg.clone(), 135);
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v3_compat.json");
+        sim.save_snapshot(&tmp).expect("snapshot save should pass");
+        let payload = fs::read_to_string(&tmp).expect("snapshot read should pass");
+        let v3_payload = payload.replace("\"version\":4", "\"version\":3");
+        fs::write(&tmp, v3_payload).expect("v3 payload write should pass");
+
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("v3 snapshot should load");
+        assert_eq!(loaded.tick, sim.tick);
+        assert_eq!(loaded.cycle, sim.cycle);
+        assert_eq!(loaded.world.stations, sim.world.stations);
+        assert!(
+            loaded
+                .ships
+                .values()
+                .filter(|ship| ship.company_id == CompanyId(0))
+                .count()
+                == 1
+        );
+    }
+
+    #[test]
+    fn snapshot_load_normalizes_to_single_player_ship() {
+        let cfg = stage_a_config();
+        let mut sim = Simulation::new(cfg.clone(), 1377);
+        let extra_npc_id = sim
+            .ships
+            .iter()
+            .find(|(_, ship)| ship.company_id != CompanyId(0))
+            .map(|(ship_id, _)| *ship_id)
+            .expect("npc ship should exist");
+        if let Some(ship) = sim.ships.get_mut(&extra_npc_id) {
+            ship.company_id = CompanyId(0);
+            ship.role = ShipRole::PlayerContract;
+        }
+
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_player_norm.json");
+        sim.save_snapshot(&tmp).expect("snapshot save should pass");
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+        assert_eq!(
+            loaded
+                .ships
+                .values()
+                .filter(|ship| ship.company_id == CompanyId(0))
+                .count(),
+            1,
+            "load must normalize to a single player ship"
+        );
+        assert_eq!(
+            loaded
+                .ships
+                .values()
+                .filter(|ship| ship.role == ShipRole::NpcTrade)
+                .count(),
+            60,
+            "npc fleet size should stay stable"
         );
     }
 
@@ -6657,6 +7516,7 @@ mod tests {
             ship.cargo = Some(CargoLoad {
                 commodity: Commodity::Electronics,
                 amount: 6.0,
+                source: CargoSource::Spot,
             });
             ship.trade_order_id = Some(TradeOrderId(17));
             sim.trade_orders.insert(

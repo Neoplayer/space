@@ -15,6 +15,7 @@ pub struct UiPanelState {
     pub markets: bool,
     pub assets: bool,
     pub policies: bool,
+    pub station_ops: bool,
 }
 
 impl Default for UiPanelState {
@@ -25,6 +26,7 @@ impl Default for UiPanelState {
             markets: true,
             assets: true,
             policies: true,
+            station_ops: true,
         }
     }
 }
@@ -149,6 +151,27 @@ impl Default for SelectedSystem {
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SelectedStation {
     pub station_id: Option<StationId>,
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct StationUiState {
+    pub context_station_id: Option<StationId>,
+    pub context_menu_open: bool,
+    pub station_panel_open: bool,
+    pub trade_commodity: Commodity,
+    pub trade_quantity: f64,
+}
+
+impl Default for StationUiState {
+    fn default() -> Self {
+        Self {
+            context_station_id: None,
+            context_menu_open: false,
+            station_panel_open: false,
+            trade_commodity: Commodity::Fuel,
+            trade_quantity: 5.0,
+        }
+    }
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -338,6 +361,7 @@ pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
         '3' => Some(3),
         '4' => Some(4),
         '5' => Some(5),
+        '6' => Some(6),
         _ => None,
     }
 }
@@ -349,6 +373,7 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
         3 => panels.markets = !panels.markets,
         4 => panels.assets = !panels.assets,
         5 => panels.policies = !panels.policies,
+        6 => panels.station_ops = !panels.station_ops,
         _ => {}
     }
 }
@@ -423,6 +448,10 @@ pub fn handle_panel_hotkeys(
     }
     if keys.just_pressed(KeyCode::F5) {
         apply_panel_toggle(&mut panels, 5);
+        manual_action = true;
+    }
+    if keys.just_pressed(KeyCode::F6) {
+        apply_panel_toggle(&mut panels, 6);
         manual_action = true;
     }
 
