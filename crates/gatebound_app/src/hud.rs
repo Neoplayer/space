@@ -2,12 +2,13 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use gatebound_core::{
     Commodity, ContractOffer, ContractTypeStageA, FleetWarning, MarketInsightRow, MilestoneStatus,
-    OfferError, OfferProblemTag, PriorityMode, ShipId, Simulation, SlotType, SystemId,
+    OfferError, OfferProblemTag, PriorityMode, ShipId, Simulation, SlotType, StationId,
+    StationProfile, SystemId,
 };
 
 use crate::sim_runtime::{
     apply_offer_filters, derive_cycle_report, ContractsFilterState, OfferSortMode, SelectedShip,
-    SelectedSystem, SimClock, SimResource, UiKpiTracker, UiPanelState,
+    SelectedStation, SelectedSystem, SimClock, SimResource, UiKpiTracker, UiPanelState,
 };
 use crate::view_mode::CameraMode;
 
@@ -48,6 +49,8 @@ pub struct HudSnapshot {
     pub active_ships: usize,
     pub active_leases: usize,
     pub selected_system_id: SystemId,
+    pub selected_station_id: Option<StationId>,
+    pub selected_station_profile: Option<StationProfile>,
     pub selected_ship_id: Option<ShipId>,
     pub paused: bool,
     pub speed_multiplier: u32,
@@ -64,6 +67,7 @@ pub struct HudSnapshot {
     pub offers: Vec<ContractOffer>,
     pub fleet_rows: Vec<gatebound_core::FleetShipStatus>,
     pub market_rows: Vec<MarketRow>,
+    pub system_market_rows: Vec<MarketRow>,
     pub milestones: Vec<MilestoneStatus>,
     pub throughput_rows: Vec<gatebound_core::GateThroughputSnapshot>,
     pub market_share: f64,
@@ -81,6 +85,7 @@ pub fn build_hud_snapshot(
     speed_multiplier: u32,
     camera_mode: CameraMode,
     selected_system_id: SystemId,
+    selected_station_id: Option<StationId>,
     selected_ship_id: Option<ShipId>,
     filters: ContractsFilterState,
     kpi: &UiKpiTracker,
@@ -102,8 +107,9 @@ pub fn build_hud_snapshot(
                 ContractTypeStageA::Supply => "Supply",
             };
             format!(
-                "#{} {kind} S{}:A{} -> S{}:A{} qty={:.1} deadline={} miss={}",
+                "#{} {kind} {} S{}:A{} -> S{}:A{} qty={:.1} deadline={} miss={}",
                 contract.id.0,
+                commodity_label(contract.commodity),
                 contract.origin.0,
                 contract.origin_station.0,
                 contract.destination.0,
@@ -181,9 +187,24 @@ pub fn build_hud_snapshot(
     );
     let fleet_rows = simulation.fleet_status();
 
-    let market_rows = simulation
-        .markets
-        .get(&selected_system_id)
+    let selected_station_id = selected_station_id.or_else(|| {
+        simulation
+            .world
+            .stations_by_system
+            .get(&selected_system_id)
+            .and_then(|stations| stations.first().copied())
+    });
+    let selected_station_profile = selected_station_id.and_then(|station_id| {
+        simulation
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == station_id)
+            .map(|station| station.profile)
+    });
+
+    let market_rows = selected_station_id
+        .and_then(|station_id| simulation.markets.get(&station_id))
         .map(|market| {
             Commodity::ALL
                 .iter()
@@ -200,6 +221,45 @@ pub fn build_hud_snapshot(
         })
         .unwrap_or_default();
 
+    let system_market_rows = simulation
+        .world
+        .stations_by_system
+        .get(&selected_system_id)
+        .map(|stations| {
+            let mut rows = Vec::new();
+            for commodity in Commodity::ALL {
+                let mut price_sum = 0.0;
+                let mut stock_sum = 0.0;
+                let mut inflow_sum = 0.0;
+                let mut outflow_sum = 0.0;
+                let mut count = 0.0;
+                for station_id in stations {
+                    if let Some(state) = simulation
+                        .markets
+                        .get(station_id)
+                        .and_then(|book| book.goods.get(&commodity))
+                    {
+                        price_sum += state.price;
+                        stock_sum += state.stock;
+                        inflow_sum += state.cycle_inflow;
+                        outflow_sum += state.cycle_outflow;
+                        count += 1.0;
+                    }
+                }
+                if count > 0.0 {
+                    rows.push(MarketRow {
+                        commodity,
+                        price: price_sum / count,
+                        stock: stock_sum,
+                        inflow: inflow_sum,
+                        outflow: outflow_sum,
+                    });
+                }
+            }
+            rows
+        })
+        .unwrap_or_default();
+
     let intel = simulation.market_intel(
         selected_system_id,
         matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
@@ -210,7 +270,9 @@ pub fn build_hud_snapshot(
 
     let milestones = simulation.milestone_status().to_vec();
     let market_share = simulation.market_share_view();
-    let market_insights = simulation.market_insights(selected_system_id);
+    let market_insights = selected_station_id
+        .map(|station_id| simulation.market_insights(station_id))
+        .unwrap_or_default();
     let recovery_actions = simulation.recent_recovery_actions().to_vec();
 
     let mut price_samples = 0_u64;
@@ -241,6 +303,8 @@ pub fn build_hud_snapshot(
         active_ships: simulation.ships.len(),
         active_leases: simulation.active_leases.len(),
         selected_system_id,
+        selected_station_id,
+        selected_station_profile,
         selected_ship_id,
         paused,
         speed_multiplier,
@@ -260,6 +324,7 @@ pub fn build_hud_snapshot(
         offers,
         fleet_rows,
         market_rows,
+        system_market_rows,
         milestones,
         throughput_rows,
         market_share,
@@ -278,6 +343,7 @@ pub fn draw_hud_panel(
     clock: Res<SimClock>,
     camera: Res<crate::view_mode::CameraUiState>,
     selected_system: Res<SelectedSystem>,
+    selected_station: Res<SelectedStation>,
     mut selected_ship: ResMut<SelectedShip>,
     mut filters: ResMut<ContractsFilterState>,
     mut panels: ResMut<UiPanelState>,
@@ -291,6 +357,7 @@ pub fn draw_hud_panel(
         clock.speed_multiplier,
         camera.mode,
         selected_system_id,
+        selected_station.station_id,
         selected_ship.ship_id,
         *filters,
         &kpi,
@@ -386,6 +453,23 @@ pub fn draw_hud_panel(
                     ui.label("Max ETA");
                     ui.add(egui::DragValue::new(&mut filters.max_eta).speed(1.0));
                 });
+                egui::ComboBox::from_label("Commodity")
+                    .selected_text(
+                        filters
+                            .commodity
+                            .map(commodity_label)
+                            .unwrap_or("Any"),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut filters.commodity, None, "Any");
+                        for commodity in Commodity::ALL {
+                            ui.selectable_value(
+                                &mut filters.commodity,
+                                Some(commodity),
+                                commodity_label(commodity),
+                            );
+                        }
+                    });
                 egui::ComboBox::from_label("Route gate")
                     .selected_text(
                         filters
@@ -474,9 +558,10 @@ pub fn draw_hud_panel(
                         .unwrap_or_else(|| "s=0 c=1.00".to_string());
                     ui.horizontal(|ui| {
                         ui.monospace(format!(
-                            "#{:03} {:?} S{}:A{}->S{}:A{} qty={:.1} eta={} risk={:.2} margin={:.1} ppt={:.2} problem={} gates={} intel={}{}",
+                            "#{:03} {:?} {} S{}:A{}->S{}:A{} qty={:.1} eta={} risk={:.2} margin={:.1} ppt={:.2} problem={} gates={} intel={}{}",
                             offer.id,
                             offer.kind,
+                            commodity_label(offer.commodity),
                             offer.origin.0,
                             offer.origin_station.0,
                             offer.destination.0,
@@ -535,16 +620,23 @@ pub fn draw_hud_panel(
                                 selected_ship.ship_id = Some(row.ship_id);
                             }
                             ui.monospace(format!(
-                                "c={} sys={} -> {} eta={} segment={} route={} reroutes={}",
+                                "c={} role={} sys={} st={} -> {} eta={} segment={} route={} reroutes={} cargo={}",
                                 row.company_id.0,
+                                ship_role_label(row.role),
                                 row.location.0,
+                                row.current_station
+                                    .map(|station_id| station_id.0.to_string())
+                                    .unwrap_or_else(|| "-".to_string()),
                                 row.target
                                     .map(|system_id| system_id.0.to_string())
                                     .unwrap_or_else(|| "-".to_string()),
                                 row.eta,
                                 active_segment,
                                 row.route_len,
-                                row.reroutes
+                                row.reroutes,
+                                row.cargo_commodity
+                                    .map(|commodity| format!("{}:{:.1}", commodity_label(commodity), row.cargo_amount))
+                                    .unwrap_or_else(|| "-".to_string())
                             ));
                         });
                         ui.monospace(format!(
@@ -579,13 +671,37 @@ pub fn draw_hud_panel(
             .show(ctx, |ui| {
                 ui.label(format!("System: {}", snapshot.selected_system_id.0));
                 ui.label(format!(
+                    "Station: {} ({})",
+                    snapshot
+                        .selected_station_id
+                        .map(|station_id| station_id.0.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    snapshot
+                        .selected_station_profile
+                        .map(station_profile_label)
+                        .unwrap_or("-")
+                ));
+                ui.label(format!(
                     "Intel: staleness={} ticks, confidence={:.2}",
                     snapshot.intel_staleness_ticks, snapshot.intel_confidence
                 ));
                 ui.separator();
+                ui.heading("Station Market");
                 for row in &snapshot.market_rows {
                     ui.monospace(format!(
                         "{:<11} price={:>6.2} stock={:>6.1} in={:>5.1} out={:>5.1}",
+                        commodity_label(row.commodity),
+                        row.price,
+                        row.stock,
+                        row.inflow,
+                        row.outflow
+                    ));
+                }
+                ui.separator();
+                ui.heading("System Aggregate");
+                for row in &snapshot.system_market_rows {
+                    ui.monospace(format!(
+                        "{:<11} avg_price={:>6.2} stock_sum={:>6.1} in_sum={:>5.1} out_sum={:>5.1}",
                         commodity_label(row.commodity),
                         row.price,
                         row.stock,
@@ -808,12 +924,27 @@ fn slot_type_label(slot_type: SlotType) -> &'static str {
     }
 }
 
+fn station_profile_label(profile: StationProfile) -> &'static str {
+    match profile {
+        StationProfile::Civilian => "Civilian",
+        StationProfile::Industrial => "Industrial",
+        StationProfile::Research => "Research",
+    }
+}
+
 fn warning_label(warning: FleetWarning) -> &'static str {
     match warning {
         FleetWarning::HighRisk => "HighRisk",
         FleetWarning::HighQueueDelay => "HighQueueDelay",
         FleetWarning::NoRoute => "NoRoute",
         FleetWarning::ShipIdle => "ShipIdle",
+    }
+}
+
+fn ship_role_label(role: gatebound_core::ShipRole) -> &'static str {
+    match role {
+        gatebound_core::ShipRole::PlayerContract => "player_contract",
+        gatebound_core::ShipRole::NpcTrade => "npc_trade",
     }
 }
 
@@ -848,6 +979,7 @@ fn offer_error_label(err: OfferError) -> &'static str {
         OfferError::ExpiredOffer => "expired_offer",
         OfferError::ShipBusy => "ship_busy",
         OfferError::InvalidAssignment => "invalid_assignment",
+        OfferError::InsufficientStock => "insufficient_stock",
     }
 }
 

@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use gatebound_core::{
-    ContractOffer, ContractTypeStageA, GateId, OfferProblemTag, PriorityMode, RecoveryAction,
-    RouteSegment, RuntimeConfig, SegmentKind, Simulation, SlotType, SystemId,
+    Commodity, ContractOffer, ContractTypeStageA, GateId, OfferProblemTag, PriorityMode,
+    RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind, ShipId, Simulation, SlotType,
+    SystemId,
 };
 use std::collections::VecDeque;
 
-use crate::hud::build_hud_snapshot;
+use crate::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use crate::render_world::{
     segment_from_point, ship_is_visible_in_current_view, system_objects_visible_in_current_view,
     update_ship_motion_cache, ShipMotionCache,
@@ -16,6 +17,35 @@ use crate::sim_runtime::{
     SimResource, UiKpiTracker,
 };
 use crate::view_mode::{apply_escape, apply_system_click, CameraMode, ClickTracker};
+
+#[allow(clippy::too_many_arguments)]
+fn build_hud_snapshot(
+    simulation: &Simulation,
+    paused: bool,
+    speed_multiplier: u32,
+    camera_mode: CameraMode,
+    selected_system_id: SystemId,
+    selected_ship_id: Option<ShipId>,
+    filters: ContractsFilterState,
+    kpi: &UiKpiTracker,
+) -> crate::hud::HudSnapshot {
+    let selected_station = simulation
+        .world
+        .stations_by_system
+        .get(&selected_system_id)
+        .and_then(|stations| stations.first().copied());
+    build_hud_snapshot_v2(
+        simulation,
+        paused,
+        speed_multiplier,
+        camera_mode,
+        selected_system_id,
+        selected_station,
+        selected_ship_id,
+        filters,
+        kpi,
+    )
+}
 
 #[test]
 fn fixed_step_consumes_expected_ticks_for_speed_modes() {
@@ -189,6 +219,7 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
         ContractOffer {
             id: 0,
             kind: ContractTypeStageA::Delivery,
+            commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(1),
             origin_station: gatebound_core::StationId(0),
@@ -208,6 +239,7 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
         ContractOffer {
             id: 1,
             kind: ContractTypeStageA::Delivery,
+            commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(2),
             origin_station: gatebound_core::StationId(0),
@@ -229,6 +261,7 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
         min_margin: 10.0,
         max_risk: 1.0,
         max_eta: 120,
+        commodity: None,
         route_gate: Some(GateId(7)),
         problem: Some(OfferProblemTag::CongestedRoute),
         premium_only: true,
@@ -240,6 +273,66 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
 }
 
 #[test]
+fn contracts_filter_applies_commodity() {
+    let offers = vec![
+        ContractOffer {
+            id: 10,
+            kind: ContractTypeStageA::Delivery,
+            commodity: Commodity::Fuel,
+            origin: SystemId(0),
+            destination: SystemId(1),
+            origin_station: gatebound_core::StationId(0),
+            destination_station: gatebound_core::StationId(2),
+            quantity: 8.0,
+            payout: 20.0,
+            penalty: 8.0,
+            eta_ticks: 12,
+            risk_score: 0.2,
+            margin_estimate: 8.0,
+            route_gate_ids: vec![],
+            problem_tag: OfferProblemTag::LowMargin,
+            premium: false,
+            profit_per_ton: 1.0,
+            expires_cycle: 4,
+        },
+        ContractOffer {
+            id: 11,
+            kind: ContractTypeStageA::Delivery,
+            commodity: Commodity::Electronics,
+            origin: SystemId(0),
+            destination: SystemId(1),
+            origin_station: gatebound_core::StationId(0),
+            destination_station: gatebound_core::StationId(2),
+            quantity: 8.0,
+            payout: 20.0,
+            penalty: 8.0,
+            eta_ticks: 12,
+            risk_score: 0.2,
+            margin_estimate: 8.0,
+            route_gate_ids: vec![],
+            problem_tag: OfferProblemTag::LowMargin,
+            premium: false,
+            profit_per_ton: 1.0,
+            expires_cycle: 4,
+        },
+    ];
+    let filters = ContractsFilterState {
+        min_margin: f64::NEG_INFINITY,
+        max_risk: f64::INFINITY,
+        max_eta: u32::MAX,
+        commodity: Some(Commodity::Electronics),
+        route_gate: None,
+        problem: None,
+        premium_only: false,
+        sort_mode: OfferSortMode::MarginDesc,
+    };
+    let filtered = apply_offer_filters(offers, filters);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].id, 11);
+    assert_eq!(filtered[0].commodity, Commodity::Electronics);
+}
+
+#[test]
 fn contracts_board_snapshot_includes_intel_and_problem_labels() {
     let mut sim = Simulation::new(RuntimeConfig::default(), 42);
     sim.contract_offers.insert(
@@ -247,6 +340,7 @@ fn contracts_board_snapshot_includes_intel_and_problem_labels() {
         ContractOffer {
             id: 77,
             kind: ContractTypeStageA::Delivery,
+            commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(1),
             origin_station: gatebound_core::StationId(0),
@@ -362,6 +456,41 @@ fn fleet_snapshot_renders_current_segment_kind() {
             .any(|line| line.contains("seg=GateQueue")),
         "fleet lines should render current segment kind"
     );
+}
+
+#[test]
+fn fleet_snapshot_exposes_role_and_cargo_metadata() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let npc_id = sim
+        .ships
+        .iter()
+        .find(|(_, ship)| ship.role == gatebound_core::ShipRole::NpcTrade)
+        .map(|(ship_id, _)| *ship_id)
+        .expect("npc ship should exist");
+    if let Some(ship) = sim.ships.get_mut(&npc_id) {
+        ship.cargo = Some(gatebound_core::CargoLoad {
+            commodity: Commodity::Parts,
+            amount: 5.5,
+        });
+    }
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        Some(npc_id),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    let row = snapshot
+        .fleet_rows
+        .iter()
+        .find(|row| row.ship_id == npc_id)
+        .expect("npc row should exist");
+    assert_eq!(row.role, gatebound_core::ShipRole::NpcTrade);
+    assert_eq!(row.cargo_commodity, Some(Commodity::Parts));
+    assert!((row.cargo_amount - 5.5).abs() < 1e-9);
 }
 
 #[test]
@@ -568,6 +697,51 @@ fn markets_panel_uses_selected_system_or_fallback() {
     );
     assert_eq!(system_snapshot.selected_system_id, SystemId(1));
     assert!(!system_snapshot.market_rows.is_empty());
+}
+
+#[test]
+fn markets_panel_uses_selected_station_market() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let system_id = SystemId(0);
+    let stations = sim
+        .world
+        .stations_by_system
+        .get(&system_id)
+        .cloned()
+        .expect("system stations should exist");
+    if stations.len() < 2 {
+        return;
+    }
+    let selected_station = stations[1];
+    if let Some(first_market) = sim.markets.get_mut(&stations[0]) {
+        if let Some(fuel) = first_market.goods.get_mut(&Commodity::Fuel) {
+            fuel.stock = 9.0;
+        }
+    }
+    if let Some(selected_market) = sim.markets.get_mut(&selected_station) {
+        if let Some(fuel) = selected_market.goods.get_mut(&Commodity::Fuel) {
+            fuel.stock = 77.0;
+        }
+    }
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        true,
+        1,
+        CameraMode::System(system_id),
+        system_id,
+        Some(selected_station),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    let fuel_row = snapshot
+        .market_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+    assert_eq!(snapshot.selected_station_id, Some(selected_station));
+    assert!((fuel_row.stock - 77.0).abs() < 1e-9);
 }
 
 #[test]

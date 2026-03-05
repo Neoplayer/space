@@ -214,7 +214,14 @@ pub fn draw_world_gizmos(
             ship.segment_eta_remaining,
             &cache,
         );
-        gizmos.circle_2d(position, 4.0, Color::srgb(0.94, 0.94, 0.32));
+        gizmos.circle_2d(position, 4.0, company_color(ship.company_id.0));
+        if let Some(cargo) = ship.cargo {
+            gizmos.circle_2d(
+                position + Vec2::new(3.0, -3.0),
+                1.8,
+                cargo_color(cargo.commodity),
+            );
+        }
     }
 }
 
@@ -309,16 +316,46 @@ fn dock_congestion_index(simulation: &Simulation, system_id: SystemId) -> f32 {
 }
 
 fn fuel_stress_index(simulation: &Simulation, system_id: SystemId) -> f32 {
-    let Some(market) = simulation.markets.get(&system_id) else {
+    let Some(stations) = simulation.world.stations_by_system.get(&system_id) else {
         return 0.0;
     };
-    let Some(fuel) = market.goods.get(&Commodity::Fuel) else {
+    let mut stock = 0.0;
+    let mut target = 0.0;
+    for station_id in stations {
+        if let Some(fuel) = simulation
+            .markets
+            .get(station_id)
+            .and_then(|market| market.goods.get(&Commodity::Fuel))
+        {
+            stock += fuel.stock;
+            target += fuel.target_stock;
+        }
+    }
+    if target <= 0.0 {
         return 0.0;
-    };
-    let ratio = if fuel.target_stock <= 0.0 {
-        1.0
-    } else {
-        (fuel.stock / fuel.target_stock).clamp(0.0, 1.0)
-    };
+    }
+    let ratio = (stock / target).clamp(0.0, 1.0);
     (1.0 - ratio as f32).clamp(0.0, 1.0)
+}
+
+fn company_color(company_id: usize) -> Color {
+    match company_id % 5 {
+        0 => Color::srgb(0.94, 0.94, 0.32),
+        1 => Color::srgb(0.35, 0.84, 1.0),
+        2 => Color::srgb(0.96, 0.55, 0.22),
+        3 => Color::srgb(0.52, 0.95, 0.52),
+        _ => Color::srgb(0.92, 0.48, 0.78),
+    }
+}
+
+fn cargo_color(commodity: Commodity) -> Color {
+    match commodity {
+        Commodity::Ore => Color::srgb(0.58, 0.58, 0.62),
+        Commodity::Ice => Color::srgb(0.68, 0.88, 1.0),
+        Commodity::Gas => Color::srgb(0.64, 0.84, 0.72),
+        Commodity::Metal => Color::srgb(0.78, 0.74, 0.68),
+        Commodity::Fuel => Color::srgb(1.0, 0.72, 0.22),
+        Commodity::Parts => Color::srgb(0.84, 0.68, 0.94),
+        Commodity::Electronics => Color::srgb(0.45, 1.0, 0.8),
+    }
 }

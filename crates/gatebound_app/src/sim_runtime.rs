@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use gatebound_core::{
-    CompanyId, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag, RiskEvent, ShipId,
-    Simulation, SlotType, SystemId, TickReport,
+    Commodity, CompanyId, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag,
+    RiskEvent, ShipId, Simulation, SlotType, StationId, SystemId, TickReport,
 };
 use std::collections::VecDeque;
 
@@ -41,6 +41,7 @@ pub struct ContractsFilterState {
     pub min_margin: f64,
     pub max_risk: f64,
     pub max_eta: u32,
+    pub commodity: Option<Commodity>,
     pub route_gate: Option<GateId>,
     pub problem: Option<OfferProblemTag>,
     pub premium_only: bool,
@@ -53,6 +54,7 @@ impl Default for ContractsFilterState {
             min_margin: 0.0,
             max_risk: 2.0,
             max_eta: 240,
+            commodity: None,
             route_gate: None,
             problem: None,
             premium_only: false,
@@ -142,6 +144,11 @@ impl Default for SelectedSystem {
             system_id: SystemId(0),
         }
     }
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SelectedStation {
+    pub station_id: Option<StationId>,
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -304,6 +311,9 @@ pub fn apply_offer_filters(
             && offer.risk_score <= filters.max_risk
             && offer.eta_ticks <= filters.max_eta
             && filters
+                .commodity
+                .is_none_or(|commodity| offer.commodity == commodity)
+            && filters
                 .route_gate
                 .is_none_or(|gate_id| offer.route_gate_ids.contains(&gate_id))
             && filters
@@ -361,6 +371,30 @@ pub fn apply_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<Si
 
 pub fn sync_selected_system(camera: Res<CameraUiState>, mut selected: ResMut<SelectedSystem>) {
     selected.system_id = selected_system_from_camera(camera.mode);
+}
+
+pub fn sync_selected_station(
+    sim: Res<SimResource>,
+    selected_system: Res<SelectedSystem>,
+    mut selected_station: ResMut<SelectedStation>,
+) {
+    let system_id = selected_system.system_id;
+    let in_system = |station_id: StationId| {
+        sim.simulation
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id && station.system_id == system_id)
+    };
+    if selected_station.station_id.is_some_and(in_system) {
+        return;
+    }
+    selected_station.station_id = sim
+        .simulation
+        .world
+        .stations_by_system
+        .get(&system_id)
+        .and_then(|stations| stations.first().copied());
 }
 
 pub fn handle_panel_hotkeys(

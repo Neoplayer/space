@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use gatebound_core::{Simulation, SystemId};
 
-use crate::sim_runtime::SimResource;
+use crate::sim_runtime::{SelectedStation, SimResource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
@@ -127,6 +127,37 @@ pub fn camera_mode_input_system(
     }
 }
 
+pub fn station_select_input_system(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    sim: Res<SimResource>,
+    ui_state: Res<CameraUiState>,
+    mut selected_station: ResMut<SelectedStation>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let CameraMode::System(system_id) = ui_state.mode else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+    if let Some(station_id) = pick_station(&sim.simulation, system_id, world_position) {
+        selected_station.station_id = Some(station_id);
+    }
+}
+
 pub fn apply_zoom_controls(
     keys: Res<ButtonInput<KeyCode>>,
     mut wheel_events: MessageReader<MouseWheel>,
@@ -200,4 +231,32 @@ fn pick_system(simulation: &Simulation, world_position: Vec2) -> Option<SystemId
             distance_sq <= (system.radius as f32 * 0.4).powi(2)
         })
         .map(|system| system.id)
+}
+
+fn pick_station(
+    simulation: &Simulation,
+    system_id: SystemId,
+    world_position: Vec2,
+) -> Option<gatebound_core::StationId> {
+    simulation
+        .world
+        .stations_by_system
+        .get(&system_id)
+        .into_iter()
+        .flatten()
+        .find(|station_id| {
+            simulation
+                .world
+                .stations
+                .iter()
+                .find(|station| station.id == **station_id)
+                .map(|station| {
+                    let dx = world_position.x - station.x as f32;
+                    let dy = world_position.y - station.y as f32;
+                    let distance_sq = dx * dx + dy * dy;
+                    distance_sq <= 9.0_f32.powi(2)
+                })
+                .unwrap_or(false)
+        })
+        .copied()
 }

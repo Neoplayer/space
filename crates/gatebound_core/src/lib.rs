@@ -24,6 +24,9 @@ pub struct ShipId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContractId(pub usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TradeOrderId(pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeUnitsConfig {
     pub tick_seconds: u32,
@@ -372,6 +375,13 @@ impl Commodity {
     ];
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StationProfile {
+    Civilian,
+    Industrial,
+    Research,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractTypeStageA {
     Delivery,
@@ -395,6 +405,18 @@ pub enum PriorityMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepeatMode {
     Loop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShipRole {
+    PlayerContract,
+    NpcTrade,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CargoLoad {
+    pub commodity: Commodity,
+    pub amount: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -535,6 +557,7 @@ pub enum OfferProblemTag {
 pub struct ContractOffer {
     pub id: u64,
     pub kind: ContractTypeStageA,
+    pub commodity: Commodity,
     pub origin: SystemId,
     pub destination: SystemId,
     pub origin_station: StationId,
@@ -558,6 +581,7 @@ pub enum OfferError {
     ExpiredOffer,
     ShipBusy,
     InvalidAssignment,
+    InsufficientStock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,10 +613,14 @@ pub struct FleetJobStep {
 pub struct FleetShipStatus {
     pub ship_id: ShipId,
     pub company_id: CompanyId,
+    pub role: ShipRole,
     pub location: SystemId,
+    pub current_station: Option<StationId>,
     pub target: Option<SystemId>,
     pub eta: u32,
     pub active_contract: Option<ContractId>,
+    pub cargo_commodity: Option<Commodity>,
+    pub cargo_amount: f64,
     pub route_len: usize,
     pub reroutes: u64,
     pub warning: Option<FleetWarning>,
@@ -660,6 +688,23 @@ pub struct CycleReport {
     pub sla_success_rate: f64,
     pub reroute_count: u64,
     pub economy_stress_index: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeOrderStage {
+    ToPickup,
+    ToDropoff,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeOrder {
+    pub id: TradeOrderId,
+    pub ship_id: ShipId,
+    pub commodity: Commodity,
+    pub amount: f64,
+    pub source_station: StationId,
+    pub destination_station: StationId,
+    pub stage: TradeOrderStage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -820,6 +865,7 @@ pub struct GateEdge {
 pub struct StationAnchor {
     pub id: StationId,
     pub system_id: SystemId,
+    pub profile: StationProfile,
     pub x: f64,
     pub y: f64,
 }
@@ -957,9 +1003,18 @@ impl World {
                 let angle = station_rng.next_f64() * std::f64::consts::TAU;
                 let radius = system.radius * radius_mult;
                 let station_id = StationId(stations.len());
+                let profile_roll = station_rng.next_f64();
+                let profile = if profile_roll < 0.45 {
+                    StationProfile::Industrial
+                } else if profile_roll < 0.80 {
+                    StationProfile::Civilian
+                } else {
+                    StationProfile::Research
+                };
                 stations.push(StationAnchor {
                     id: station_id,
                     system_id: system.id,
+                    profile,
                     x: system.x + angle.cos() * radius,
                     y: system.y + angle.sin() * radius,
                 });
@@ -967,6 +1022,26 @@ impl World {
                     .entry(system.id)
                     .or_default()
                     .push(station_id);
+            }
+        }
+
+        let mut present = BTreeSet::new();
+        for station in &stations {
+            present.insert(station.profile);
+        }
+        let required = [
+            StationProfile::Civilian,
+            StationProfile::Industrial,
+            StationProfile::Research,
+        ];
+        for (offset, profile) in required.into_iter().enumerate() {
+            if present.contains(&profile) || stations.is_empty() {
+                continue;
+            }
+            let idx = ((seed as usize).wrapping_add(offset * 7)) % stations.len();
+            if let Some(station) = stations.get_mut(idx) {
+                station.profile = profile;
+                present.insert(profile);
             }
         }
 
@@ -1087,6 +1162,7 @@ pub struct MarketBook {
 pub struct Contract {
     pub id: ContractId,
     pub kind: ContractTypeStageA,
+    pub commodity: Commodity,
     pub origin: SystemId,
     pub destination: SystemId,
     pub origin_station: StationId,
@@ -1109,9 +1185,14 @@ pub struct Contract {
 pub struct Ship {
     pub id: ShipId,
     pub company_id: CompanyId,
+    pub role: ShipRole,
     pub location: SystemId,
+    pub current_station: Option<StationId>,
     pub eta_ticks_remaining: u32,
     pub sub_light_speed: f64,
+    pub cargo_capacity: f64,
+    pub cargo: Option<CargoLoad>,
+    pub trade_order_id: Option<TradeOrderId>,
     pub movement_queue: VecDeque<RouteSegment>,
     pub segment_eta_remaining: u32,
     pub segment_progress_total: u32,
@@ -1141,10 +1222,12 @@ pub struct Simulation {
     pub tick: u64,
     pub cycle: u64,
     pub companies: BTreeMap<CompanyId, Company>,
-    pub markets: BTreeMap<SystemId, MarketBook>,
+    pub markets: BTreeMap<StationId, MarketBook>,
     pub contracts: BTreeMap<ContractId, Contract>,
     pub contract_offers: BTreeMap<u64, ContractOffer>,
     pub next_offer_id: u64,
+    pub trade_orders: BTreeMap<TradeOrderId, TradeOrder>,
+    pub next_trade_order_id: u64,
     pub ships: BTreeMap<ShipId, Ship>,
     pub milestones: Vec<MilestoneStatus>,
     pub capital: f64,
@@ -1164,7 +1247,7 @@ pub struct Simulation {
     pub ship_delay_ticks_cycle: BTreeMap<ShipId, u32>,
     pub ship_runs_completed: BTreeMap<ShipId, u32>,
     pub ship_profit_earned: BTreeMap<ShipId, f64>,
-    pub previous_cycle_prices: BTreeMap<(SystemId, Commodity), f64>,
+    pub previous_cycle_prices: BTreeMap<(StationId, Commodity), f64>,
     pub recovery_log: Vec<RecoveryAction>,
     modifiers: Vec<ActiveModifier>,
 }
@@ -1174,7 +1257,7 @@ impl Simulation {
         let initial_loan_interest_rate = config.pressure.loan_interest_rate;
         let world = World::generate(&config.galaxy, seed);
         let mut markets = BTreeMap::new();
-        for system in &world.systems {
+        for station in &world.stations {
             let mut goods = BTreeMap::new();
             for commodity in Commodity::ALL {
                 let base_price = base_price_for(commodity);
@@ -1190,13 +1273,13 @@ impl Simulation {
                     },
                 );
             }
-            markets.insert(system.id, MarketBook { goods });
+            markets.insert(station.id, MarketBook { goods });
         }
         let mut previous_cycle_prices = BTreeMap::new();
-        for (system_id, book) in &markets {
+        for (station_id, book) in &markets {
             for commodity in Commodity::ALL {
                 if let Some(state) = book.goods.get(&commodity) {
-                    previous_cycle_prices.insert((*system_id, commodity), state.price);
+                    previous_cycle_prices.insert((*station_id, commodity), state.price);
                 }
             }
         }
@@ -1212,6 +1295,7 @@ impl Simulation {
                 Contract {
                     id: ContractId(0),
                     kind: ContractTypeStageA::Delivery,
+                    commodity: Commodity::Fuel,
                     origin: SystemId(0),
                     destination: SystemId(1),
                     origin_station,
@@ -1245,6 +1329,8 @@ impl Simulation {
             contracts,
             contract_offers: BTreeMap::new(),
             next_offer_id: 0,
+            trade_orders: BTreeMap::new(),
+            next_trade_order_id: 0,
             ships,
             milestones: Vec::new(),
             capital: 500.0,
@@ -1305,8 +1391,11 @@ impl Simulation {
     pub fn step_tick(&mut self) -> TickReport {
         self.tick = self.tick.saturating_add(1);
         self.apply_upkeep();
-        self.update_ship_movements();
         self.run_economy_flow();
+        if self.tick.is_multiple_of(10) {
+            self.dispatch_npc_trade_orders();
+        }
+        self.update_ship_movements();
         self.update_contracts_tick();
         self.expire_modifiers();
 
@@ -1412,7 +1501,7 @@ impl Simulation {
 
     pub fn save_snapshot(&self, path: &Path) -> Result<(), SnapshotError> {
         let state = self.serialize_state();
-        let json = format!("{{\"version\":2,\"state\":\"{state}\"}}\n");
+        let json = format!("{{\"version\":3,\"state\":\"{state}\"}}\n");
         fs::write(path, json).map_err(|e| SnapshotError::Io(format!("save failed: {e}")))
     }
 
@@ -1421,7 +1510,7 @@ impl Simulation {
             fs::read_to_string(path).map_err(|e| SnapshotError::Io(format!("load failed: {e}")))?;
         let version = extract_json_u32_field(&payload, "version")
             .ok_or_else(|| SnapshotError::Parse("missing version field".to_string()))?;
-        if version != 1 && version != 2 {
+        if version != 3 {
             return Err(SnapshotError::Parse(format!(
                 "unsupported snapshot version: {version}"
             )));
@@ -1438,7 +1527,8 @@ impl Simulation {
     }
 
     pub fn market_intel(&self, system_id: SystemId, local_cluster: bool) -> Option<MarketIntel> {
-        self.markets.get(&system_id).map(|_| {
+        let station_id = self.world.first_station(system_id)?;
+        self.markets.get(&station_id).map(|_| {
             if local_cluster {
                 MarketIntel {
                     system_id,
@@ -1467,7 +1557,9 @@ impl Simulation {
 
     pub fn route_for_ship(&self, ship_id: ShipId, destination: SystemId) -> Option<RoutePlan> {
         let ship = self.ships.get(&ship_id)?;
-        let origin_station = self.world.first_station(ship.location)?;
+        let origin_station = ship
+            .current_station
+            .or_else(|| self.world.first_station(ship.location))?;
         let destination_station = self.world.first_station(destination)?;
         self.build_station_route_with_speed(
             origin_station,
@@ -1503,6 +1595,23 @@ impl Simulation {
         per_cycle: f64,
         total_cycles: u32,
     ) -> ContractId {
+        self.create_supply_contract_for_commodity(
+            origin,
+            destination,
+            Commodity::Fuel,
+            per_cycle,
+            total_cycles,
+        )
+    }
+
+    pub fn create_supply_contract_for_commodity(
+        &mut self,
+        origin: SystemId,
+        destination: SystemId,
+        commodity: Commodity,
+        per_cycle: f64,
+        total_cycles: u32,
+    ) -> ContractId {
         let next_id = ContractId(self.contracts.len());
         let origin_station = self.world.first_station(origin).unwrap_or(StationId(0));
         let destination_station = self
@@ -1514,6 +1623,7 @@ impl Simulation {
             Contract {
                 id: next_id,
                 kind: ContractTypeStageA::Supply,
+                commodity,
                 origin,
                 destination,
                 origin_station,
@@ -1575,6 +1685,25 @@ impl Simulation {
         if ship_snapshot.active_contract.is_some() || ship_snapshot.eta_ticks_remaining > 0 {
             return Err(OfferError::ShipBusy);
         }
+        if offer.kind == ContractTypeStageA::Delivery {
+            let available = self
+                .markets
+                .get(&offer.origin_station)
+                .and_then(|book| book.goods.get(&offer.commodity))
+                .map(|state| state.stock)
+                .unwrap_or(0.0);
+            if available + 1e-9 < offer.quantity {
+                return Err(OfferError::InsufficientStock);
+            }
+            if let Some(state) = self
+                .markets
+                .get_mut(&offer.origin_station)
+                .and_then(|book| book.goods.get_mut(&offer.commodity))
+            {
+                state.stock = (state.stock - offer.quantity).max(0.0);
+                state.cycle_outflow += offer.quantity;
+            }
+        }
 
         let contract_id = ContractId(
             self.contracts
@@ -1591,6 +1720,7 @@ impl Simulation {
             Contract {
                 id: contract_id,
                 kind: offer.kind,
+                commodity: offer.commodity,
                 origin: offer.origin,
                 destination: offer.destination,
                 origin_station: offer.origin_station,
@@ -1650,10 +1780,14 @@ impl Simulation {
                 FleetShipStatus {
                     ship_id: ship.id,
                     company_id: ship.company_id,
+                    role: ship.role,
                     location: ship.location,
+                    current_station: ship.current_station,
                     target: ship.current_target,
                     eta: ship.eta_ticks_remaining,
                     active_contract: ship.active_contract,
+                    cargo_commodity: ship.cargo.map(|cargo| cargo.commodity),
+                    cargo_amount: ship.cargo.map(|cargo| cargo.amount).unwrap_or(0.0),
                     route_len: ship.planned_path.len(),
                     reroutes: ship.reroutes,
                     warning,
@@ -1753,10 +1887,17 @@ impl Simulation {
         }
     }
 
-    pub fn market_insights(&self, system_id: SystemId) -> Vec<MarketInsightRow> {
-        let Some(book) = self.markets.get(&system_id) else {
+    pub fn market_insights(&self, station_id: StationId) -> Vec<MarketInsightRow> {
+        let Some(book) = self.markets.get(&station_id) else {
             return Vec::new();
         };
+        let system_id = self
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == station_id)
+            .map(|station| station.system_id)
+            .unwrap_or(SystemId(0));
         let congestion_factor = self.system_congestion_signal(system_id);
         let fuel_factor = self
             .modifiers
@@ -1771,7 +1912,7 @@ impl Simulation {
             };
             let prev_price = self
                 .previous_cycle_prices
-                .get(&(system_id, commodity))
+                .get(&(station_id, commodity))
                 .copied()
                 .unwrap_or(state.price);
             let trend_delta = state.price - prev_price;
@@ -1921,6 +2062,11 @@ impl Simulation {
             if let Some(segment) = completed_segment {
                 if let Some(ship) = self.ships.get_mut(&ship_id) {
                     ship.location = segment.to;
+                    if let Some(station_id) = segment.to_anchor {
+                        ship.current_station = Some(station_id);
+                    } else if segment.kind == SegmentKind::Warp {
+                        ship.current_station = None;
+                    }
                     if segment.kind == SegmentKind::Warp {
                         ship.last_gate_arrival = segment.edge;
                     }
@@ -1933,6 +2079,18 @@ impl Simulation {
                 continue;
             };
             if ship_snapshot.segment_eta_remaining > 0 || !ship_snapshot.movement_queue.is_empty() {
+                continue;
+            }
+
+            if ship_snapshot.role == ShipRole::NpcTrade {
+                if self.advance_npc_trade_ship(ship_id) {
+                    self.start_next_movement_segment(ship_id, dock_delay_factor);
+                    continue;
+                }
+                let idle_ticks = self.ship_idle_ticks_cycle.entry(ship_id).or_insert(0);
+                *idle_ticks = idle_ticks
+                    .saturating_add(1)
+                    .min(self.config.time.cycle_ticks.max(1));
                 continue;
             }
 
@@ -1959,7 +2117,9 @@ impl Simulation {
                     (target, target_station)
                 };
 
-            if ship_snapshot.active_contract.is_some() && ship_snapshot.location == target_system {
+            if ship_snapshot.active_contract.is_some()
+                && ship_snapshot.current_station == Some(target_station)
+            {
                 continue;
             }
 
@@ -1973,8 +2133,10 @@ impl Simulation {
             }
 
             let origin_station = self
-                .world
-                .first_station(ship_snapshot.location)
+                .ships
+                .get(&ship_id)
+                .and_then(|ship| ship.current_station)
+                .or_else(|| self.world.first_station(ship_snapshot.location))
                 .unwrap_or(target_station);
             let route = match self.build_station_route_with_speed(
                 origin_station,
@@ -2060,6 +2222,7 @@ impl Simulation {
             if let Some(ship) = self.ships.get_mut(&ship_id) {
                 if segment.from_anchor.is_some() {
                     ship.last_gate_arrival = None;
+                    ship.current_station = None;
                 }
                 ship.current_segment_kind = Some(segment.kind);
                 ship.current_target = Some(segment.to);
@@ -2074,6 +2237,11 @@ impl Simulation {
 
             if let Some(ship) = self.ships.get_mut(&ship_id) {
                 ship.location = segment.to;
+                if let Some(station_id) = segment.to_anchor {
+                    ship.current_station = Some(station_id);
+                } else if segment.kind == SegmentKind::Warp {
+                    ship.current_station = None;
+                }
                 if segment.kind == SegmentKind::Warp {
                     ship.last_gate_arrival = segment.edge;
                 }
@@ -2106,7 +2274,7 @@ impl Simulation {
                         .ships
                         .get(&ship_id)
                         .map(|s| {
-                            s.location == snapshot.destination
+                            s.current_station == Some(snapshot.destination_station)
                                 && s.eta_ticks_remaining == 0
                                 && s.movement_queue.is_empty()
                                 && s.current_segment_kind.is_none()
@@ -2114,6 +2282,14 @@ impl Simulation {
                         .unwrap_or(false);
 
                     if arrived {
+                        if let Some(state) = self
+                            .markets
+                            .get_mut(&snapshot.destination_station)
+                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
+                        {
+                            state.stock += snapshot.quantity;
+                            state.cycle_inflow += snapshot.quantity;
+                        }
                         if let Some(c) = self.contracts.get_mut(&cid) {
                             c.completed = true;
                             c.delivered_amount = c.quantity;
@@ -2141,15 +2317,50 @@ impl Simulation {
                 ContractTypeStageA::Supply => {
                     let delivered = snapshot.assigned_ship.and_then(|ship_id| {
                         self.ships.get(&ship_id).map(|s| {
-                            s.location == snapshot.destination
+                            s.current_station == Some(snapshot.destination_station)
                                 && s.eta_ticks_remaining == 0
                                 && s.movement_queue.is_empty()
                                 && s.current_segment_kind.is_none()
                         })
                     });
                     if delivered == Some(true) {
+                        let delivered_so_far = self
+                            .contracts
+                            .get(&cid)
+                            .map(|contract| contract.delivered_amount)
+                            .unwrap_or(0.0);
+                        let remaining = (snapshot.per_cycle - delivered_so_far).max(0.0);
+                        if remaining <= 0.0 {
+                            continue;
+                        }
+                        let available = self
+                            .markets
+                            .get(&snapshot.origin_station)
+                            .and_then(|book| book.goods.get(&snapshot.commodity))
+                            .map(|state| state.stock)
+                            .unwrap_or(0.0);
+                        let transfer = remaining.min(available);
+                        if transfer <= 0.0 {
+                            continue;
+                        }
+                        if let Some(origin) = self
+                            .markets
+                            .get_mut(&snapshot.origin_station)
+                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
+                        {
+                            origin.stock = (origin.stock - transfer).max(0.0);
+                            origin.cycle_outflow += transfer;
+                        }
+                        if let Some(destination) = self
+                            .markets
+                            .get_mut(&snapshot.destination_station)
+                            .and_then(|book| book.goods.get_mut(&snapshot.commodity))
+                        {
+                            destination.stock += transfer;
+                            destination.cycle_inflow += transfer;
+                        }
                         if let Some(contract) = self.contracts.get_mut(&cid) {
-                            contract.delivered_amount += snapshot.per_cycle;
+                            contract.delivered_amount += transfer;
                         }
                     }
                 }
@@ -2245,6 +2456,31 @@ impl Simulation {
             .world
             .first_station(destination)
             .unwrap_or(origin_station);
+        let Some(origin_market) = self.markets.get(&origin_station) else {
+            return;
+        };
+        let Some(destination_market) = self.markets.get(&destination_station) else {
+            return;
+        };
+        let commodity = Commodity::ALL
+            .iter()
+            .copied()
+            .map(|item| {
+                let deficit = destination_market
+                    .goods
+                    .get(&item)
+                    .map(|state| (state.target_stock * 0.85 - state.stock).max(0.0))
+                    .unwrap_or(0.0);
+                let surplus = origin_market
+                    .goods
+                    .get(&item)
+                    .map(|state| (state.stock - state.target_stock * 1.15).max(0.0))
+                    .unwrap_or(0.0);
+                (item, deficit.min(surplus))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|entry| entry.0)
+            .unwrap_or(Commodity::Fuel);
         let Some(route) = self.build_station_route_with_speed(
             origin_station,
             destination_station,
@@ -2264,26 +2500,30 @@ impl Simulation {
             .filter(|segment| segment.kind == SegmentKind::Warp)
             .filter_map(|segment| segment.edge)
             .collect::<Vec<_>>();
-        let Some(destination_market) = self.markets.get(&destination) else {
-            return;
-        };
-
         let imbalance = destination_market
             .goods
-            .values()
+            .get(&commodity)
             .map(|state| {
                 ((state.target_stock - state.stock) / state.target_stock.max(1.0)).max(0.0)
             })
-            .sum::<f64>()
-            / destination_market.goods.len().max(1) as f64;
+            .unwrap_or(0.0);
         let flow_pressure = destination_market
             .goods
-            .values()
+            .get(&commodity)
             .map(|state| (state.cycle_outflow - state.cycle_inflow).max(0.0))
-            .sum::<f64>()
-            / destination_market.goods.len().max(1) as f64;
+            .unwrap_or(0.0);
+        let origin_stock = origin_market
+            .goods
+            .get(&commodity)
+            .map(|state| state.stock)
+            .unwrap_or(0.0);
 
-        let quantity = (8.0 + imbalance * 12.0 + flow_pressure * 0.8).clamp(5.0, 30.0);
+        let quantity = (8.0 + imbalance * 12.0 + flow_pressure * 0.8)
+            .clamp(5.0, 30.0)
+            .min(origin_stock.max(0.0));
+        if quantity <= 0.0 {
+            return;
+        }
         let payout = 18.0 + quantity * 2.2 + eta_ticks as f64 * 0.3;
         let penalty = (payout * 0.45).max(8.0);
         let margin_estimate = payout
@@ -2320,6 +2560,7 @@ impl Simulation {
         let offer = ContractOffer {
             id: self.next_offer_id,
             kind,
+            commodity,
             origin,
             destination,
             origin_station,
@@ -2488,30 +2729,425 @@ impl Simulation {
             .filter(|m| m.risk == RiskStageA::FuelShock)
             .map(|m| m.magnitude)
             .fold(1.0_f64, f64::min);
+        let station_ids: Vec<StationId> = self
+            .world
+            .stations
+            .iter()
+            .map(|station| station.id)
+            .collect();
 
-        for market in self.markets.values_mut() {
-            for (commodity, state) in &mut market.goods {
-                let base_prod = match commodity {
-                    Commodity::Ore | Commodity::Ice | Commodity::Gas => 1.8,
-                    Commodity::Metal | Commodity::Fuel => 1.2,
-                    Commodity::Parts | Commodity::Electronics => 0.9,
-                };
-                let base_cons = match commodity {
-                    Commodity::Fuel => 1.5,
-                    Commodity::Electronics => 1.2,
-                    _ => 1.0,
-                };
+        for station_id in &station_ids {
+            let Some(profile) = self.station_profile(*station_id) else {
+                continue;
+            };
+            if let Some(book) = self.markets.get_mut(station_id) {
+                for commodity in Commodity::ALL {
+                    let amount = profile_production(profile, commodity);
+                    if amount <= 0.0 {
+                        continue;
+                    }
+                    if let Some(state) = book.goods.get_mut(&commodity) {
+                        state.stock += amount;
+                        state.cycle_inflow += amount;
+                    }
+                }
+            }
+        }
 
-                let prod = if *commodity == Commodity::Fuel {
-                    base_prod * fuel_shock_factor
+        for station_id in &station_ids {
+            let Some(profile) = self.station_profile(*station_id) else {
+                continue;
+            };
+            let fuel_mult = recipe_output_multiplier(profile, Commodity::Fuel) * fuel_shock_factor;
+            self.process_station_recipe(
+                *station_id,
+                &[(Commodity::Ore, 1.6), (Commodity::Fuel, 0.2)],
+                (Commodity::Metal, 1.0),
+                recipe_output_multiplier(profile, Commodity::Metal),
+            );
+            self.process_station_recipe(
+                *station_id,
+                &[(Commodity::Gas, 1.2), (Commodity::Ice, 0.8)],
+                (Commodity::Fuel, 1.0),
+                fuel_mult,
+            );
+            self.process_station_recipe(
+                *station_id,
+                &[(Commodity::Metal, 1.0), (Commodity::Fuel, 0.5)],
+                (Commodity::Parts, 0.8),
+                recipe_output_multiplier(profile, Commodity::Parts),
+            );
+            self.process_station_recipe(
+                *station_id,
+                &[(Commodity::Parts, 0.9), (Commodity::Fuel, 0.6)],
+                (Commodity::Electronics, 0.6),
+                recipe_output_multiplier(profile, Commodity::Electronics),
+            );
+        }
+
+        for station_id in &station_ids {
+            let Some(profile) = self.station_profile(*station_id) else {
+                continue;
+            };
+            if let Some(book) = self.markets.get_mut(station_id) {
+                for commodity in Commodity::ALL {
+                    let amount = profile_consumption(profile, commodity);
+                    if amount <= 0.0 {
+                        continue;
+                    }
+                    if let Some(state) = book.goods.get_mut(&commodity) {
+                        state.stock = (state.stock - amount).max(0.0);
+                        state.cycle_outflow += amount;
+                    }
+                }
+            }
+        }
+    }
+
+    fn station_profile(&self, station_id: StationId) -> Option<StationProfile> {
+        self.world
+            .stations
+            .iter()
+            .find(|station| station.id == station_id)
+            .map(|station| station.profile)
+    }
+
+    fn process_station_recipe(
+        &mut self,
+        station_id: StationId,
+        inputs: &[(Commodity, f64)],
+        output: (Commodity, f64),
+        multiplier: f64,
+    ) {
+        if multiplier <= 0.0 {
+            return;
+        }
+        let Some(book) = self.markets.get(&station_id) else {
+            return;
+        };
+        let mut limiting = 1.0_f64;
+        for (commodity, amount) in inputs {
+            let required = (amount * multiplier).max(0.0);
+            if required <= 0.0 {
+                continue;
+            }
+            let available = book
+                .goods
+                .get(commodity)
+                .map(|state| state.stock)
+                .unwrap_or(0.0);
+            limiting = limiting.min((available / required).clamp(0.0, 1.0));
+        }
+        if limiting <= 0.0 {
+            return;
+        }
+        let input_deltas = inputs
+            .iter()
+            .map(|(commodity, amount)| (*commodity, amount * multiplier * limiting))
+            .collect::<Vec<_>>();
+        let output_amount = output.1 * multiplier * limiting;
+        if let Some(book) = self.markets.get_mut(&station_id) {
+            for (commodity, amount) in input_deltas {
+                if let Some(state) = book.goods.get_mut(&commodity) {
+                    state.stock = (state.stock - amount).max(0.0);
+                    state.cycle_outflow += amount;
+                }
+            }
+            if let Some(state) = book.goods.get_mut(&output.0) {
+                state.stock += output_amount;
+                state.cycle_inflow += output_amount;
+            }
+        }
+    }
+
+    fn dispatch_npc_trade_orders(&mut self) {
+        let mut idle_ships = self
+            .ships
+            .values()
+            .filter(|ship| {
+                ship.role == ShipRole::NpcTrade
+                    && ship.active_contract.is_none()
+                    && ship.trade_order_id.is_none()
+                    && ship.segment_eta_remaining == 0
+                    && ship.movement_queue.is_empty()
+            })
+            .map(|ship| ship.id)
+            .collect::<Vec<_>>();
+        idle_ships.sort_by_key(|ship_id| ship_id.0);
+        if idle_ships.is_empty() {
+            return;
+        }
+        let station_ids = self
+            .world
+            .stations
+            .iter()
+            .map(|station| station.id)
+            .collect::<Vec<_>>();
+        for ship_id in idle_ships {
+            let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+                continue;
+            };
+            let ship_station = ship_snapshot
+                .current_station
+                .or_else(|| self.world.first_station(ship_snapshot.location));
+            let Some(ship_station) = ship_station else {
+                continue;
+            };
+            let mut best: Option<(StationId, StationId, Commodity, f64, RoutePlan, RoutePlan)> =
+                None;
+            for destination_station in &station_ids {
+                for commodity in Commodity::ALL {
+                    let deficit = self
+                        .markets
+                        .get(destination_station)
+                        .and_then(|book| book.goods.get(&commodity))
+                        .map(|state| (state.target_stock * 0.85 - state.stock).max(0.0))
+                        .unwrap_or(0.0);
+                    if deficit <= 0.0 {
+                        continue;
+                    }
+                    for source_station in &station_ids {
+                        if source_station == destination_station {
+                            continue;
+                        }
+                        let surplus = self
+                            .markets
+                            .get(source_station)
+                            .and_then(|book| book.goods.get(&commodity))
+                            .map(|state| (state.stock - state.target_stock * 1.15).max(0.0))
+                            .unwrap_or(0.0);
+                        if surplus <= 0.0 {
+                            continue;
+                        }
+                        let amount = deficit.min(surplus).min(ship_snapshot.cargo_capacity);
+                        if amount <= 0.0 {
+                            continue;
+                        }
+                        let policy = AutopilotPolicy {
+                            max_hops: 6,
+                            ..AutopilotPolicy::default()
+                        };
+                        let Some(route_to_source) = self.build_station_route_with_speed(
+                            ship_station,
+                            *source_station,
+                            policy.clone(),
+                            ship_snapshot.sub_light_speed,
+                        ) else {
+                            continue;
+                        };
+                        let Some(route_to_destination) = self.build_station_route_with_speed(
+                            *source_station,
+                            *destination_station,
+                            policy,
+                            ship_snapshot.sub_light_speed,
+                        ) else {
+                            continue;
+                        };
+                        let score =
+                            f64::from(route_to_source.eta_ticks + route_to_destination.eta_ticks);
+                        if best.as_ref().is_none_or(|entry| score < entry.3) {
+                            best = Some((
+                                *source_station,
+                                *destination_station,
+                                commodity,
+                                score,
+                                route_to_source,
+                                route_to_destination,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let Some((
+                source_station,
+                destination_station,
+                commodity,
+                _,
+                route_to_source,
+                route_to_destination,
+            )) = best
+            else {
+                continue;
+            };
+            let amount = self
+                .markets
+                .get(&source_station)
+                .and_then(|book| book.goods.get(&commodity))
+                .map(|state| {
+                    (state.stock - state.target_stock * 1.15)
+                        .max(0.0)
+                        .min(ship_snapshot.cargo_capacity)
+                })
+                .unwrap_or(0.0);
+            if amount <= 0.0 {
+                continue;
+            }
+            if let Some(state) = self
+                .markets
+                .get_mut(&source_station)
+                .and_then(|book| book.goods.get_mut(&commodity))
+            {
+                state.stock = (state.stock - amount).max(0.0);
+                state.cycle_outflow += amount;
+            }
+            let order_id = TradeOrderId(self.next_trade_order_id);
+            self.next_trade_order_id = self.next_trade_order_id.saturating_add(1);
+            let mut stage = TradeOrderStage::ToPickup;
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                ship.trade_order_id = Some(order_id);
+                ship.cargo = None;
+                ship.policy.max_hops = 6;
+                if ship.current_station == Some(source_station) {
+                    stage = TradeOrderStage::ToDropoff;
+                    ship.cargo = Some(CargoLoad { commodity, amount });
+                    ship.movement_queue = VecDeque::from(route_to_destination.segments.clone());
                 } else {
-                    base_prod
-                };
-                let cons = base_cons;
+                    ship.movement_queue = VecDeque::from(route_to_source.segments.clone());
+                }
+                ship.segment_eta_remaining = 0;
+                ship.segment_progress_total = 0;
+                ship.current_segment_kind = None;
+                ship.current_target = None;
+                ship.eta_ticks_remaining = 0;
+            }
+            self.trade_orders.insert(
+                order_id,
+                TradeOrder {
+                    id: order_id,
+                    ship_id,
+                    commodity,
+                    amount,
+                    source_station,
+                    destination_station,
+                    stage,
+                },
+            );
+        }
+    }
 
-                state.stock = (state.stock + prod - cons).max(0.0);
-                state.cycle_inflow += prod;
-                state.cycle_outflow += cons;
+    fn advance_npc_trade_ship(&mut self, ship_id: ShipId) -> bool {
+        let Some(order_id) = self
+            .ships
+            .get(&ship_id)
+            .and_then(|ship| ship.trade_order_id)
+        else {
+            return false;
+        };
+        let Some(order) = self.trade_orders.get(&order_id).cloned() else {
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                ship.trade_order_id = None;
+            }
+            return false;
+        };
+        let ship_snapshot = self.ships.get(&ship_id).cloned();
+        let Some(ship_snapshot) = ship_snapshot else {
+            return false;
+        };
+        let at_station = ship_snapshot.current_station;
+        match order.stage {
+            TradeOrderStage::ToPickup => {
+                if at_station == Some(order.source_station) {
+                    if let Some(ship) = self.ships.get_mut(&ship_id) {
+                        ship.cargo = Some(CargoLoad {
+                            commodity: order.commodity,
+                            amount: order.amount,
+                        });
+                    }
+                    if let Some(item) = self.trade_orders.get_mut(&order_id) {
+                        item.stage = TradeOrderStage::ToDropoff;
+                    }
+                    let Some(route) = self.build_station_route_with_speed(
+                        order.source_station,
+                        order.destination_station,
+                        AutopilotPolicy {
+                            max_hops: 6,
+                            ..AutopilotPolicy::default()
+                        },
+                        ship_snapshot.sub_light_speed,
+                    ) else {
+                        return true;
+                    };
+                    if let Some(ship) = self.ships.get_mut(&ship_id) {
+                        ship.movement_queue = VecDeque::from(route.segments);
+                        ship.segment_eta_remaining = 0;
+                        ship.segment_progress_total = 0;
+                        ship.current_segment_kind = None;
+                        ship.current_target = None;
+                        ship.eta_ticks_remaining = 0;
+                    }
+                    return true;
+                }
+                let from_station = ship_snapshot
+                    .current_station
+                    .or_else(|| self.world.first_station(ship_snapshot.location));
+                let Some(from_station) = from_station else {
+                    return true;
+                };
+                let Some(route) = self.build_station_route_with_speed(
+                    from_station,
+                    order.source_station,
+                    AutopilotPolicy {
+                        max_hops: 6,
+                        ..AutopilotPolicy::default()
+                    },
+                    ship_snapshot.sub_light_speed,
+                ) else {
+                    return true;
+                };
+                if let Some(ship) = self.ships.get_mut(&ship_id) {
+                    ship.movement_queue = VecDeque::from(route.segments);
+                    ship.segment_eta_remaining = 0;
+                    ship.segment_progress_total = 0;
+                    ship.current_segment_kind = None;
+                    ship.current_target = None;
+                    ship.eta_ticks_remaining = 0;
+                }
+                true
+            }
+            TradeOrderStage::ToDropoff => {
+                if at_station == Some(order.destination_station) {
+                    if let Some(state) = self
+                        .markets
+                        .get_mut(&order.destination_station)
+                        .and_then(|book| book.goods.get_mut(&order.commodity))
+                    {
+                        state.stock += order.amount;
+                        state.cycle_inflow += order.amount;
+                    }
+                    self.trade_orders.remove(&order_id);
+                    if let Some(ship) = self.ships.get_mut(&ship_id) {
+                        ship.cargo = None;
+                        ship.trade_order_id = None;
+                    }
+                    return true;
+                }
+                let from_station = ship_snapshot
+                    .current_station
+                    .or_else(|| self.world.first_station(ship_snapshot.location));
+                let Some(from_station) = from_station else {
+                    return true;
+                };
+                let Some(route) = self.build_station_route_with_speed(
+                    from_station,
+                    order.destination_station,
+                    AutopilotPolicy {
+                        max_hops: 6,
+                        ..AutopilotPolicy::default()
+                    },
+                    ship_snapshot.sub_light_speed,
+                ) else {
+                    return true;
+                };
+                if let Some(ship) = self.ships.get_mut(&ship_id) {
+                    ship.movement_queue = VecDeque::from(route.segments);
+                    ship.segment_eta_remaining = 0;
+                    ship.segment_progress_total = 0;
+                    ship.current_segment_kind = None;
+                    ship.current_target = None;
+                    ship.eta_ticks_remaining = 0;
+                }
+                true
             }
         }
     }
@@ -2615,18 +3251,26 @@ impl Simulation {
         let base = self.config.pressure.slot_lease_cost * slot_multiplier(slot_type);
 
         let throughput_signal = self
-            .markets
+            .world
+            .stations_by_system
             .get(&system_id)
-            .map(|book| {
-                if book.goods.is_empty() {
+            .map(|stations| {
+                let mut total = 0.0;
+                let mut count = 0.0;
+                for station_id in stations {
+                    if let Some(book) = self.markets.get(station_id) {
+                        total += book
+                            .goods
+                            .values()
+                            .map(|state| state.cycle_inflow + state.cycle_outflow)
+                            .sum::<f64>();
+                        count += book.goods.len() as f64;
+                    }
+                }
+                if count <= 0.0 {
                     0.0
                 } else {
-                    book.goods
-                        .values()
-                        .map(|state| state.cycle_inflow + state.cycle_outflow)
-                        .sum::<f64>()
-                        / book.goods.len() as f64
-                        / 100.0
+                    total / count / 100.0
                 }
             })
             .unwrap_or(0.0);
@@ -2857,14 +3501,24 @@ impl Simulation {
 
         let mut ships = String::new();
         for ship in self.ships.values() {
+            let cargo_code = ship
+                .cargo
+                .map(|cargo| commodity_code(cargo.commodity))
+                .unwrap_or("none");
+            let cargo_amount = ship.cargo.map(|cargo| cargo.amount).unwrap_or(0.0);
             ships.push_str(&format!(
-                "{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 ship.id.0,
                 ship.location.0,
                 ship.eta_ticks_remaining,
                 ship.route_cursor,
                 ship.current_target.map_or(usize::MAX, |x| x.0),
-                ship.last_risk_score
+                ship.last_risk_score,
+                ship_role_code(ship.role),
+                ship.current_station.map_or(usize::MAX, |x| x.0),
+                cargo_code,
+                cargo_amount,
+                ship.trade_order_id.map_or(u64::MAX, |x| x.0),
             ));
         }
 
@@ -2896,38 +3550,50 @@ impl Simulation {
         let mut stations = String::new();
         for station in &self.world.stations {
             stations.push_str(&format!(
-                "{}:{}:{}:{},",
-                station.id.0, station.system_id.0, station.x, station.y
+                "{}:{}:{}:{}:{},",
+                station.id.0,
+                station.system_id.0,
+                station.x,
+                station.y,
+                station_profile_code(station.profile)
             ));
         }
 
         let mut contracts = String::new();
         for contract in self.contracts.values() {
             contracts.push_str(&format!(
-                "{}:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 contract.id.0,
-                contract.kind,
+                contract_type_code(contract.kind),
+                commodity_code(contract.commodity),
                 contract.origin.0,
                 contract.destination.0,
                 contract.origin_station.0,
                 contract.destination_station.0,
-                contract.delivered_amount,
+                contract.quantity,
+                contract.deadline_tick,
+                contract.per_cycle,
+                contract.total_cycles,
+                contract.payout,
                 contract.penalty,
+                contract
+                    .assigned_ship
+                    .map_or(usize::MAX, |ship_id| ship_id.0),
+                contract.delivered_amount,
                 contract.missed_cycles,
                 contract.completed as u8,
                 contract.failed as u8,
-                contract.deadline_tick,
-                contract.last_eval_cycle
+                contract.last_eval_cycle,
             ));
         }
 
         let mut markets = String::new();
-        for (system_id, book) in &self.markets {
+        for (station_id, book) in &self.markets {
             for commodity in Commodity::ALL {
                 if let Some(state) = book.goods.get(&commodity) {
                     markets.push_str(&format!(
                         "{}:{}:{}:{}:{}:{}:{},",
-                        system_id.0,
+                        station_id.0,
                         commodity_code(commodity),
                         state.price,
                         state.stock,
@@ -2984,9 +3650,10 @@ impl Simulation {
                     .join("-")
             };
             offers.push_str(&format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 offer.id,
                 contract_type_code(offer.kind),
+                commodity_code(offer.commodity),
                 offer.origin.0,
                 offer.destination.0,
                 offer.origin_station.0,
@@ -3002,6 +3669,20 @@ impl Simulation {
                 offer.profit_per_ton,
                 route_gate_ids,
                 offer.expires_cycle
+            ));
+        }
+
+        let mut trade_orders = String::new();
+        for order in self.trade_orders.values() {
+            trade_orders.push_str(&format!(
+                "{}:{}:{}:{}:{}:{}:{},",
+                order.id.0,
+                order.ship_id.0,
+                commodity_code(order.commodity),
+                order.amount,
+                order.source_station.0,
+                order.destination_station.0,
+                trade_order_stage_code(order.stage),
             ));
         }
 
@@ -3052,10 +3733,10 @@ impl Simulation {
         }
 
         let mut prev_prices = String::new();
-        for ((system_id, commodity), price) in &self.previous_cycle_prices {
+        for ((station_id, commodity), price) in &self.previous_cycle_prices {
             prev_prices.push_str(&format!(
                 "{}:{}:{},",
-                system_id.0,
+                station_id.0,
                 commodity_code(*commodity),
                 price
             ));
@@ -3067,7 +3748,7 @@ impl Simulation {
         }
 
         format!(
-            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};next_offer_id={};edges={};stations={};ships={};ship_runtime={};contracts={};markets={};modifiers={};leases={};companies={};offers={};milestones={};gate_cycle={};gate_window={};ship_kpis={};recovery_log={};prev_prices={};gate_loads={}",
+            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};next_offer_id={};next_trade_order_id={};edges={};stations={};ships={};ship_runtime={};contracts={};markets={};modifiers={};leases={};companies={};offers={};trade_orders={};milestones={};gate_cycle={};gate_window={};ship_kpis={};recovery_log={};prev_prices={};gate_loads={}",
             self.tick,
             self.cycle,
             self.capital,
@@ -3080,6 +3761,7 @@ impl Simulation {
             self.sla_successes,
             self.sla_failures,
             self.next_offer_id,
+            self.next_trade_order_id,
             edges,
             stations,
             ships,
@@ -3090,6 +3772,7 @@ impl Simulation {
             leases,
             companies,
             offers,
+            trade_orders,
             milestones,
             gate_cycle,
             gate_window,
@@ -3119,6 +3802,8 @@ impl Simulation {
         simulation.sla_failures = parse_required_u64_from_map(&map, "sla_f")?;
         simulation.next_offer_id =
             parse_optional_u64_from_map(&map, "next_offer_id").unwrap_or(simulation.next_offer_id);
+        simulation.next_trade_order_id = parse_optional_u64_from_map(&map, "next_trade_order_id")
+            .unwrap_or(simulation.next_trade_order_id);
 
         if let Some(edges_blob) = map.get("edges") {
             for row in edges_blob.split(',').filter(|v| !v.is_empty()) {
@@ -3153,7 +3838,7 @@ impl Simulation {
             simulation.world.stations_by_system.clear();
             for row in stations_blob.split(',').filter(|value| !value.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 4 {
+                if parts.len() != 4 && parts.len() != 5 {
                     return Err(SnapshotError::Parse(format!("bad station row: {row}")));
                 }
                 let station_id: usize = parts[0]
@@ -3168,9 +3853,17 @@ impl Simulation {
                 let y: f64 = parts[3]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("station y parse failed".to_string()))?;
+                let profile = if parts.len() == 5 {
+                    station_profile_from_code(parts[4]).ok_or_else(|| {
+                        SnapshotError::Parse("station profile parse failed".to_string())
+                    })?
+                } else {
+                    StationProfile::Industrial
+                };
                 let station = StationAnchor {
                     id: StationId(station_id),
                     system_id: SystemId(system_id),
+                    profile,
                     x,
                     y,
                 };
@@ -3225,6 +3918,52 @@ impl Simulation {
                     ship.movement_queue.clear();
                     ship.sub_light_speed = 18.0;
                     ship.last_gate_arrival = None;
+                    if parts.len() >= 11 {
+                        ship.role = ship_role_from_code(parts[6]).ok_or_else(|| {
+                            SnapshotError::Parse("ship role parse failed".to_string())
+                        })?;
+                        let station_raw: usize = parts[7].parse().map_err(|_| {
+                            SnapshotError::Parse("ship station parse failed".to_string())
+                        })?;
+                        ship.current_station = if station_raw == usize::MAX {
+                            None
+                        } else {
+                            Some(StationId(station_raw))
+                        };
+                        ship.cargo = if parts[8] == "none" {
+                            None
+                        } else {
+                            Some(CargoLoad {
+                                commodity: commodity_from_code(parts[8]).ok_or_else(|| {
+                                    SnapshotError::Parse(
+                                        "ship cargo commodity parse failed".to_string(),
+                                    )
+                                })?,
+                                amount: parts[9].parse().map_err(|_| {
+                                    SnapshotError::Parse(
+                                        "ship cargo amount parse failed".to_string(),
+                                    )
+                                })?,
+                            })
+                        };
+                        let trade_order_raw: u64 = parts[10].parse().map_err(|_| {
+                            SnapshotError::Parse("ship trade order id parse failed".to_string())
+                        })?;
+                        ship.trade_order_id = if trade_order_raw == u64::MAX {
+                            None
+                        } else {
+                            Some(TradeOrderId(trade_order_raw))
+                        };
+                    } else {
+                        ship.role = if ship.company_id == CompanyId(0) {
+                            ShipRole::PlayerContract
+                        } else {
+                            ShipRole::NpcTrade
+                        };
+                        ship.current_station = simulation.world.first_station(ship.location);
+                        ship.cargo = None;
+                        ship.trade_order_id = None;
+                    }
                 }
             }
         }
@@ -3283,64 +4022,95 @@ impl Simulation {
         }
 
         if let Some(contracts_blob) = map.get("contracts") {
+            simulation.contracts.clear();
             for row in contracts_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 11 && parts.len() != 13 {
+                if parts.len() != 19 {
                     return Err(SnapshotError::Parse(format!("bad contract row: {row}")));
                 }
                 let id: usize = parts[0]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("contract id parse failed".to_string()))?;
-                if let Some(contract) = simulation.contracts.get_mut(&ContractId(id)) {
-                    let (
-                        delivered_idx,
-                        penalty_idx,
-                        misses_idx,
-                        completed_idx,
-                        failed_idx,
-                        deadline_idx,
-                        eval_idx,
-                    ) = if parts.len() == 13 {
-                        let origin_station: usize = parts[4].parse().map_err(|_| {
-                            SnapshotError::Parse("contract origin_station parse failed".to_string())
-                        })?;
-                        let destination_station: usize = parts[5].parse().map_err(|_| {
-                            SnapshotError::Parse(
-                                "contract destination_station parse failed".to_string(),
-                            )
-                        })?;
-                        contract.origin_station = StationId(origin_station);
-                        contract.destination_station = StationId(destination_station);
-                        (6, 7, 8, 9, 10, 11, 12)
-                    } else {
-                        contract.origin_station = simulation
-                            .world
-                            .first_station(contract.origin)
-                            .unwrap_or(StationId(0));
-                        contract.destination_station = simulation
-                            .world
-                            .first_station(contract.destination)
-                            .unwrap_or(contract.origin_station);
-                        (4, 5, 6, 7, 8, 9, 10)
-                    };
-                    contract.delivered_amount = parts[delivered_idx].parse().map_err(|_| {
-                        SnapshotError::Parse("contract delivered parse failed".to_string())
-                    })?;
-                    contract.penalty = parts[penalty_idx].parse().map_err(|_| {
-                        SnapshotError::Parse("contract penalty parse failed".to_string())
-                    })?;
-                    contract.missed_cycles = parts[misses_idx].parse().map_err(|_| {
-                        SnapshotError::Parse("contract misses parse failed".to_string())
-                    })?;
-                    contract.completed = parts[completed_idx] == "1";
-                    contract.failed = parts[failed_idx] == "1";
-                    contract.deadline_tick = parts[deadline_idx].parse().map_err(|_| {
-                        SnapshotError::Parse("contract deadline parse failed".to_string())
-                    })?;
-                    contract.last_eval_cycle = parts[eval_idx].parse().map_err(|_| {
-                        SnapshotError::Parse("contract last_eval parse failed".to_string())
-                    })?;
-                }
+                let kind = contract_type_from_code(parts[1]).ok_or_else(|| {
+                    SnapshotError::Parse("contract kind parse failed".to_string())
+                })?;
+                let commodity = commodity_from_code(parts[2]).ok_or_else(|| {
+                    SnapshotError::Parse("contract commodity parse failed".to_string())
+                })?;
+                let origin: usize = parts[3].parse().map_err(|_| {
+                    SnapshotError::Parse("contract origin parse failed".to_string())
+                })?;
+                let destination: usize = parts[4].parse().map_err(|_| {
+                    SnapshotError::Parse("contract destination parse failed".to_string())
+                })?;
+                let origin_station: usize = parts[5].parse().map_err(|_| {
+                    SnapshotError::Parse("contract origin station parse failed".to_string())
+                })?;
+                let destination_station: usize = parts[6].parse().map_err(|_| {
+                    SnapshotError::Parse("contract destination station parse failed".to_string())
+                })?;
+                let quantity: f64 = parts[7].parse().map_err(|_| {
+                    SnapshotError::Parse("contract quantity parse failed".to_string())
+                })?;
+                let deadline_tick: u64 = parts[8].parse().map_err(|_| {
+                    SnapshotError::Parse("contract deadline parse failed".to_string())
+                })?;
+                let per_cycle: f64 = parts[9].parse().map_err(|_| {
+                    SnapshotError::Parse("contract per_cycle parse failed".to_string())
+                })?;
+                let total_cycles: u32 = parts[10].parse().map_err(|_| {
+                    SnapshotError::Parse("contract total_cycles parse failed".to_string())
+                })?;
+                let payout: f64 = parts[11].parse().map_err(|_| {
+                    SnapshotError::Parse("contract payout parse failed".to_string())
+                })?;
+                let penalty: f64 = parts[12].parse().map_err(|_| {
+                    SnapshotError::Parse("contract penalty parse failed".to_string())
+                })?;
+                let assigned_ship_raw: usize = parts[13].parse().map_err(|_| {
+                    SnapshotError::Parse("contract assigned ship parse failed".to_string())
+                })?;
+                let delivered_amount: f64 = parts[14].parse().map_err(|_| {
+                    SnapshotError::Parse("contract delivered parse failed".to_string())
+                })?;
+                let missed_cycles: u32 = parts[15].parse().map_err(|_| {
+                    SnapshotError::Parse("contract misses parse failed".to_string())
+                })?;
+                let completed = parts[16] == "1";
+                let failed = parts[17] == "1";
+                let last_eval_cycle: u64 = parts[18]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("contract eval parse failed".to_string()))?;
+                let assigned_ship = if assigned_ship_raw == usize::MAX {
+                    None
+                } else {
+                    Some(ShipId(assigned_ship_raw))
+                };
+
+                simulation.contracts.insert(
+                    ContractId(id),
+                    Contract {
+                        id: ContractId(id),
+                        kind,
+                        commodity,
+                        origin: SystemId(origin),
+                        destination: SystemId(destination),
+                        origin_station: StationId(origin_station),
+                        destination_station: StationId(destination_station),
+                        quantity,
+                        deadline_tick,
+                        per_cycle,
+                        total_cycles,
+                        payout,
+                        penalty,
+                        assigned_ship,
+                        delivered_amount,
+                        missed_cycles,
+                        completed,
+                        failed,
+                        last_eval_cycle,
+                    },
+                );
             }
         }
 
@@ -3350,8 +4120,8 @@ impl Simulation {
                 if parts.len() != 7 {
                     return Err(SnapshotError::Parse(format!("bad market row: {row}")));
                 }
-                let system_id: usize = parts[0].parse().map_err(|_| {
-                    SnapshotError::Parse("market system id parse failed".to_string())
+                let station_id: usize = parts[0].parse().map_err(|_| {
+                    SnapshotError::Parse("market station id parse failed".to_string())
                 })?;
                 let commodity = commodity_from_code(parts[1]).ok_or_else(|| {
                     SnapshotError::Parse("market commodity parse failed".to_string())
@@ -3372,7 +4142,7 @@ impl Simulation {
                     SnapshotError::Parse("market target_stock parse failed".to_string())
                 })?;
 
-                if let Some(book) = simulation.markets.get_mut(&SystemId(system_id)) {
+                if let Some(book) = simulation.markets.get_mut(&StationId(station_id)) {
                     if let Some(state) = book.goods.get_mut(&commodity) {
                         state.price = price;
                         state.stock = stock;
@@ -3474,7 +4244,7 @@ impl Simulation {
             simulation.contract_offers.clear();
             for row in offers_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 11 && parts.len() != 15 && parts.len() != 17 {
+                if parts.len() != 18 {
                     return Err(SnapshotError::Parse(format!("bad offer row: {row}")));
                 }
                 let offer_id: u64 = parts[0]
@@ -3482,122 +4252,59 @@ impl Simulation {
                     .map_err(|_| SnapshotError::Parse("offer id parse failed".to_string()))?;
                 let kind = contract_type_from_code(parts[1])
                     .ok_or_else(|| SnapshotError::Parse("offer kind parse failed".to_string()))?;
-                let origin: usize = parts[2]
+                let commodity = commodity_from_code(parts[2]).ok_or_else(|| {
+                    SnapshotError::Parse("offer commodity parse failed".to_string())
+                })?;
+                let origin: usize = parts[3]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer origin parse failed".to_string()))?;
-                let destination: usize = parts[3].parse().map_err(|_| {
+                let destination: usize = parts[4].parse().map_err(|_| {
                     SnapshotError::Parse("offer destination parse failed".to_string())
                 })?;
-                let (
-                    origin_station,
-                    destination_station,
-                    quantity_idx,
-                    payout_idx,
-                    penalty_idx,
-                    eta_idx,
-                    risk_idx,
-                    margin_idx,
-                ) = if parts.len() == 17 {
-                    let origin_station: usize = parts[4].parse().map_err(|_| {
-                        SnapshotError::Parse("offer origin station parse failed".to_string())
-                    })?;
-                    let destination_station: usize = parts[5].parse().map_err(|_| {
-                        SnapshotError::Parse("offer destination station parse failed".to_string())
-                    })?;
-                    (
-                        StationId(origin_station),
-                        StationId(destination_station),
-                        6,
-                        7,
-                        8,
-                        9,
-                        10,
-                        11,
-                    )
-                } else {
-                    let origin_station = simulation
-                        .world
-                        .first_station(SystemId(origin))
-                        .unwrap_or(StationId(0));
-                    let destination_station = simulation
-                        .world
-                        .first_station(SystemId(destination))
-                        .unwrap_or(origin_station);
-                    (origin_station, destination_station, 4, 5, 6, 7, 8, 9)
-                };
-                let quantity: f64 = parts[quantity_idx]
+                let origin_station: usize = parts[5].parse().map_err(|_| {
+                    SnapshotError::Parse("offer origin station parse failed".to_string())
+                })?;
+                let destination_station: usize = parts[6].parse().map_err(|_| {
+                    SnapshotError::Parse("offer destination station parse failed".to_string())
+                })?;
+                let quantity: f64 = parts[7]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer quantity parse failed".to_string()))?;
-                let payout: f64 = parts[payout_idx]
+                let payout: f64 = parts[8]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer payout parse failed".to_string()))?;
-                let penalty: f64 = parts[penalty_idx]
+                let penalty: f64 = parts[9]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer penalty parse failed".to_string()))?;
-                let eta_ticks: u32 = parts[eta_idx]
+                let eta_ticks: u32 = parts[10]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer eta parse failed".to_string()))?;
-                let risk_score: f64 = parts[risk_idx]
+                let risk_score: f64 = parts[11]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer risk parse failed".to_string()))?;
-                let margin_estimate: f64 = parts[margin_idx]
+                let margin_estimate: f64 = parts[12]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer margin parse failed".to_string()))?;
-                let (problem_tag, premium, profit_per_ton, route_gate_ids, expires_idx) = if parts
-                    .len()
-                    == 17
-                {
-                    let problem = offer_problem_from_code(parts[12]).ok_or_else(|| {
-                        SnapshotError::Parse("offer problem parse failed".to_string())
-                    })?;
-                    let premium = parts[13] == "1";
-                    let profit_per_ton: f64 = parts[14].parse().map_err(|_| {
-                        SnapshotError::Parse("offer profit_per_ton parse failed".to_string())
-                    })?;
-                    let gate_ids = if parts[15] == "none" || parts[15].is_empty() {
-                        Vec::new()
-                    } else {
-                        let mut ids = Vec::new();
-                        for raw in parts[15].split('-').filter(|value| !value.is_empty()) {
-                            let gate_id: usize = raw.parse().map_err(|_| {
-                                SnapshotError::Parse("offer route gate id parse failed".to_string())
-                            })?;
-                            ids.push(GateId(gate_id));
-                        }
-                        ids
-                    };
-                    (problem, premium, profit_per_ton, gate_ids, 16)
-                } else if parts.len() == 15 {
-                    let problem = offer_problem_from_code(parts[10]).ok_or_else(|| {
-                        SnapshotError::Parse("offer problem parse failed".to_string())
-                    })?;
-                    let premium = parts[11] == "1";
-                    let profit_per_ton: f64 = parts[12].parse().map_err(|_| {
-                        SnapshotError::Parse("offer profit_per_ton parse failed".to_string())
-                    })?;
-                    let gate_ids = if parts[13] == "none" || parts[13].is_empty() {
-                        Vec::new()
-                    } else {
-                        let mut ids = Vec::new();
-                        for raw in parts[13].split('-').filter(|value| !value.is_empty()) {
-                            let gate_id: usize = raw.parse().map_err(|_| {
-                                SnapshotError::Parse("offer route gate id parse failed".to_string())
-                            })?;
-                            ids.push(GateId(gate_id));
-                        }
-                        ids
-                    };
-                    (problem, premium, profit_per_ton, gate_ids, 14)
+                let problem_tag = offer_problem_from_code(parts[13]).ok_or_else(|| {
+                    SnapshotError::Parse("offer problem parse failed".to_string())
+                })?;
+                let premium = parts[14] == "1";
+                let profit_per_ton: f64 = parts[15].parse().map_err(|_| {
+                    SnapshotError::Parse("offer profit_per_ton parse failed".to_string())
+                })?;
+                let route_gate_ids = if parts[16] == "none" || parts[16].is_empty() {
+                    Vec::new()
                 } else {
-                    (
-                        OfferProblemTag::LowMargin,
-                        false,
-                        margin_estimate / quantity.max(1.0),
-                        Vec::new(),
-                        10,
-                    )
+                    let mut ids = Vec::new();
+                    for raw in parts[16].split('-').filter(|value| !value.is_empty()) {
+                        let gate_id: usize = raw.parse().map_err(|_| {
+                            SnapshotError::Parse("offer route gate id parse failed".to_string())
+                        })?;
+                        ids.push(GateId(gate_id));
+                    }
+                    ids
                 };
-                let expires_cycle: u64 = parts[expires_idx]
+                let expires_cycle: u64 = parts[17]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer expires parse failed".to_string()))?;
 
@@ -3606,10 +4313,11 @@ impl Simulation {
                     ContractOffer {
                         id: offer_id,
                         kind,
+                        commodity,
                         origin: SystemId(origin),
                         destination: SystemId(destination),
-                        origin_station,
-                        destination_station,
+                        origin_station: StationId(origin_station),
+                        destination_station: StationId(destination_station),
                         quantity,
                         payout,
                         penalty,
@@ -3621,6 +4329,52 @@ impl Simulation {
                         premium,
                         profit_per_ton,
                         expires_cycle,
+                    },
+                );
+            }
+        }
+
+        if let Some(trade_orders_blob) = map.get("trade_orders") {
+            simulation.trade_orders.clear();
+            for row in trade_orders_blob
+                .split(',')
+                .filter(|value| !value.is_empty())
+            {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 7 {
+                    return Err(SnapshotError::Parse(format!("bad trade order row: {row}")));
+                }
+                let order_id: u64 = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("trade order id parse failed".to_string()))?;
+                let ship_id: usize = parts[1].parse().map_err(|_| {
+                    SnapshotError::Parse("trade order ship parse failed".to_string())
+                })?;
+                let commodity = commodity_from_code(parts[2]).ok_or_else(|| {
+                    SnapshotError::Parse("trade order commodity parse failed".to_string())
+                })?;
+                let amount: f64 = parts[3].parse().map_err(|_| {
+                    SnapshotError::Parse("trade order amount parse failed".to_string())
+                })?;
+                let source_station: usize = parts[4].parse().map_err(|_| {
+                    SnapshotError::Parse("trade order source parse failed".to_string())
+                })?;
+                let destination_station: usize = parts[5].parse().map_err(|_| {
+                    SnapshotError::Parse("trade order destination parse failed".to_string())
+                })?;
+                let stage = trade_order_stage_from_code(parts[6]).ok_or_else(|| {
+                    SnapshotError::Parse("trade order stage parse failed".to_string())
+                })?;
+                simulation.trade_orders.insert(
+                    TradeOrderId(order_id),
+                    TradeOrder {
+                        id: TradeOrderId(order_id),
+                        ship_id: ShipId(ship_id),
+                        commodity,
+                        amount,
+                        source_station: StationId(source_station),
+                        destination_station: StationId(destination_station),
+                        stage,
                     },
                 );
             }
@@ -3745,7 +4499,7 @@ impl Simulation {
                     return Err(SnapshotError::Parse(format!("bad prev price row: {row}")));
                 }
                 let system_id: usize = parts[0].parse().map_err(|_| {
-                    SnapshotError::Parse("prev price system parse failed".to_string())
+                    SnapshotError::Parse("prev price station parse failed".to_string())
                 })?;
                 let commodity = commodity_from_code(parts[1]).ok_or_else(|| {
                     SnapshotError::Parse("prev price commodity parse failed".to_string())
@@ -3755,7 +4509,7 @@ impl Simulation {
                 })?;
                 simulation
                     .previous_cycle_prices
-                    .insert((SystemId(system_id), commodity), price);
+                    .insert((StationId(system_id), commodity), price);
             }
         }
 
@@ -3872,26 +4626,56 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
         return ships;
     }
     let sid = |idx: usize| SystemId(idx % world.system_count());
-    let wp = |a: usize, b: usize| vec![sid(a), sid(b)];
-    let configs = [
-        (ShipId(0), CompanyId(0), sid(0), wp(0, 1)),
-        (ShipId(1), CompanyId(1), sid(0), wp(0, 1)),
-        (ShipId(2), CompanyId(1), sid(1), wp(1, 2)),
-        (ShipId(3), CompanyId(2), sid(2), wp(2, 0)),
-        (ShipId(4), CompanyId(2), sid(1), wp(1, 0)),
-        (ShipId(5), CompanyId(3), sid(2), wp(2, 1)),
-        (ShipId(6), CompanyId(4), sid(0), wp(0, 2)),
-        (ShipId(7), CompanyId(4), sid(1), wp(1, 2)),
-    ];
-    for (ship_id, company_id, location, waypoints) in configs {
+    let player_location = sid(0);
+    ships.insert(
+        ShipId(0),
+        Ship {
+            id: ShipId(0),
+            company_id: CompanyId(0),
+            role: ShipRole::PlayerContract,
+            location: player_location,
+            current_station: world.first_station(player_location),
+            eta_ticks_remaining: 0,
+            sub_light_speed: 18.0,
+            cargo_capacity: 18.0,
+            cargo: None,
+            trade_order_id: None,
+            movement_queue: VecDeque::new(),
+            segment_eta_remaining: 0,
+            segment_progress_total: 0,
+            current_segment_kind: None,
+            active_contract: None,
+            route_cursor: 0,
+            policy: AutopilotPolicy {
+                waypoints: vec![sid(0), sid(1)],
+                ..AutopilotPolicy::default()
+            },
+            planned_path: Vec::new(),
+            current_target: None,
+            last_gate_arrival: None,
+            last_risk_score: 0.0,
+            reroutes: 0,
+        },
+    );
+
+    let npc_companies = [CompanyId(1), CompanyId(2), CompanyId(3), CompanyId(4)];
+    for idx in 0..60 {
+        let ship_id = ShipId(idx + 1);
+        let company_id = npc_companies[idx % npc_companies.len()];
+        let location = sid(idx);
         ships.insert(
             ship_id,
             Ship {
                 id: ship_id,
                 company_id,
+                role: ShipRole::NpcTrade,
                 location,
+                current_station: world.first_station(location),
                 eta_ticks_remaining: 0,
                 sub_light_speed: 18.0,
+                cargo_capacity: 18.0,
+                cargo: None,
+                trade_order_id: None,
                 movement_queue: VecDeque::new(),
                 segment_eta_remaining: 0,
                 segment_progress_total: 0,
@@ -3899,7 +4683,8 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 active_contract: None,
                 route_cursor: 0,
                 policy: AutopilotPolicy {
-                    waypoints,
+                    max_hops: 6,
+                    waypoints: Vec::new(),
                     ..AutopilotPolicy::default()
                 },
                 planned_path: Vec::new(),
@@ -3934,6 +4719,79 @@ fn slot_multiplier(slot_type: SlotType) -> f64 {
     }
 }
 
+fn profile_production(profile: StationProfile, commodity: Commodity) -> f64 {
+    match profile {
+        StationProfile::Industrial => match commodity {
+            Commodity::Ore => 2.0,
+            Commodity::Gas => 1.2,
+            Commodity::Ice => 0.4,
+            _ => 0.0,
+        },
+        StationProfile::Civilian => match commodity {
+            Commodity::Ore => 0.2,
+            Commodity::Gas => 0.3,
+            Commodity::Ice => 1.4,
+            _ => 0.0,
+        },
+        StationProfile::Research => match commodity {
+            Commodity::Ore => 0.1,
+            Commodity::Gas => 0.8,
+            Commodity::Ice => 0.6,
+            _ => 0.0,
+        },
+    }
+}
+
+fn recipe_output_multiplier(profile: StationProfile, output: Commodity) -> f64 {
+    match profile {
+        StationProfile::Industrial => match output {
+            Commodity::Metal => 1.3,
+            Commodity::Fuel => 1.1,
+            Commodity::Parts => 1.0,
+            Commodity::Electronics => 0.6,
+            _ => 1.0,
+        },
+        StationProfile::Civilian => match output {
+            Commodity::Metal => 0.4,
+            Commodity::Fuel => 0.8,
+            Commodity::Parts => 0.4,
+            Commodity::Electronics => 0.7,
+            _ => 1.0,
+        },
+        StationProfile::Research => match output {
+            Commodity::Metal => 0.2,
+            Commodity::Fuel => 0.9,
+            Commodity::Parts => 0.8,
+            Commodity::Electronics => 1.4,
+            _ => 1.0,
+        },
+    }
+}
+
+fn profile_consumption(profile: StationProfile, commodity: Commodity) -> f64 {
+    match profile {
+        StationProfile::Civilian => match commodity {
+            Commodity::Ice => 1.2,
+            Commodity::Fuel => 1.0,
+            Commodity::Electronics => 1.1,
+            _ => 0.2,
+        },
+        StationProfile::Industrial => match commodity {
+            Commodity::Ore => 0.9,
+            Commodity::Metal => 1.1,
+            Commodity::Parts => 1.0,
+            Commodity::Fuel => 0.9,
+            _ => 0.2,
+        },
+        StationProfile::Research => match commodity {
+            Commodity::Electronics => 1.3,
+            Commodity::Parts => 0.8,
+            Commodity::Fuel => 0.9,
+            _ => 0.2,
+        },
+    }
+}
+
 fn commodity_code(commodity: Commodity) -> &'static str {
     match commodity {
         Commodity::Ore => "ore",
@@ -3955,6 +4813,53 @@ fn commodity_from_code(raw: &str) -> Option<Commodity> {
         "fuel" => Some(Commodity::Fuel),
         "parts" => Some(Commodity::Parts),
         "electronics" => Some(Commodity::Electronics),
+        _ => None,
+    }
+}
+
+fn station_profile_code(profile: StationProfile) -> &'static str {
+    match profile {
+        StationProfile::Civilian => "civilian",
+        StationProfile::Industrial => "industrial",
+        StationProfile::Research => "research",
+    }
+}
+
+fn station_profile_from_code(raw: &str) -> Option<StationProfile> {
+    match raw {
+        "civilian" => Some(StationProfile::Civilian),
+        "industrial" => Some(StationProfile::Industrial),
+        "research" => Some(StationProfile::Research),
+        _ => None,
+    }
+}
+
+fn ship_role_code(role: ShipRole) -> &'static str {
+    match role {
+        ShipRole::PlayerContract => "player_contract",
+        ShipRole::NpcTrade => "npc_trade",
+    }
+}
+
+fn ship_role_from_code(raw: &str) -> Option<ShipRole> {
+    match raw {
+        "player_contract" => Some(ShipRole::PlayerContract),
+        "npc_trade" => Some(ShipRole::NpcTrade),
+        _ => None,
+    }
+}
+
+fn trade_order_stage_code(stage: TradeOrderStage) -> &'static str {
+    match stage {
+        TradeOrderStage::ToPickup => "to_pickup",
+        TradeOrderStage::ToDropoff => "to_dropoff",
+    }
+}
+
+fn trade_order_stage_from_code(raw: &str) -> Option<TradeOrderStage> {
+    match raw {
+        "to_pickup" => Some(TradeOrderStage::ToPickup),
+        "to_dropoff" => Some(TradeOrderStage::ToDropoff),
         _ => None,
     }
 }
@@ -4333,6 +5238,12 @@ mod tests {
             .expect("stage_a config should load")
     }
 
+    fn station_for_system(sim: &Simulation, system_id: SystemId) -> StationId {
+        sim.world
+            .first_station(system_id)
+            .expect("system station should exist")
+    }
+
     #[test]
     fn generation_respects_cluster_and_connectivity_and_degree() {
         let cfg = stage_a_config();
@@ -4510,7 +5421,7 @@ mod tests {
     fn price_update_respects_delta_cap_and_floor_ceiling() {
         let cfg = stage_a_config();
         let mut sim = Simulation::new(cfg, 17);
-        let sid = SystemId(0);
+        let sid = station_for_system(&sim, SystemId(0));
         let book = sim.markets.get_mut(&sid).expect("market should exist");
         let fuel = book
             .goods
@@ -4548,7 +5459,7 @@ mod tests {
     fn fuel_shock_increases_fuel_price_index() {
         let cfg = stage_a_config();
         let mut sim = Simulation::new(cfg, 19);
-        let sid = SystemId(0);
+        let sid = station_for_system(&sim, SystemId(0));
         let before = sim
             .markets
             .get(&sid)
@@ -5093,23 +6004,10 @@ mod tests {
         let payload = format!("{{\"version\":1,\"state\":\"{state}\"}}\n");
         let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_station_map.json");
         fs::write(&tmp, payload).expect("snapshot fixture write should pass");
-        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
-        for system in &loaded.world.systems {
-            assert!(
-                loaded
-                    .world
-                    .stations_by_system
-                    .get(&system.id)
-                    .is_some_and(|stations| !stations.is_empty()),
-                "every system must keep default station anchors on v1 load"
-            );
-        }
+        let err = Simulation::load_snapshot(&tmp, cfg).expect_err("v1 must be rejected");
         assert!(
-            loaded
-                .ships
-                .values()
-                .all(|ship| ship.last_gate_arrival.is_none()),
-            "v1 load should default last_gate_arrival to None"
+            matches!(err, SnapshotError::Parse(message) if message.contains("unsupported snapshot version: 1")),
+            "load must fail with explicit unsupported v1 error"
         );
     }
 
@@ -5255,10 +6153,14 @@ mod tests {
             "higher degree should not produce lower base lease price"
         );
 
-        if let Some(book) = sim.markets.get_mut(&max_degree_system) {
-            for state in book.goods.values_mut() {
-                state.cycle_inflow = 60.0;
-                state.cycle_outflow = 60.0;
+        if let Some(stations) = sim.world.stations_by_system.get(&max_degree_system) {
+            for station_id in stations {
+                if let Some(book) = sim.markets.get_mut(station_id) {
+                    for state in book.goods.values_mut() {
+                        state.cycle_inflow = 60.0;
+                        state.cycle_outflow = 60.0;
+                    }
+                }
             }
         }
         let throughput_price = sim
@@ -5446,14 +6348,11 @@ mod tests {
         let payload = format!("{{\"version\":1,\"state\":\"{state}\"}}\n");
         let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1.json");
         fs::write(&tmp, payload).expect("snapshot fixture write should pass");
-
-        let loaded =
-            Simulation::load_snapshot(&tmp, cfg.clone()).expect("snapshot load should pass");
-        assert_eq!(loaded.outstanding_debt, 0.0);
-        assert!((loaded.reputation - 1.0).abs() < 1e-9);
-        assert!((loaded.current_loan_interest_rate - cfg.pressure.loan_interest_rate).abs() < 1e-9);
-        assert_eq!(loaded.recovery_events, 0);
-        assert!(loaded.active_leases.is_empty());
+        let err = Simulation::load_snapshot(&tmp, cfg).expect_err("v1 must be rejected");
+        assert!(
+            matches!(err, SnapshotError::Parse(message) if message.contains("unsupported snapshot version: 1")),
+            "load must fail with explicit unsupported v1 error"
+        );
     }
 
     #[test]
@@ -5467,7 +6366,8 @@ mod tests {
             .expect("offer must exist")
             .quantity;
 
-        if let Some(market) = sim.markets.get_mut(&SystemId(1)) {
+        let station_id = station_for_system(&sim, SystemId(1));
+        if let Some(market) = sim.markets.get_mut(&station_id) {
             for state in market.goods.values_mut() {
                 state.stock = 10.0;
                 state.target_stock = 200.0;
@@ -5566,17 +6466,23 @@ mod tests {
         cfg.pressure.market_fee_rate = 0.2;
         let mut sim = Simulation::new(cfg, 113);
         sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        let destination_station = station_for_system(&sim, SystemId(0));
         if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
             contract.completed = false;
             contract.failed = false;
             contract.destination = SystemId(0);
+            contract.destination_station = destination_station;
             contract.assigned_ship = Some(ShipId(0));
             contract.payout = 100.0;
             contract.deadline_tick = 1_000;
         }
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.location = SystemId(0);
+            ship.current_station = Some(destination_station);
             ship.eta_ticks_remaining = 0;
+            ship.segment_eta_remaining = 0;
+            ship.current_segment_kind = None;
+            ship.movement_queue.clear();
             ship.active_contract = Some(ContractId(0));
         }
 
@@ -5613,9 +6519,31 @@ mod tests {
     fn npc_stage_a_baseline_roster_is_created() {
         let sim = Simulation::new(stage_a_config(), 131);
         assert_eq!(sim.companies.len(), 5);
+        assert_eq!(
+            sim.ships.len(),
+            61,
+            "roster must include 1 player + 60 npc cargo ships"
+        );
+        assert_eq!(
+            sim.ships
+                .values()
+                .filter(|ship| ship.role == ShipRole::PlayerContract)
+                .count(),
+            1
+        );
+        assert_eq!(
+            sim.ships
+                .values()
+                .filter(|ship| ship.role == ShipRole::NpcTrade)
+                .count(),
+            60
+        );
         assert!(
-            sim.ships.len() >= 7 && sim.ships.len() <= 11,
-            "stage A ship count should stay in baseline range"
+            sim.ships
+                .values()
+                .filter(|ship| ship.role == ShipRole::NpcTrade)
+                .all(|ship| (ship.cargo_capacity - 18.0).abs() < 1e-9),
+            "npc cargo ships must use stage A capacity"
         );
         assert!(sim
             .companies
@@ -5675,26 +6603,95 @@ mod tests {
     #[test]
     fn snapshot_v1_v2_load_defaults_for_new_fields() {
         let cfg = stage_a_config();
-        let v1_state =
-            "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
-        let v1_payload = format!("{{\"version\":1,\"state\":\"{v1_state}\"}}\n");
-        let v1_tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_defaults.json");
-        fs::write(&v1_tmp, v1_payload).expect("snapshot fixture write should pass");
-        let loaded_v1 =
-            Simulation::load_snapshot(&v1_tmp, cfg.clone()).expect("v1 snapshot load should pass");
-        assert!(!loaded_v1.companies.is_empty());
-        assert!(!loaded_v1.milestones.is_empty());
-
         let mut sim = Simulation::new(cfg.clone(), 151);
         sim.refresh_contract_offers();
-        let v2_tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_defaults.json");
-        sim.save_snapshot(&v2_tmp)
+        let station_id = station_for_system(&sim, SystemId(0));
+        let destination_station = station_for_system(&sim, SystemId(1));
+        if let Some(station) = sim
+            .world
+            .stations
+            .iter_mut()
+            .find(|station| station.id == station_id)
+        {
+            station.profile = StationProfile::Research;
+        }
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            if let Some(state) = book.goods.get_mut(&Commodity::Electronics) {
+                state.stock = 37.5;
+            }
+        }
+        if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
+            contract.commodity = Commodity::Parts;
+            contract.origin_station = station_id;
+            contract.destination_station = destination_station;
+        }
+        sim.contract_offers.insert(
+            999,
+            ContractOffer {
+                id: 999,
+                kind: ContractTypeStageA::Delivery,
+                commodity: Commodity::Electronics,
+                origin: SystemId(0),
+                destination: SystemId(1),
+                origin_station: station_id,
+                destination_station,
+                quantity: 4.0,
+                payout: 120.0,
+                penalty: 40.0,
+                eta_ticks: 12,
+                risk_score: 0.7,
+                margin_estimate: 23.0,
+                route_gate_ids: Vec::new(),
+                problem_tag: OfferProblemTag::LowMargin,
+                premium: false,
+                profit_per_ton: 5.75,
+                expires_cycle: sim.cycle + 2,
+            },
+        );
+        if let Some(ship) = sim
+            .ships
+            .values_mut()
+            .find(|ship| ship.role == ShipRole::NpcTrade)
+        {
+            ship.current_station = Some(station_id);
+            ship.cargo = Some(CargoLoad {
+                commodity: Commodity::Electronics,
+                amount: 6.0,
+            });
+            ship.trade_order_id = Some(TradeOrderId(17));
+            sim.trade_orders.insert(
+                TradeOrderId(17),
+                TradeOrder {
+                    id: TradeOrderId(17),
+                    ship_id: ship.id,
+                    commodity: Commodity::Electronics,
+                    amount: 6.0,
+                    source_station: station_id,
+                    destination_station,
+                    stage: TradeOrderStage::ToDropoff,
+                },
+            );
+        }
+
+        let v3_tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v3_defaults.json");
+        sim.save_snapshot(&v3_tmp)
             .expect("snapshot save should pass");
-        let loaded_v2 =
-            Simulation::load_snapshot(&v2_tmp, cfg).expect("v2 snapshot load should pass");
-        assert_eq!(loaded_v2.companies, sim.companies);
-        assert_eq!(loaded_v2.milestones, sim.milestones);
-        assert_eq!(loaded_v2.contract_offers, sim.contract_offers);
+        let loaded_v3 =
+            Simulation::load_snapshot(&v3_tmp, cfg).expect("v3 snapshot load should pass");
+        assert_eq!(loaded_v3.companies, sim.companies);
+        assert_eq!(loaded_v3.milestones, sim.milestones);
+        assert_eq!(loaded_v3.contract_offers, sim.contract_offers);
+        assert_eq!(loaded_v3.trade_orders, sim.trade_orders);
+        assert_eq!(loaded_v3.world.stations, sim.world.stations);
+        assert_eq!(loaded_v3.contracts, sim.contracts);
+        assert_eq!(
+            loaded_v3
+                .markets
+                .get(&station_id)
+                .and_then(|book| book.goods.get(&Commodity::Electronics))
+                .map(|state| state.stock),
+            Some(37.5)
+        );
     }
 
     #[test]
@@ -5784,8 +6781,8 @@ mod tests {
     #[test]
     fn market_insights_produce_trend_forecast_and_factors() {
         let mut sim = Simulation::new(stage_a_config(), 233);
-        let system_id = SystemId(0);
-        if let Some(book) = sim.markets.get_mut(&system_id) {
+        let station_id = station_for_system(&sim, SystemId(0));
+        if let Some(book) = sim.markets.get_mut(&station_id) {
             if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
                 fuel.stock = 40.0;
                 fuel.target_stock = 100.0;
@@ -5795,7 +6792,7 @@ mod tests {
         }
         sim.capture_previous_cycle_prices();
         sim.update_market_prices();
-        let rows = sim.market_insights(system_id);
+        let rows = sim.market_insights(station_id);
         assert!(!rows.is_empty());
         let fuel_row = rows
             .iter()
@@ -5828,41 +6825,16 @@ mod tests {
     #[test]
     fn snapshot_v1_v2_load_defaults_for_new_stage_a_fields() {
         let cfg = stage_a_config();
-        let v1_state =
+        let state =
             "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
-        let v1_payload = format!("{{\"version\":1,\"state\":\"{v1_state}\"}}\n");
-        let v1_tmp =
-            std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_defaults_stage_a_fields.json");
-        fs::write(&v1_tmp, v1_payload).expect("snapshot fixture write should pass");
-        let loaded_v1 =
-            Simulation::load_snapshot(&v1_tmp, cfg.clone()).expect("v1 snapshot load should pass");
-        assert!(loaded_v1.ship_runs_completed.is_empty());
-        assert!(loaded_v1.recovery_log.is_empty());
-
-        let mut sim = Simulation::new(cfg.clone(), 241);
-        sim.ship_runs_completed.insert(ShipId(0), 4);
-        sim.ship_profit_earned.insert(ShipId(0), 80.0);
-        sim.recovery_log.push(RecoveryAction {
-            cycle: 3,
-            released_leases: 1,
-            capital_after: 42.0,
-            debt_after: 180.0,
-        });
-        let v2_tmp =
-            std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_defaults_stage_a_fields.json");
-        sim.save_snapshot(&v2_tmp)
-            .expect("snapshot save should pass");
-        let loaded_v2 =
-            Simulation::load_snapshot(&v2_tmp, cfg).expect("v2 snapshot load should pass");
-        assert_eq!(
-            loaded_v2.ship_runs_completed.get(&ShipId(0)).copied(),
-            Some(4)
+        let payload = format!("{{\"version\":2,\"state\":\"{state}\"}}\n");
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_rejected.json");
+        fs::write(&tmp, payload).expect("snapshot fixture write should pass");
+        let err = Simulation::load_snapshot(&tmp, cfg).expect_err("v2 must be rejected");
+        assert!(
+            matches!(err, SnapshotError::Parse(message) if message.contains("unsupported snapshot version: 2")),
+            "load must fail with explicit unsupported v2 error"
         );
-        assert_eq!(
-            loaded_v2.ship_profit_earned.get(&ShipId(0)).copied(),
-            Some(80.0)
-        );
-        assert_eq!(loaded_v2.recovery_log, sim.recovery_log);
     }
 
     #[test]
