@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_core::{ContractTypeStageA, Simulation};
+use gatebound_core::{ContractTypeStageA, Simulation, SlotType, SystemId};
 
 use crate::sim_runtime::{derive_cycle_report, SimClock, SimResource};
 use crate::view_mode::CameraMode;
@@ -25,8 +25,14 @@ pub struct HudSnapshot {
     pub tick: u64,
     pub cycle: u64,
     pub capital: f64,
+    pub debt: f64,
+    pub interest_rate: f64,
+    pub reputation: f64,
+    pub recovery_events: u32,
     pub active_contracts: usize,
     pub active_ships: usize,
+    pub active_leases: usize,
+    pub selected_system_id: SystemId,
     pub paused: bool,
     pub speed_multiplier: u32,
     pub sla_success_rate: f64,
@@ -35,6 +41,8 @@ pub struct HudSnapshot {
     pub camera_mode: String,
     pub contract_lines: Vec<String>,
     pub ship_lines: Vec<String>,
+    pub lease_lines: Vec<String>,
+    pub lease_market_lines: Vec<String>,
 }
 
 pub fn build_hud_snapshot(
@@ -44,6 +52,10 @@ pub fn build_hud_snapshot(
     camera_mode: CameraMode,
 ) -> HudSnapshot {
     let cycle_report = derive_cycle_report(simulation);
+    let selected_system_id = match camera_mode {
+        CameraMode::System(system_id) => system_id,
+        CameraMode::Galaxy => SystemId(0),
+    };
 
     let mut contracts: Vec<_> = simulation
         .contracts
@@ -95,6 +107,33 @@ pub fn build_hud_snapshot(
         })
         .collect::<Vec<_>>();
 
+    let mut leases: Vec<_> = simulation.active_leases.iter().collect();
+    leases.sort_by_key(|lease| (lease.system_id.0, lease.slot_type, lease.cycles_remaining));
+    let lease_lines = leases
+        .into_iter()
+        .take(8)
+        .map(|lease| {
+            format!(
+                "sys={} {:?} cycles={} price/cycle={:.1}",
+                lease.system_id.0, lease.slot_type, lease.cycles_remaining, lease.price_per_cycle
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let lease_market_lines = simulation
+        .lease_market_for_system(selected_system_id)
+        .into_iter()
+        .map(|entry| {
+            format!(
+                "{} {}/{} @ {:.1}/cycle",
+                slot_type_label(entry.slot_type),
+                entry.available,
+                entry.total,
+                entry.price_per_cycle
+            )
+        })
+        .collect::<Vec<_>>();
+
     let mut price_samples = 0_u64;
     let mut total_price_index = 0.0_f64;
     for market in simulation.markets.values() {
@@ -115,8 +154,14 @@ pub fn build_hud_snapshot(
         tick: simulation.tick,
         cycle: simulation.cycle,
         capital: simulation.capital,
+        debt: simulation.outstanding_debt,
+        interest_rate: simulation.current_loan_interest_rate,
+        reputation: simulation.reputation,
+        recovery_events: simulation.recovery_events,
         active_contracts: contracts.len(),
         active_ships: simulation.ships.len(),
+        active_leases: simulation.active_leases.len(),
+        selected_system_id,
         paused,
         speed_multiplier,
         sla_success_rate: cycle_report.sla_success_rate,
@@ -128,6 +173,8 @@ pub fn build_hud_snapshot(
         },
         contract_lines,
         ship_lines,
+        lease_lines,
+        lease_market_lines,
     }
 }
 
@@ -163,6 +210,12 @@ pub fn draw_hud_panel(
             ui.separator();
             ui.label(format!("Capital: {:.1}", snapshot.capital));
             ui.separator();
+            ui.label(format!("Debt: {:.1}", snapshot.debt));
+            ui.separator();
+            ui.label(format!("Rate: {:.2}%", snapshot.interest_rate * 100.0));
+            ui.separator();
+            ui.label(format!("Rep: {:.2}", snapshot.reputation));
+            ui.separator();
             ui.label(format!("SLA: {:.2}", snapshot.sla_success_rate));
             ui.separator();
             ui.label(format!("Reroutes: {}", snapshot.reroutes));
@@ -188,12 +241,38 @@ pub fn draw_hud_panel(
             }
 
             ui.separator();
+            ui.heading("Economy Pressure");
+            ui.label(format!("Debt: {:.1}", snapshot.debt));
+            ui.label(format!(
+                "Interest rate: {:.2}%",
+                snapshot.interest_rate * 100.0
+            ));
+            ui.label(format!("Reputation: {:.2}", snapshot.reputation));
+            ui.label(format!("Recovery events: {}", snapshot.recovery_events));
+
+            ui.separator();
+            ui.heading("Leases");
+            ui.label(format!("Active leases: {}", snapshot.active_leases));
+            for line in &snapshot.lease_lines {
+                ui.monospace(line);
+            }
+            ui.label(format!(
+                "Selected system: {}",
+                snapshot.selected_system_id.0
+            ));
+            for line in &snapshot.lease_market_lines {
+                ui.monospace(line);
+            }
+
+            ui.separator();
             ui.heading("Controls");
             ui.label("Space: pause/resume");
             ui.label("1/2/4: sim speed");
             ui.label("Mouse wheel / +/-: zoom");
             ui.label("Double-click system: enter System view");
             ui.label("Esc: back to Galaxy view");
+            ui.label("Z/X/C/V: lease Dock/Storage/Factory/Market");
+            ui.label("R: release one lease of last selected slot type");
             ui.label("G / D / F: trigger Stage A risk events");
 
             if !messages.entries.is_empty() {
@@ -205,4 +284,13 @@ pub fn draw_hud_panel(
             }
         });
     Ok(())
+}
+
+fn slot_type_label(slot_type: SlotType) -> &'static str {
+    match slot_type {
+        SlotType::Dock => "Dock",
+        SlotType::Storage => "Storage",
+        SlotType::Factory => "Factory",
+        SlotType::Market => "Market",
+    }
 }

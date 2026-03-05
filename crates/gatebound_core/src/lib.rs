@@ -94,6 +94,16 @@ pub struct EconomyPressureConfig {
     pub loan_interest_rate: f64,
     pub ship_upkeep_per_tick: f64,
     pub slot_lease_cost: f64,
+    pub lease_price_throughput_k: f64,
+    pub lease_price_gate_k: f64,
+    pub lease_price_congestion_k: f64,
+    pub lease_price_min_mult: f64,
+    pub lease_price_max_mult: f64,
+    pub recovery_loan_base: f64,
+    pub recovery_loan_buffer: f64,
+    pub recovery_reputation_penalty: f64,
+    pub recovery_rate_hike: f64,
+    pub recovery_rate_max: f64,
     pub sla_penalty_curve: Vec<f64>,
 }
 
@@ -103,6 +113,16 @@ impl Default for EconomyPressureConfig {
             loan_interest_rate: 0.02,
             ship_upkeep_per_tick: 0.5,
             slot_lease_cost: 2.0,
+            lease_price_throughput_k: 0.60,
+            lease_price_gate_k: 0.35,
+            lease_price_congestion_k: 0.80,
+            lease_price_min_mult: 0.70,
+            lease_price_max_mult: 2.50,
+            recovery_loan_base: 120.0,
+            recovery_loan_buffer: 20.0,
+            recovery_reputation_penalty: 0.12,
+            recovery_rate_hike: 0.01,
+            recovery_rate_max: 0.12,
             sla_penalty_curve: vec![1.0, 1.3, 1.7, 2.2, 2.8],
         }
     }
@@ -159,6 +179,19 @@ impl RuntimeConfig {
         cfg.pressure.loan_interest_rate = parse_required_f64(&pressure, "loan_interest_rate")?;
         cfg.pressure.ship_upkeep_per_tick = parse_required_f64(&pressure, "ship_upkeep_per_tick")?;
         cfg.pressure.slot_lease_cost = parse_required_f64(&pressure, "slot_lease_cost")?;
+        cfg.pressure.lease_price_throughput_k =
+            parse_required_f64(&pressure, "lease_price_throughput_k")?;
+        cfg.pressure.lease_price_gate_k = parse_required_f64(&pressure, "lease_price_gate_k")?;
+        cfg.pressure.lease_price_congestion_k =
+            parse_required_f64(&pressure, "lease_price_congestion_k")?;
+        cfg.pressure.lease_price_min_mult = parse_required_f64(&pressure, "lease_price_min_mult")?;
+        cfg.pressure.lease_price_max_mult = parse_required_f64(&pressure, "lease_price_max_mult")?;
+        cfg.pressure.recovery_loan_base = parse_required_f64(&pressure, "recovery_loan_base")?;
+        cfg.pressure.recovery_loan_buffer = parse_required_f64(&pressure, "recovery_loan_buffer")?;
+        cfg.pressure.recovery_reputation_penalty =
+            parse_required_f64(&pressure, "recovery_reputation_penalty")?;
+        cfg.pressure.recovery_rate_hike = parse_required_f64(&pressure, "recovery_rate_hike")?;
+        cfg.pressure.recovery_rate_max = parse_required_f64(&pressure, "recovery_rate_max")?;
         cfg.pressure.sla_penalty_curve = parse_required_f64_array(&pressure, "sla_penalty_curve")?;
 
         cfg.validate()?;
@@ -207,6 +240,20 @@ impl RuntimeConfig {
         if self.pressure.sla_penalty_curve.is_empty() {
             return Err(ConfigError::Validation(
                 "sla_penalty_curve must not be empty".to_string(),
+            ));
+        }
+        if self.pressure.lease_price_min_mult <= 0.0
+            || self.pressure.lease_price_max_mult < self.pressure.lease_price_min_mult
+        {
+            return Err(ConfigError::Validation(
+                "lease price multipliers invalid".to_string(),
+            ));
+        }
+        if self.pressure.recovery_rate_hike < 0.0
+            || self.pressure.recovery_rate_max < self.pressure.loan_interest_rate
+        {
+            return Err(ConfigError::Validation(
+                "recovery rate bounds invalid".to_string(),
             ));
         }
         Ok(())
@@ -338,6 +385,53 @@ pub struct MarketIntel {
 pub struct SnapshotV1 {
     pub version: u32,
     pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotV2 {
+    pub version: u32,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlotType {
+    Dock,
+    Storage,
+    Factory,
+    Market,
+}
+
+impl SlotType {
+    pub const ALL: [SlotType; 4] = [
+        SlotType::Dock,
+        SlotType::Storage,
+        SlotType::Factory,
+        SlotType::Market,
+    ];
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeasePosition {
+    pub system_id: SystemId,
+    pub slot_type: SlotType,
+    pub cycles_remaining: u32,
+    pub price_per_cycle: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeaseMarketView {
+    pub system_id: SystemId,
+    pub slot_type: SlotType,
+    pub available: u32,
+    pub total: u32,
+    pub price_per_cycle: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseError {
+    NoCapacity,
+    InvalidCycles,
+    UnknownSystem,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -770,6 +864,11 @@ pub struct Simulation {
     pub contracts: BTreeMap<ContractId, Contract>,
     pub ships: BTreeMap<ShipId, Ship>,
     pub capital: f64,
+    pub active_leases: Vec<LeasePosition>,
+    pub outstanding_debt: f64,
+    pub reputation: f64,
+    pub current_loan_interest_rate: f64,
+    pub recovery_events: u32,
     pub queue_delay_accumulator: u64,
     pub reroute_count: u64,
     pub sla_successes: u64,
@@ -780,6 +879,7 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(config: RuntimeConfig, seed: u64) -> Self {
+        let initial_loan_interest_rate = config.pressure.loan_interest_rate;
         let world = World::generate(&config.galaxy, seed);
         let mut markets = BTreeMap::new();
         for system in &world.systems {
@@ -857,6 +957,11 @@ impl Simulation {
             contracts,
             ships,
             capital: 500.0,
+            active_leases: Vec::new(),
+            outstanding_debt: 0.0,
+            reputation: 1.0,
+            current_loan_interest_rate: initial_loan_interest_rate,
+            recovery_events: 0,
             queue_delay_accumulator: 0,
             reroute_count: 0,
             sla_successes: 0,
@@ -899,6 +1004,8 @@ impl Simulation {
         self.cycle = self.cycle.saturating_add(1);
         self.update_market_prices();
         self.evaluate_supply_contracts();
+        self.advance_lease_cycle();
+        self.apply_cycle_financial_pressure();
 
         let total_sla = self.sla_successes + self.sla_failures;
         let sla_success_rate = if total_sla == 0 {
@@ -964,13 +1071,20 @@ impl Simulation {
 
     pub fn save_snapshot(&self, path: &Path) -> Result<(), SnapshotError> {
         let state = self.serialize_state();
-        let json = format!("{{\"version\":1,\"state\":\"{state}\"}}\n");
+        let json = format!("{{\"version\":2,\"state\":\"{state}\"}}\n");
         fs::write(path, json).map_err(|e| SnapshotError::Io(format!("save failed: {e}")))
     }
 
     pub fn load_snapshot(path: &Path, config: RuntimeConfig) -> Result<Self, SnapshotError> {
         let payload =
             fs::read_to_string(path).map_err(|e| SnapshotError::Io(format!("load failed: {e}")))?;
+        let version = extract_json_u32_field(&payload, "version")
+            .ok_or_else(|| SnapshotError::Parse("missing version field".to_string()))?;
+        if version != 1 && version != 2 {
+            return Err(SnapshotError::Parse(format!(
+                "unsupported snapshot version: {version}"
+            )));
+        }
         let state = extract_json_string_field(&payload, "state")
             .ok_or_else(|| SnapshotError::Parse("missing state field".to_string()))?;
         Self::deserialize_state(&state, config)
@@ -1053,9 +1167,95 @@ impl Simulation {
         next_id
     }
 
+    pub fn lease_slot(
+        &mut self,
+        system_id: SystemId,
+        slot_type: SlotType,
+        cycles: u32,
+    ) -> Result<(), LeaseError> {
+        if cycles == 0 {
+            return Err(LeaseError::InvalidCycles);
+        }
+        if !self
+            .world
+            .systems
+            .iter()
+            .any(|system| system.id == system_id)
+        {
+            return Err(LeaseError::UnknownSystem);
+        }
+
+        let total = self.total_slots_for(slot_type);
+        let used = self
+            .active_leases
+            .iter()
+            .filter(|lease| lease.system_id == system_id && lease.slot_type == slot_type)
+            .count() as u32;
+        if used >= total {
+            return Err(LeaseError::NoCapacity);
+        }
+
+        let price_per_cycle = self.lease_price_for(system_id, slot_type);
+        self.active_leases.push(LeasePosition {
+            system_id,
+            slot_type,
+            cycles_remaining: cycles,
+            price_per_cycle,
+        });
+        Ok(())
+    }
+
+    pub fn release_one_slot(&mut self, system_id: SystemId, slot_type: SlotType) -> bool {
+        if let Some(idx) = self
+            .active_leases
+            .iter()
+            .position(|lease| lease.system_id == system_id && lease.slot_type == slot_type)
+        {
+            self.active_leases.remove(idx);
+            return true;
+        }
+        false
+    }
+
+    pub fn lease_market_for_system(&self, system_id: SystemId) -> Vec<LeaseMarketView> {
+        if !self
+            .world
+            .systems
+            .iter()
+            .any(|system| system.id == system_id)
+        {
+            return Vec::new();
+        }
+
+        SlotType::ALL
+            .into_iter()
+            .map(|slot_type| {
+                let total = self.total_slots_for(slot_type);
+                let used = self
+                    .active_leases
+                    .iter()
+                    .filter(|lease| lease.system_id == system_id && lease.slot_type == slot_type)
+                    .count() as u32;
+                LeaseMarketView {
+                    system_id,
+                    slot_type,
+                    available: total.saturating_sub(used),
+                    total,
+                    price_per_cycle: self.lease_price_for(system_id, slot_type),
+                }
+            })
+            .collect()
+    }
+
     fn apply_upkeep(&mut self) {
         let ship_upkeep = self.config.pressure.ship_upkeep_per_tick * self.ships.len() as f64;
-        self.capital -= ship_upkeep + self.config.pressure.slot_lease_cost;
+        let cycle_ticks = f64::from(self.config.time.cycle_ticks.max(1));
+        let lease_upkeep = self
+            .active_leases
+            .iter()
+            .map(|lease| lease.price_per_cycle / cycle_ticks)
+            .sum::<f64>();
+        self.capital -= ship_upkeep + lease_upkeep;
     }
 
     fn update_ship_movements(&mut self) {
@@ -1308,6 +1508,129 @@ impl Simulation {
         }
     }
 
+    fn advance_lease_cycle(&mut self) {
+        for lease in &mut self.active_leases {
+            lease.cycles_remaining = lease.cycles_remaining.saturating_sub(1);
+        }
+        self.active_leases
+            .retain(|lease| lease.cycles_remaining > 0);
+    }
+
+    fn apply_cycle_financial_pressure(&mut self) {
+        if self.outstanding_debt > 0.0 {
+            self.capital -= self.outstanding_debt * self.current_loan_interest_rate;
+        }
+
+        if self.capital > 0.0 && self.outstanding_debt > 0.0 {
+            let repayment = (self.capital * 0.2).min(self.outstanding_debt);
+            self.capital -= repayment;
+            self.outstanding_debt -= repayment;
+        }
+
+        if self.capital < 0.0 {
+            let emergency_loan = self
+                .config
+                .pressure
+                .recovery_loan_base
+                .max(-self.capital + self.config.pressure.recovery_loan_buffer);
+            self.capital += emergency_loan;
+            self.outstanding_debt += emergency_loan;
+            self.reputation =
+                (self.reputation - self.config.pressure.recovery_reputation_penalty).max(0.0);
+            self.current_loan_interest_rate = (self.current_loan_interest_rate
+                + self.config.pressure.recovery_rate_hike)
+                .min(self.config.pressure.recovery_rate_max);
+            self.recovery_events = self.recovery_events.saturating_add(1);
+        }
+    }
+
+    fn lease_price_for(&self, system_id: SystemId, slot_type: SlotType) -> f64 {
+        let base = self.config.pressure.slot_lease_cost * slot_multiplier(slot_type);
+
+        let throughput_signal = self
+            .markets
+            .get(&system_id)
+            .map(|book| {
+                if book.goods.is_empty() {
+                    0.0
+                } else {
+                    book.goods
+                        .values()
+                        .map(|state| state.cycle_inflow + state.cycle_outflow)
+                        .sum::<f64>()
+                        / book.goods.len() as f64
+                        / 100.0
+                }
+            })
+            .unwrap_or(0.0);
+
+        let max_degree = self
+            .world
+            .adjacency
+            .values()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1) as f64;
+        let degree = self
+            .world
+            .adjacency
+            .get(&system_id)
+            .map(Vec::len)
+            .unwrap_or(0) as f64;
+        let gate_proximity_signal = if max_degree <= 0.0 {
+            0.0
+        } else {
+            degree / max_degree
+        };
+
+        let congestion_signal = self.system_congestion_signal(system_id);
+
+        let price_mult_raw = 1.0
+            + self.config.pressure.lease_price_throughput_k * throughput_signal
+            + self.config.pressure.lease_price_gate_k * gate_proximity_signal
+            + self.config.pressure.lease_price_congestion_k * congestion_signal;
+        let price_mult = price_mult_raw.clamp(
+            self.config.pressure.lease_price_min_mult,
+            self.config.pressure.lease_price_max_mult,
+        );
+
+        base * price_mult
+    }
+
+    fn total_slots_for(&self, slot_type: SlotType) -> u32 {
+        match slot_type {
+            SlotType::Dock => 4,
+            SlotType::Storage => 6,
+            SlotType::Factory => 3,
+            SlotType::Market => 2,
+        }
+    }
+
+    fn system_congestion_signal(&self, system_id: SystemId) -> f64 {
+        let Some(edges) = self.world.adjacency.get(&system_id) else {
+            return 0.0;
+        };
+        if edges.is_empty() {
+            return 0.0;
+        }
+
+        edges
+            .iter()
+            .map(|(_, gate_id)| {
+                let load = self.gate_queue_load.get(gate_id).copied().unwrap_or(0.0);
+                let effective_capacity = self
+                    .world
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *gate_id)
+                    .map(|edge| (edge.base_capacity * edge.capacity_factor).max(1.0))
+                    .unwrap_or(1.0);
+                load / effective_capacity
+            })
+            .sum::<f64>()
+            / edges.len() as f64
+    }
+
     fn next_waypoint(&self, ship_id: ShipId) -> Option<SystemId> {
         let ship = self.ships.get(&ship_id)?;
         if ship.policy.waypoints.is_empty() {
@@ -1432,11 +1755,26 @@ impl Simulation {
             ));
         }
 
+        let mut leases = String::new();
+        for lease in &self.active_leases {
+            leases.push_str(&format!(
+                "{}:{}:{}:{},",
+                lease.system_id.0,
+                slot_type_code(lease.slot_type),
+                lease.cycles_remaining,
+                lease.price_per_cycle
+            ));
+        }
+
         format!(
-            "tick={};cycle={};capital={};qdelay={};reroutes={};sla_s={};sla_f={};edges={};ships={};contracts={};markets={};modifiers={}",
+            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};edges={};ships={};contracts={};markets={};modifiers={};leases={}",
             self.tick,
             self.cycle,
             self.capital,
+            self.outstanding_debt,
+            self.reputation,
+            self.current_loan_interest_rate,
+            self.recovery_events,
             self.queue_delay_accumulator,
             self.reroute_count,
             self.sla_successes,
@@ -1445,7 +1783,8 @@ impl Simulation {
             ships,
             contracts,
             markets,
-            modifiers
+            modifiers,
+            leases
         )
     }
 
@@ -1456,6 +1795,12 @@ impl Simulation {
         simulation.tick = parse_required_u64_from_map(&map, "tick")?;
         simulation.cycle = parse_required_u64_from_map(&map, "cycle")?;
         simulation.capital = parse_required_f64_from_map(&map, "capital")?;
+        simulation.outstanding_debt = parse_optional_f64_from_map(&map, "debt").unwrap_or(0.0);
+        simulation.reputation = parse_optional_f64_from_map(&map, "reputation").unwrap_or(1.0);
+        simulation.current_loan_interest_rate = parse_optional_f64_from_map(&map, "loan_rate")
+            .unwrap_or(simulation.config.pressure.loan_interest_rate);
+        simulation.recovery_events =
+            parse_optional_u64_from_map(&map, "recovery_events").unwrap_or(0) as u32;
         simulation.queue_delay_accumulator = parse_required_u64_from_map(&map, "qdelay")?;
         simulation.reroute_count = parse_required_u64_from_map(&map, "reroutes")?;
         simulation.sla_successes = parse_required_u64_from_map(&map, "sla_s")?;
@@ -1628,6 +1973,35 @@ impl Simulation {
             }
         }
 
+        simulation.active_leases.clear();
+        if let Some(leases_blob) = map.get("leases") {
+            for row in leases_blob.split(',').filter(|v| !v.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 4 {
+                    return Err(SnapshotError::Parse(format!("bad lease row: {row}")));
+                }
+                let system_id: usize = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("lease system parse failed".to_string()))?;
+                let slot_type = slot_type_from_code(parts[1]).ok_or_else(|| {
+                    SnapshotError::Parse("lease slot type parse failed".to_string())
+                })?;
+                let cycles_remaining: u32 = parts[2]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("lease cycles parse failed".to_string()))?;
+                let price_per_cycle: f64 = parts[3]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("lease price parse failed".to_string()))?;
+
+                simulation.active_leases.push(LeasePosition {
+                    system_id: SystemId(system_id),
+                    slot_type,
+                    cycles_remaining,
+                    price_per_cycle,
+                });
+            }
+        }
+
         Ok(simulation)
     }
 }
@@ -1685,6 +2059,15 @@ fn base_price_for(commodity: Commodity) -> f64 {
     }
 }
 
+fn slot_multiplier(slot_type: SlotType) -> f64 {
+    match slot_type {
+        SlotType::Dock => 1.30,
+        SlotType::Storage => 1.00,
+        SlotType::Factory => 1.50,
+        SlotType::Market => 1.20,
+    }
+}
+
 fn commodity_code(commodity: Commodity) -> &'static str {
     match commodity {
         Commodity::Ore => "ore",
@@ -1723,6 +2106,25 @@ fn risk_from_code(raw: &str) -> Option<RiskStageA> {
         "gate" => Some(RiskStageA::GateCongestion),
         "dock" => Some(RiskStageA::DockCongestion),
         "fuel" => Some(RiskStageA::FuelShock),
+        _ => None,
+    }
+}
+
+fn slot_type_code(slot_type: SlotType) -> &'static str {
+    match slot_type {
+        SlotType::Dock => "dock",
+        SlotType::Storage => "storage",
+        SlotType::Factory => "factory",
+        SlotType::Market => "market",
+    }
+}
+
+fn slot_type_from_code(raw: &str) -> Option<SlotType> {
+    match raw {
+        "dock" => Some(SlotType::Dock),
+        "storage" => Some(SlotType::Storage),
+        "factory" => Some(SlotType::Factory),
+        "market" => Some(SlotType::Market),
         _ => None,
     }
 }
@@ -1804,6 +2206,16 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
     Some(tail[..end].to_string())
 }
 
+fn extract_json_u32_field(input: &str, field: &str) -> Option<u32> {
+    let needle = format!("\"{field}\":");
+    let start = input.find(&needle)? + needle.len();
+    let tail = input[start..].trim_start();
+    let end = tail
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(tail.len());
+    tail[..end].parse().ok()
+}
+
 fn parse_semicolon_map(input: &str) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for token in input.split(';') {
@@ -1824,6 +2236,10 @@ fn parse_required_u64_from_map(
         .map_err(|_| SnapshotError::Parse(format!("bad u64 key: {key}")))
 }
 
+fn parse_optional_u64_from_map(map: &BTreeMap<String, String>, key: &str) -> Option<u64> {
+    map.get(key).and_then(|v| v.parse::<u64>().ok())
+}
+
 fn parse_required_f64_from_map(
     map: &BTreeMap<String, String>,
     key: &str,
@@ -1832,6 +2248,10 @@ fn parse_required_f64_from_map(
         .ok_or_else(|| SnapshotError::Parse(format!("missing key: {key}")))?
         .parse::<f64>()
         .map_err(|_| SnapshotError::Parse(format!("bad f64 key: {key}")))
+}
+
+fn parse_optional_f64_from_map(map: &BTreeMap<String, String>, key: &str) -> Option<f64> {
+    map.get(key).and_then(|v| v.parse::<f64>().ok())
 }
 
 #[cfg(test)]
@@ -2249,6 +2669,239 @@ mod tests {
             .expect("remote intel should be available");
         assert!(remote.staleness_ticks > 0);
         assert!(remote.confidence < 1.0);
+    }
+
+    #[test]
+    fn lease_price_responds_to_throughput_gate_and_congestion() {
+        let mut sim = Simulation::new(stage_a_config(), 59);
+        let degrees = sim.world.degree_map();
+        let min_degree_system = degrees
+            .iter()
+            .min_by_key(|(_, degree)| **degree)
+            .map(|(system_id, _)| *system_id)
+            .expect("system should exist");
+        let max_degree_system = degrees
+            .iter()
+            .max_by_key(|(_, degree)| **degree)
+            .map(|(system_id, _)| *system_id)
+            .expect("system should exist");
+
+        let min_degree_price = sim
+            .lease_market_for_system(min_degree_system)
+            .into_iter()
+            .find(|entry| entry.slot_type == SlotType::Storage)
+            .expect("slot entry exists")
+            .price_per_cycle;
+        let mut max_degree_price = sim
+            .lease_market_for_system(max_degree_system)
+            .into_iter()
+            .find(|entry| entry.slot_type == SlotType::Storage)
+            .expect("slot entry exists")
+            .price_per_cycle;
+        assert!(
+            max_degree_price >= min_degree_price,
+            "higher degree should not produce lower base lease price"
+        );
+
+        if let Some(book) = sim.markets.get_mut(&max_degree_system) {
+            for state in book.goods.values_mut() {
+                state.cycle_inflow = 60.0;
+                state.cycle_outflow = 60.0;
+            }
+        }
+        let throughput_price = sim
+            .lease_market_for_system(max_degree_system)
+            .into_iter()
+            .find(|entry| entry.slot_type == SlotType::Storage)
+            .expect("slot entry exists")
+            .price_per_cycle;
+        assert!(
+            throughput_price > max_degree_price,
+            "throughput increase should raise lease price"
+        );
+        max_degree_price = throughput_price;
+
+        if let Some(neighbors) = sim.world.adjacency.get(&max_degree_system) {
+            for (_, gate_id) in neighbors {
+                sim.gate_queue_load.insert(*gate_id, 3.0);
+            }
+        }
+        let congestion_price = sim
+            .lease_market_for_system(max_degree_system)
+            .into_iter()
+            .find(|entry| entry.slot_type == SlotType::Storage)
+            .expect("slot entry exists")
+            .price_per_cycle;
+        assert!(
+            congestion_price >= max_degree_price,
+            "congestion should not decrease lease price"
+        );
+    }
+
+    #[test]
+    fn lease_slot_respects_capacity_and_cycles() {
+        let mut sim = Simulation::new(stage_a_config(), 61);
+        let sid = SystemId(0);
+
+        assert_eq!(
+            sim.lease_slot(sid, SlotType::Dock, 0),
+            Err(LeaseError::InvalidCycles)
+        );
+        assert_eq!(
+            sim.lease_slot(SystemId(usize::MAX), SlotType::Dock, 1),
+            Err(LeaseError::UnknownSystem)
+        );
+
+        for _ in 0..4 {
+            sim.lease_slot(sid, SlotType::Dock, 2)
+                .expect("dock lease should fit capacity");
+        }
+        assert_eq!(
+            sim.lease_slot(sid, SlotType::Dock, 2),
+            Err(LeaseError::NoCapacity)
+        );
+    }
+
+    #[test]
+    fn lease_expiration_frees_capacity_on_cycle_boundary() {
+        let mut sim = Simulation::new(stage_a_config(), 67);
+        let sid = SystemId(0);
+
+        sim.lease_slot(sid, SlotType::Market, 1)
+            .expect("lease should succeed");
+        assert_eq!(sim.active_leases.len(), 1);
+
+        for _ in 0..sim.config.time.cycle_ticks {
+            sim.step_tick();
+        }
+        assert!(sim.active_leases.is_empty(), "1-cycle lease should expire");
+        assert!(
+            sim.lease_slot(sid, SlotType::Market, 1).is_ok(),
+            "expired lease should free capacity"
+        );
+    }
+
+    #[test]
+    fn tick_upkeep_includes_ship_and_active_lease_costs() {
+        let mut sim = Simulation::new(stage_a_config(), 71);
+        let start_capital = sim.capital;
+        let ships_count = sim.ships.len();
+        let cycle_ticks = sim.config.time.cycle_ticks as f64;
+        sim.lease_slot(SystemId(0), SlotType::Storage, 3)
+            .expect("lease should succeed");
+        let lease_price = sim
+            .active_leases
+            .first()
+            .expect("lease should exist")
+            .price_per_cycle;
+
+        sim.step_tick();
+
+        let expected_drop = sim.config.pressure.ship_upkeep_per_tick * ships_count as f64
+            + lease_price / cycle_ticks;
+        let actual_drop = start_capital - sim.capital;
+        assert!(
+            (actual_drop - expected_drop).abs() < 1e-6,
+            "tick upkeep should include ships and lease upkeep"
+        );
+    }
+
+    #[test]
+    fn soft_fail_triggers_emergency_loan_without_game_over() {
+        let mut sim = Simulation::new(stage_a_config(), 73);
+        sim.capital = -30.0;
+
+        sim.step_cycle();
+
+        assert!(
+            sim.capital >= 0.0,
+            "recovery must restore non-negative capital"
+        );
+        assert!(sim.outstanding_debt > 0.0, "recovery should add debt");
+        assert_eq!(sim.recovery_events, 1, "recovery counter should increment");
+
+        let tick_before = sim.tick;
+        sim.step_tick();
+        assert!(
+            sim.tick > tick_before,
+            "simulation should continue after recovery"
+        );
+    }
+
+    #[test]
+    fn repeated_recovery_increases_interest_and_reduces_reputation() {
+        let mut sim = Simulation::new(stage_a_config(), 79);
+        let base_rate = sim.current_loan_interest_rate;
+        let base_rep = sim.reputation;
+
+        sim.capital = -1.0;
+        sim.step_cycle();
+        let rate_after_first = sim.current_loan_interest_rate;
+        let rep_after_first = sim.reputation;
+
+        sim.capital = -1.0;
+        sim.step_cycle();
+
+        assert!(
+            rate_after_first > base_rate,
+            "first recovery should raise rate"
+        );
+        assert!(
+            sim.current_loan_interest_rate >= rate_after_first,
+            "repeated recovery should not decrease rate"
+        );
+        assert!(
+            sim.current_loan_interest_rate <= sim.config.pressure.recovery_rate_max,
+            "rate should stay clamped to configured max"
+        );
+        assert!(
+            rep_after_first < base_rep,
+            "first recovery should reduce reputation"
+        );
+        assert!(
+            sim.reputation <= rep_after_first && sim.reputation >= 0.0,
+            "reputation should continue down but stay clamped"
+        );
+    }
+
+    #[test]
+    fn snapshot_v2_round_trip_preserves_leases_debt_reputation() {
+        let cfg = stage_a_config();
+        let mut sim = Simulation::new(cfg.clone(), 83);
+        sim.lease_slot(SystemId(0), SlotType::Factory, 4)
+            .expect("lease should succeed");
+        sim.outstanding_debt = 222.5;
+        sim.reputation = 0.66;
+        sim.current_loan_interest_rate = 0.09;
+        sim.recovery_events = 2;
+
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2.json");
+        sim.save_snapshot(&tmp).expect("snapshot save should pass");
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+
+        assert_eq!(loaded.active_leases, sim.active_leases);
+        assert!((loaded.outstanding_debt - sim.outstanding_debt).abs() < 1e-9);
+        assert!((loaded.reputation - sim.reputation).abs() < 1e-9);
+        assert!((loaded.current_loan_interest_rate - sim.current_loan_interest_rate).abs() < 1e-9);
+        assert_eq!(loaded.recovery_events, sim.recovery_events);
+    }
+
+    #[test]
+    fn snapshot_v1_still_loads_with_default_new_fields() {
+        let cfg = stage_a_config();
+        let state =
+            "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
+        let payload = format!("{{\"version\":1,\"state\":\"{state}\"}}\n");
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1.json");
+        fs::write(&tmp, payload).expect("snapshot fixture write should pass");
+
+        let loaded =
+            Simulation::load_snapshot(&tmp, cfg.clone()).expect("snapshot load should pass");
+        assert_eq!(loaded.outstanding_debt, 0.0);
+        assert!((loaded.reputation - 1.0).abs() < 1e-9);
+        assert!((loaded.current_loan_interest_rate - cfg.pressure.loan_interest_rate).abs() < 1e-9);
+        assert_eq!(loaded.recovery_events, 0);
+        assert!(loaded.active_leases.is_empty());
     }
 
     #[test]
