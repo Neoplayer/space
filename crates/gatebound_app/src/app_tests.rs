@@ -1,12 +1,19 @@
+use bevy::prelude::*;
 use gatebound_core::{
-    ContractOffer, ContractTypeStageA, PriorityMode, RuntimeConfig, Simulation, SlotType, SystemId,
+    ContractOffer, ContractTypeStageA, GateId, OfferProblemTag, PriorityMode, RecoveryAction,
+    RouteSegment, RuntimeConfig, SegmentKind, Simulation, SlotType, SystemId,
 };
+use std::collections::VecDeque;
 
 use crate::hud::build_hud_snapshot;
-use crate::render_world::ShipMotionCache;
+use crate::render_world::{
+    ship_is_visible_in_current_view, system_objects_visible_in_current_view,
+    update_ship_motion_cache, ShipMotionCache,
+};
 use crate::sim_runtime::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_lease, hotkey_to_risk,
     panel_hotkey_to_index, ContractsFilterState, LeaseHotkey, OfferSortMode, RiskHotkey,
+    SimResource, UiKpiTracker,
 };
 use crate::view_mode::{apply_escape, apply_system_click, CameraMode, ClickTracker};
 
@@ -59,6 +66,84 @@ fn ship_motion_cache_progress_is_clamped() {
 }
 
 #[test]
+fn galaxy_view_hides_all_ships() {
+    assert!(!ship_is_visible_in_current_view(
+        CameraMode::Galaxy,
+        SystemId(0)
+    ));
+    assert!(!ship_is_visible_in_current_view(
+        CameraMode::Galaxy,
+        SystemId(999)
+    ));
+}
+
+#[test]
+fn system_view_shows_only_ships_from_selected_system() {
+    assert!(ship_is_visible_in_current_view(
+        CameraMode::System(SystemId(2)),
+        SystemId(2)
+    ));
+    assert!(!ship_is_visible_in_current_view(
+        CameraMode::System(SystemId(2)),
+        SystemId(1)
+    ));
+}
+
+#[test]
+fn view_switch_preserves_filter_behavior() {
+    let ship_system = SystemId(3);
+    let sequence = [
+        CameraMode::Galaxy,
+        CameraMode::System(SystemId(3)),
+        CameraMode::Galaxy,
+    ];
+    let visible: Vec<bool> = sequence
+        .iter()
+        .map(|mode| ship_is_visible_in_current_view(*mode, ship_system))
+        .collect();
+    assert_eq!(visible, vec![false, true, false]);
+}
+
+#[test]
+fn galaxy_view_hides_system_objects() {
+    assert!(!system_objects_visible_in_current_view(
+        CameraMode::Galaxy,
+        SystemId(0)
+    ));
+    assert!(!system_objects_visible_in_current_view(
+        CameraMode::Galaxy,
+        SystemId(5)
+    ));
+}
+
+#[test]
+fn system_view_shows_objects_only_for_selected_system() {
+    assert!(system_objects_visible_in_current_view(
+        CameraMode::System(SystemId(4)),
+        SystemId(4)
+    ));
+    assert!(!system_objects_visible_in_current_view(
+        CameraMode::System(SystemId(4)),
+        SystemId(3)
+    ));
+}
+
+#[test]
+fn view_switch_preserves_system_objects_filter_behavior() {
+    let system = SystemId(2);
+    let sequence = [
+        CameraMode::Galaxy,
+        CameraMode::System(system),
+        CameraMode::Galaxy,
+    ];
+    let visible: Vec<bool> = sequence
+        .iter()
+        .map(|mode| system_objects_visible_in_current_view(*mode, system))
+        .collect();
+    assert_eq!(visible, vec![false, true, false]);
+}
+
+#[test]
 fn hotkey_mapping_matches_stage_a_risk_events() {
     assert!(matches!(
         hotkey_to_risk('g'),
@@ -99,19 +184,25 @@ fn panel_hotkeys_toggle_expected_windows() {
 }
 
 #[test]
-fn contracts_filter_state_applies_margin_risk_eta() {
+fn contracts_filter_applies_route_gate_problem_and_premium() {
     let offers = vec![
         ContractOffer {
             id: 0,
             kind: ContractTypeStageA::Delivery,
             origin: SystemId(0),
             destination: SystemId(1),
+            origin_station: gatebound_core::StationId(0),
+            destination_station: gatebound_core::StationId(2),
             quantity: 10.0,
             payout: 30.0,
             penalty: 10.0,
             eta_ticks: 20,
             risk_score: 0.8,
             margin_estimate: 12.0,
+            route_gate_ids: vec![GateId(7)],
+            problem_tag: OfferProblemTag::CongestedRoute,
+            premium: true,
+            profit_per_ton: 1.2,
             expires_cycle: 10,
         },
         ContractOffer {
@@ -119,25 +210,18 @@ fn contracts_filter_state_applies_margin_risk_eta() {
             kind: ContractTypeStageA::Delivery,
             origin: SystemId(0),
             destination: SystemId(2),
+            origin_station: gatebound_core::StationId(0),
+            destination_station: gatebound_core::StationId(4),
             quantity: 10.0,
             payout: 30.0,
             penalty: 10.0,
-            eta_ticks: 300,
+            eta_ticks: 30,
             risk_score: 0.4,
             margin_estimate: 40.0,
-            expires_cycle: 10,
-        },
-        ContractOffer {
-            id: 2,
-            kind: ContractTypeStageA::Supply,
-            origin: SystemId(1),
-            destination: SystemId(2),
-            quantity: 8.0,
-            payout: 24.0,
-            penalty: 9.0,
-            eta_ticks: 15,
-            risk_score: 1.6,
-            margin_estimate: 18.0,
+            route_gate_ids: vec![GateId(8)],
+            problem_tag: OfferProblemTag::LowMargin,
+            premium: false,
+            profit_per_ton: 4.0,
             expires_cycle: 10,
         },
     ];
@@ -145,6 +229,9 @@ fn contracts_filter_state_applies_margin_risk_eta() {
         min_margin: 10.0,
         max_risk: 1.0,
         max_eta: 120,
+        route_gate: Some(GateId(7)),
+        problem: Some(OfferProblemTag::CongestedRoute),
+        premium_only: true,
         sort_mode: OfferSortMode::MarginDesc,
     };
     let filtered = apply_offer_filters(offers, filters);
@@ -153,15 +240,30 @@ fn contracts_filter_state_applies_margin_risk_eta() {
 }
 
 #[test]
-fn fleet_snapshot_contains_warning_reason() {
-    let cfg = RuntimeConfig::default();
-    let mut sim = Simulation::new(cfg, 42);
-    if let Some(ship) = sim.ships.get_mut(&gatebound_core::ShipId(0)) {
-        ship.active_contract = None;
-        ship.eta_ticks_remaining = 0;
-        ship.current_target = None;
-        ship.planned_path.clear();
-    }
+fn contracts_board_snapshot_includes_intel_and_problem_labels() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    sim.contract_offers.insert(
+        77,
+        ContractOffer {
+            id: 77,
+            kind: ContractTypeStageA::Delivery,
+            origin: SystemId(0),
+            destination: SystemId(1),
+            origin_station: gatebound_core::StationId(0),
+            destination_station: gatebound_core::StationId(2),
+            quantity: 14.0,
+            payout: 50.0,
+            penalty: 15.0,
+            eta_ticks: 40,
+            risk_score: 1.1,
+            margin_estimate: 11.0,
+            route_gate_ids: vec![GateId(0)],
+            problem_tag: OfferProblemTag::HighRisk,
+            premium: true,
+            profit_per_ton: 0.78,
+            expires_cycle: 8,
+        },
+    );
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -171,19 +273,169 @@ fn fleet_snapshot_contains_warning_reason() {
         SystemId(0),
         Some(gatebound_core::ShipId(0)),
         ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let offer = snapshot
+        .offers
+        .iter()
+        .find(|offer| offer.id == 77)
+        .expect("offer should be visible");
+    assert_eq!(offer.problem_tag, OfferProblemTag::HighRisk);
+    assert!(!offer.route_gate_ids.is_empty());
+}
+
+#[test]
+fn contracts_snapshot_renders_station_endpoints() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert!(
+        snapshot
+            .contract_lines
+            .iter()
+            .any(|line| line.contains(":A")),
+        "contract lines should expose station endpoints"
+    );
+}
+
+#[test]
+fn fleet_snapshot_contains_job_queue_idle_delay_profit() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let ship_id = gatebound_core::ShipId(0);
+    sim.ship_idle_ticks_cycle.insert(ship_id, 9);
+    sim.ship_delay_ticks_cycle.insert(ship_id, 12);
+    sim.ship_runs_completed.insert(ship_id, 3);
+    sim.ship_profit_earned.insert(ship_id, 90.0);
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        Some(ship_id),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
     );
     let row = snapshot
         .fleet_rows
         .iter()
-        .find(|row| row.ship_id == gatebound_core::ShipId(0))
+        .find(|row| row.ship_id == ship_id)
         .expect("ship row should exist");
-    assert!(row.warning.is_some());
+    assert_eq!(row.idle_ticks_cycle, 9);
+    assert!(row.avg_delay_ticks_cycle > 0.0);
+    assert!(row.profit_per_run > 0.0);
+    assert!(!row.job_queue.is_empty());
+}
+
+#[test]
+fn fleet_snapshot_renders_current_segment_kind() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    if let Some(ship) = sim.ships.get_mut(&gatebound_core::ShipId(0)) {
+        ship.current_segment_kind = Some(SegmentKind::GateQueue);
+        ship.segment_eta_remaining = 7;
+        ship.eta_ticks_remaining = 7;
+    }
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        Some(gatebound_core::ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert!(
+        snapshot
+            .ship_lines
+            .iter()
+            .any(|line| line.contains("seg=GateQueue")),
+        "fleet lines should render current segment kind"
+    );
+}
+
+#[test]
+fn render_world_uses_station_anchor_positions_for_ship_motion() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let ship_id = gatebound_core::ShipId(0);
+    let stations = sim
+        .world
+        .stations_by_system
+        .get(&SystemId(0))
+        .cloned()
+        .expect("system stations should exist");
+    let from_station = stations[0];
+    let to_station = stations[1];
+    let from = sim
+        .station_position(from_station)
+        .expect("from station coords should exist");
+    let to = sim
+        .station_position(to_station)
+        .expect("to station coords should exist");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.movement_queue = VecDeque::from([RouteSegment {
+            from: SystemId(0),
+            to: SystemId(0),
+            from_anchor: Some(from_station),
+            to_anchor: Some(to_station),
+            edge: None,
+            kind: SegmentKind::InSystem,
+            eta_ticks: 12,
+            risk: 0.0,
+        }]);
+        ship.current_segment_kind = Some(SegmentKind::InSystem);
+        ship.segment_progress_total = 12;
+        ship.segment_eta_remaining = 12;
+        ship.eta_ticks_remaining = 12;
+    }
+
+    let mut app = App::new();
+    app.insert_resource(SimResource::new(sim))
+        .insert_resource(ShipMotionCache::default())
+        .add_systems(Update, update_ship_motion_cache);
+    app.update();
+
+    let cache = app.world().resource::<ShipMotionCache>();
+    let state = cache
+        .segments
+        .get(&ship_id)
+        .copied()
+        .expect("ship motion state should exist");
+    assert_eq!(state.from, Vec2::new(from.0 as f32, from.1 as f32));
+    assert_eq!(state.to, Vec2::new(to.0 as f32, to.1 as f32));
+}
+
+#[test]
+fn markets_snapshot_contains_trend_forecast_and_factors() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert!(!snapshot.market_insights.is_empty());
+    assert!(snapshot.market_insights[0].forecast_next.is_finite());
 }
 
 #[test]
 fn markets_panel_uses_selected_system_or_fallback() {
-    let cfg = RuntimeConfig::default();
-    let sim = Simulation::new(cfg, 42);
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
     let galaxy_snapshot = build_hud_snapshot(
         &sim,
         true,
@@ -192,6 +444,7 @@ fn markets_panel_uses_selected_system_or_fallback() {
         SystemId(0),
         None,
         ContractsFilterState::default(),
+        &UiKpiTracker::default(),
     );
     assert_eq!(galaxy_snapshot.selected_system_id, SystemId(0));
     assert!(!galaxy_snapshot.market_rows.is_empty());
@@ -204,6 +457,7 @@ fn markets_panel_uses_selected_system_or_fallback() {
         SystemId(1),
         None,
         ContractsFilterState::default(),
+        &UiKpiTracker::default(),
     );
     assert_eq!(system_snapshot.selected_system_id, SystemId(1));
     assert!(!system_snapshot.market_rows.is_empty());
@@ -228,6 +482,18 @@ fn policy_edit_updates_ship_policy() {
 }
 
 #[test]
+fn manual_vs_policy_kpi_updates_from_user_actions() {
+    let sim = Simulation::new(RuntimeConfig::default(), 12);
+    let mut kpi = UiKpiTracker::default();
+    kpi.record_manual_action(sim.tick);
+    kpi.record_policy_edit(sim.tick);
+    kpi.update(&sim);
+    assert!(kpi.manual_actions_per_min >= 1.0);
+    assert!(kpi.policy_edits_per_min >= 1.0);
+    assert!(kpi.avg_route_hops_player >= 0.0);
+}
+
+#[test]
 fn hud_snapshot_includes_debt_reputation_and_recovery() {
     let cfg = RuntimeConfig::default();
     let mut sim = Simulation::new(cfg, 7);
@@ -246,12 +512,37 @@ fn hud_snapshot_includes_debt_reputation_and_recovery() {
         SystemId(0),
         None,
         ContractsFilterState::default(),
+        &UiKpiTracker::default(),
     );
     assert!((snapshot.debt - 123.0).abs() < 1e-9);
     assert!((snapshot.reputation - 0.55).abs() < 1e-9);
     assert!((snapshot.interest_rate - 0.07).abs() < 1e-9);
     assert_eq!(snapshot.recovery_events, 3);
     assert!(snapshot.active_leases >= 1);
+}
+
+#[test]
+fn assets_snapshot_shows_recovery_actions() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    sim.recovery_log.push(RecoveryAction {
+        cycle: 4,
+        released_leases: 2,
+        capital_after: 40.0,
+        debt_after: 180.0,
+    });
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.recovery_actions.len(), 1);
+    assert_eq!(snapshot.recovery_actions[0].released_leases, 2);
 }
 
 #[test]
@@ -267,6 +558,7 @@ fn hud_selected_system_lease_prices_rendered() {
         SystemId(0),
         None,
         ContractsFilterState::default(),
+        &UiKpiTracker::default(),
     );
     assert_eq!(snapshot.selected_system_id, SystemId(0));
     assert_eq!(snapshot.lease_market_lines.len(), 4);

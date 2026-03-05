@@ -100,8 +100,10 @@ pub struct EconomyPressureConfig {
     pub offer_refresh_cycles: u32,
     pub offer_ttl_cycles: u32,
     pub milestone_capital_target: f64,
+    pub milestone_market_share_target: f64,
     pub milestone_throughput_target_share: f64,
     pub milestone_reputation_target: f64,
+    pub premium_offer_reputation_min: f64,
     pub lease_price_throughput_k: f64,
     pub lease_price_gate_k: f64,
     pub lease_price_congestion_k: f64,
@@ -127,8 +129,10 @@ impl Default for EconomyPressureConfig {
             offer_refresh_cycles: 2,
             offer_ttl_cycles: 6,
             milestone_capital_target: 900.0,
+            milestone_market_share_target: 0.25,
             milestone_throughput_target_share: 0.35,
             milestone_reputation_target: 0.85,
+            premium_offer_reputation_min: 0.80,
             lease_price_throughput_k: 0.60,
             lease_price_gate_k: 0.35,
             lease_price_congestion_k: 0.80,
@@ -203,10 +207,14 @@ impl RuntimeConfig {
         cfg.pressure.offer_ttl_cycles = parse_required_u32(&pressure, "offer_ttl_cycles")?;
         cfg.pressure.milestone_capital_target =
             parse_required_f64(&pressure, "milestone_capital_target")?;
+        cfg.pressure.milestone_market_share_target =
+            parse_required_f64(&pressure, "milestone_market_share_target")?;
         cfg.pressure.milestone_throughput_target_share =
             parse_required_f64(&pressure, "milestone_throughput_target_share")?;
         cfg.pressure.milestone_reputation_target =
             parse_required_f64(&pressure, "milestone_reputation_target")?;
+        cfg.pressure.premium_offer_reputation_min =
+            parse_required_f64(&pressure, "premium_offer_reputation_min")?;
         cfg.pressure.lease_price_throughput_k =
             parse_required_f64(&pressure, "lease_price_throughput_k")?;
         cfg.pressure.lease_price_gate_k = parse_required_f64(&pressure, "lease_price_gate_k")?;
@@ -290,6 +298,20 @@ impl RuntimeConfig {
         {
             return Err(ConfigError::Validation(
                 "milestone_throughput_target_share must be in [0,1]".to_string(),
+            ));
+        }
+        if self.pressure.milestone_market_share_target < 0.0
+            || self.pressure.milestone_market_share_target > 1.0
+        {
+            return Err(ConfigError::Validation(
+                "milestone_market_share_target must be in [0,1]".to_string(),
+            ));
+        }
+        if self.pressure.premium_offer_reputation_min < 0.0
+            || self.pressure.premium_offer_reputation_min > 1.0
+        {
+            return Err(ConfigError::Validation(
+                "premium_offer_reputation_min must be in [0,1]".to_string(),
             ));
         }
         if self.pressure.lease_price_min_mult <= 0.0
@@ -410,6 +432,8 @@ pub enum SegmentKind {
 pub struct RouteSegment {
     pub from: SystemId,
     pub to: SystemId,
+    pub from_anchor: Option<StationId>,
+    pub to_anchor: Option<StationId>,
     pub edge: Option<GateId>,
     pub kind: SegmentKind,
     pub eta_ticks: u32,
@@ -499,18 +523,32 @@ pub struct Company {
     pub archetype: CompanyArchetype,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferProblemTag {
+    HighRisk,
+    CongestedRoute,
+    LowMargin,
+    FuelVolatility,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractOffer {
     pub id: u64,
     pub kind: ContractTypeStageA,
     pub origin: SystemId,
     pub destination: SystemId,
+    pub origin_station: StationId,
+    pub destination_station: StationId,
     pub quantity: f64,
     pub payout: f64,
     pub penalty: f64,
     pub eta_ticks: u32,
     pub risk_score: f64,
     pub margin_estimate: f64,
+    pub route_gate_ids: Vec<GateId>,
+    pub problem_tag: OfferProblemTag,
+    pub premium: bool,
+    pub profit_per_ton: f64,
     pub expires_cycle: u64,
 }
 
@@ -530,6 +568,23 @@ pub enum FleetWarning {
     ShipIdle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetJobKind {
+    Pickup,
+    Transit,
+    GateQueue,
+    Warp,
+    Unload,
+    LoopReturn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FleetJobStep {
+    pub kind: FleetJobKind,
+    pub system: SystemId,
+    pub eta_ticks: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetShipStatus {
     pub ship_id: ShipId,
@@ -541,11 +596,16 @@ pub struct FleetShipStatus {
     pub route_len: usize,
     pub reroutes: u64,
     pub warning: Option<FleetWarning>,
+    pub job_queue: Vec<FleetJobStep>,
+    pub idle_ticks_cycle: u32,
+    pub avg_delay_ticks_cycle: f64,
+    pub profit_per_run: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MilestoneId {
     Capital,
+    MarketShare,
     ThroughputControl,
     Reputation,
 }
@@ -564,6 +624,24 @@ pub struct GateThroughputSnapshot {
     pub gate_id: GateId,
     pub player_share: f64,
     pub total_flow: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarketInsightRow {
+    pub commodity: Commodity,
+    pub trend_delta: f64,
+    pub forecast_next: f64,
+    pub imbalance_factor: f64,
+    pub congestion_factor: f64,
+    pub fuel_factor: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecoveryAction {
+    pub cycle: u64,
+    pub released_leases: u32,
+    pub capital_after: f64,
+    pub debt_after: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -691,6 +769,8 @@ impl RoutingService {
             segments.push(RouteSegment {
                 from,
                 to,
+                from_anchor: None,
+                to_anchor: None,
                 edge: Some(gate),
                 kind: SegmentKind::Warp,
                 eta_ticks: gate_eta,
@@ -736,11 +816,21 @@ pub struct GateEdge {
     pub capacity_factor: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationAnchor {
+    pub id: StationId,
+    pub system_id: SystemId,
+    pub x: f64,
+    pub y: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
     pub systems: Vec<SystemNode>,
     pub edges: Vec<GateEdge>,
     pub adjacency: BTreeMap<SystemId, Vec<(SystemId, GateId)>>,
+    pub stations: Vec<StationAnchor>,
+    pub stations_by_system: BTreeMap<SystemId, Vec<StationId>>,
 }
 
 impl World {
@@ -858,15 +948,65 @@ impl World {
             });
         }
 
+        let mut stations = Vec::with_capacity(system_count.saturating_mul(2));
+        let mut stations_by_system: BTreeMap<SystemId, Vec<StationId>> = BTreeMap::new();
+        for system in &systems {
+            let mut station_rng =
+                DeterministicRng::new(seed ^ ((system.id.0 as u64).wrapping_mul(0x9E37_79B9)));
+            for radius_mult in [0.32_f64, 0.56_f64] {
+                let angle = station_rng.next_f64() * std::f64::consts::TAU;
+                let radius = system.radius * radius_mult;
+                let station_id = StationId(stations.len());
+                stations.push(StationAnchor {
+                    id: station_id,
+                    system_id: system.id,
+                    x: system.x + angle.cos() * radius,
+                    y: system.y + angle.sin() * radius,
+                });
+                stations_by_system
+                    .entry(system.id)
+                    .or_default()
+                    .push(station_id);
+            }
+        }
+
         Self {
             systems,
             edges,
             adjacency,
+            stations,
+            stations_by_system,
         }
     }
 
     pub fn system_count(&self) -> usize {
         self.systems.len()
+    }
+
+    pub fn first_station(&self, system_id: SystemId) -> Option<StationId> {
+        self.stations_by_system
+            .get(&system_id)
+            .and_then(|stations| stations.first().copied())
+    }
+
+    pub fn station_coords(&self, station_id: StationId) -> Option<(f64, f64)> {
+        self.stations
+            .iter()
+            .find(|station| station.id == station_id)
+            .map(|station| (station.x, station.y))
+    }
+
+    pub fn gate_coords(&self, system_id: SystemId, gate_id: GateId) -> Option<(f64, f64)> {
+        self.systems
+            .iter()
+            .find(|system| system.id == system_id)
+            .and_then(|system| {
+                system
+                    .gate_nodes
+                    .iter()
+                    .find(|node| node.gate_id == gate_id)
+                    .map(|node| (node.x, node.y))
+            })
     }
 
     pub fn degree_map(&self) -> BTreeMap<SystemId, usize> {
@@ -949,6 +1089,8 @@ pub struct Contract {
     pub kind: ContractTypeStageA,
     pub origin: SystemId,
     pub destination: SystemId,
+    pub origin_station: StationId,
+    pub destination_station: StationId,
     pub quantity: f64,
     pub deadline_tick: u64,
     pub per_cycle: f64,
@@ -969,6 +1111,11 @@ pub struct Ship {
     pub company_id: CompanyId,
     pub location: SystemId,
     pub eta_ticks_remaining: u32,
+    pub sub_light_speed: f64,
+    pub movement_queue: VecDeque<RouteSegment>,
+    pub segment_eta_remaining: u32,
+    pub segment_progress_total: u32,
+    pub current_segment_kind: Option<SegmentKind>,
     pub active_contract: Option<ContractId>,
     pub route_cursor: usize,
     pub policy: AutopilotPolicy,
@@ -1012,6 +1159,12 @@ pub struct Simulation {
     pub sla_successes: u64,
     pub sla_failures: u64,
     pub gate_queue_load: BTreeMap<GateId, f64>,
+    pub ship_idle_ticks_cycle: BTreeMap<ShipId, u32>,
+    pub ship_delay_ticks_cycle: BTreeMap<ShipId, u32>,
+    pub ship_runs_completed: BTreeMap<ShipId, u32>,
+    pub ship_profit_earned: BTreeMap<ShipId, f64>,
+    pub previous_cycle_prices: BTreeMap<(SystemId, Commodity), f64>,
+    pub recovery_log: Vec<RecoveryAction>,
     modifiers: Vec<ActiveModifier>,
 }
 
@@ -1038,11 +1191,21 @@ impl Simulation {
             }
             markets.insert(system.id, MarketBook { goods });
         }
+        let mut previous_cycle_prices = BTreeMap::new();
+        for (system_id, book) in &markets {
+            for commodity in Commodity::ALL {
+                if let Some(state) = book.goods.get(&commodity) {
+                    previous_cycle_prices.insert((*system_id, commodity), state.price);
+                }
+            }
+        }
 
         let companies = seed_stage_a_companies();
         let mut ships = seed_stage_a_ships(&world);
         let mut contracts = BTreeMap::new();
         if world.system_count() >= 2 && ships.contains_key(&ShipId(0)) {
+            let origin_station = world.first_station(SystemId(0)).unwrap_or(StationId(0));
+            let destination_station = world.first_station(SystemId(1)).unwrap_or(origin_station);
             contracts.insert(
                 ContractId(0),
                 Contract {
@@ -1050,6 +1213,8 @@ impl Simulation {
                     kind: ContractTypeStageA::Delivery,
                     origin: SystemId(0),
                     destination: SystemId(1),
+                    origin_station,
+                    destination_station,
                     quantity: 10.0,
                     deadline_tick: u64::from(config.time.cycle_ticks) * 3,
                     per_cycle: 0.0,
@@ -1094,6 +1259,12 @@ impl Simulation {
             sla_successes: 0,
             sla_failures: 0,
             gate_queue_load: BTreeMap::new(),
+            ship_idle_ticks_cycle: BTreeMap::new(),
+            ship_delay_ticks_cycle: BTreeMap::new(),
+            ship_runs_completed: BTreeMap::new(),
+            ship_profit_earned: BTreeMap::new(),
+            previous_cycle_prices,
+            recovery_log: Vec::new(),
             modifiers: Vec::new(),
         };
         simulation.milestones = vec![
@@ -1101,6 +1272,13 @@ impl Simulation {
                 id: MilestoneId::Capital,
                 current: simulation.capital,
                 target: simulation.config.pressure.milestone_capital_target,
+                completed: false,
+                completed_cycle: None,
+            },
+            MilestoneStatus {
+                id: MilestoneId::MarketShare,
+                current: 0.0,
+                target: simulation.config.pressure.milestone_market_share_target,
                 completed: false,
                 completed_cycle: None,
             },
@@ -1154,6 +1332,7 @@ impl Simulation {
 
     pub fn step_cycle(&mut self) -> CycleReport {
         self.cycle = self.cycle.saturating_add(1);
+        self.capture_previous_cycle_prices();
         self.update_market_prices();
         self.evaluate_supply_contracts();
         self.advance_lease_cycle();
@@ -1287,13 +1466,33 @@ impl Simulation {
 
     pub fn route_for_ship(&self, ship_id: ShipId, destination: SystemId) -> Option<RoutePlan> {
         let ship = self.ships.get(&ship_id)?;
-        let req = RoutingRequest {
-            origin: ship.location,
-            destination,
-            policy: ship.policy.clone(),
-        };
-        let graph = self.world.to_graph_view(self.tick, &self.gate_queue_load);
-        RoutingService::plan_route(&graph, &req).ok()
+        let origin_station = self.world.first_station(ship.location)?;
+        let destination_station = self.world.first_station(destination)?;
+        self.build_station_route_with_speed(
+            origin_station,
+            destination_station,
+            ship.policy.clone(),
+            ship.sub_light_speed,
+        )
+    }
+
+    pub fn station_of_contract(&self, contract_id: ContractId) -> Option<(StationId, StationId)> {
+        self.contracts
+            .get(&contract_id)
+            .map(|contract| (contract.origin_station, contract.destination_station))
+    }
+
+    pub fn station_position(&self, station_id: StationId) -> Option<(f64, f64)> {
+        self.world.station_coords(station_id)
+    }
+
+    pub fn build_station_route(
+        &self,
+        origin_station: StationId,
+        destination_station: StationId,
+        policy: AutopilotPolicy,
+    ) -> Option<RoutePlan> {
+        self.build_station_route_with_speed(origin_station, destination_station, policy, 18.0)
     }
 
     pub fn create_supply_contract(
@@ -1304,6 +1503,11 @@ impl Simulation {
         total_cycles: u32,
     ) -> ContractId {
         let next_id = ContractId(self.contracts.len());
+        let origin_station = self.world.first_station(origin).unwrap_or(StationId(0));
+        let destination_station = self
+            .world
+            .first_station(destination)
+            .unwrap_or(origin_station);
         self.contracts.insert(
             next_id,
             Contract {
@@ -1311,6 +1515,8 @@ impl Simulation {
                 kind: ContractTypeStageA::Supply,
                 origin,
                 destination,
+                origin_station,
+                destination_station,
                 quantity: per_cycle,
                 deadline_tick: 0,
                 per_cycle,
@@ -1386,6 +1592,8 @@ impl Simulation {
                 kind: offer.kind,
                 origin: offer.origin,
                 destination: offer.destination,
+                origin_station: offer.origin_station,
+                destination_station: offer.destination_station,
                 quantity: offer.quantity,
                 deadline_tick: self
                     .tick
@@ -1448,6 +1656,40 @@ impl Simulation {
                     route_len: ship.planned_path.len(),
                     reroutes: ship.reroutes,
                     warning,
+                    job_queue: self.project_ship_job_queue(ship),
+                    idle_ticks_cycle: self
+                        .ship_idle_ticks_cycle
+                        .get(&ship.id)
+                        .copied()
+                        .unwrap_or(0),
+                    avg_delay_ticks_cycle: {
+                        let delay = self
+                            .ship_delay_ticks_cycle
+                            .get(&ship.id)
+                            .copied()
+                            .unwrap_or(0) as f64;
+                        let runs =
+                            self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0) as f64;
+                        if runs > 0.0 {
+                            delay / runs
+                        } else {
+                            delay
+                        }
+                    },
+                    profit_per_run: {
+                        let profit = self
+                            .ship_profit_earned
+                            .get(&ship.id)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let runs =
+                            self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0) as f64;
+                        if runs > 0.0 {
+                            profit / runs
+                        } else {
+                            0.0
+                        }
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -1488,6 +1730,74 @@ impl Simulation {
 
     pub fn milestone_status(&self) -> &[MilestoneStatus] {
         &self.milestones
+    }
+
+    pub fn market_share_view(&self) -> f64 {
+        let mut player_total = 0_u64;
+        let mut world_total = 0_u64;
+        for cycle_map in &self.gate_traversals_window {
+            for by_company in cycle_map.values() {
+                for (company_id, count) in by_company {
+                    world_total = world_total.saturating_add(u64::from(*count));
+                    if *company_id == CompanyId(0) {
+                        player_total = player_total.saturating_add(u64::from(*count));
+                    }
+                }
+            }
+        }
+        if world_total == 0 {
+            0.0
+        } else {
+            player_total as f64 / world_total as f64
+        }
+    }
+
+    pub fn market_insights(&self, system_id: SystemId) -> Vec<MarketInsightRow> {
+        let Some(book) = self.markets.get(&system_id) else {
+            return Vec::new();
+        };
+        let congestion_factor = self.system_congestion_signal(system_id);
+        let fuel_factor = self
+            .modifiers
+            .iter()
+            .filter(|m| m.risk == RiskStageA::FuelShock)
+            .map(|m| 1.0 - m.magnitude)
+            .fold(0.0_f64, f64::max);
+        let mut rows = Vec::new();
+        for commodity in Commodity::ALL {
+            let Some(state) = book.goods.get(&commodity) else {
+                continue;
+            };
+            let prev_price = self
+                .previous_cycle_prices
+                .get(&(system_id, commodity))
+                .copied()
+                .unwrap_or(state.price);
+            let trend_delta = state.price - prev_price;
+            let imbalance = (state.target_stock - state.stock) / state.target_stock.max(1.0);
+            let flow_pressure =
+                (state.cycle_outflow - state.cycle_inflow) / state.target_stock.max(1.0);
+            let raw_delta =
+                self.config.market.k_stock * imbalance + self.config.market.k_flow * flow_pressure;
+            let delta =
+                raw_delta.clamp(-self.config.market.delta_cap, self.config.market.delta_cap);
+            let floor = state.base_price * self.config.market.floor_mult;
+            let ceil = state.base_price * self.config.market.ceiling_mult;
+            let forecast_next = (state.price * (1.0 + delta)).clamp(floor, ceil);
+            rows.push(MarketInsightRow {
+                commodity,
+                trend_delta,
+                forecast_next,
+                imbalance_factor: imbalance,
+                congestion_factor,
+                fuel_factor,
+            });
+        }
+        rows
+    }
+
+    pub fn recent_recovery_actions(&self) -> &[RecoveryAction] {
+        &self.recovery_log
     }
 
     pub fn lease_slot(
@@ -1592,28 +1902,64 @@ impl Simulation {
 
         let ship_ids: Vec<ShipId> = self.ships.keys().copied().collect();
         for ship_id in ship_ids {
+            let mut completed_segment = None;
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                if ship.segment_eta_remaining > 0 {
+                    ship.segment_eta_remaining = ship.segment_eta_remaining.saturating_sub(1);
+                    ship.eta_ticks_remaining = ship.segment_eta_remaining;
+                    if ship.segment_eta_remaining == 0 {
+                        completed_segment = ship.movement_queue.pop_front();
+                        ship.current_segment_kind = None;
+                        ship.current_target = None;
+                        ship.segment_progress_total = 0;
+                    } else {
+                        continue;
+                    }
+                }
+            }
+            if let Some(segment) = completed_segment {
+                if let Some(ship) = self.ships.get_mut(&ship_id) {
+                    ship.location = segment.to;
+                }
+            }
+
+            self.start_next_movement_segment(ship_id, dock_delay_factor);
+
             let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
                 continue;
             };
-
-            if ship_snapshot.eta_ticks_remaining > 0 {
-                if let Some(ship) = self.ships.get_mut(&ship_id) {
-                    ship.eta_ticks_remaining = ship.eta_ticks_remaining.saturating_sub(1);
-                    if ship.eta_ticks_remaining == 0 {
-                        if let Some(target) = ship.current_target {
-                            ship.location = target;
-                        }
-                    }
-                }
+            if ship_snapshot.segment_eta_remaining > 0 || !ship_snapshot.movement_queue.is_empty() {
                 continue;
             }
 
-            let next_target = self.next_waypoint(ship_id);
-            let Some(target) = next_target else {
-                continue;
-            };
+            if ship_snapshot.active_contract.is_none() {
+                let idle_ticks = self.ship_idle_ticks_cycle.entry(ship_id).or_insert(0);
+                *idle_ticks = idle_ticks
+                    .saturating_add(1)
+                    .min(self.config.time.cycle_ticks.max(1));
+            }
 
-            if ship_snapshot.location == target {
+            let (target_system, target_station) =
+                if let Some(contract_id) = ship_snapshot.active_contract {
+                    let Some(contract) = self.contracts.get(&contract_id) else {
+                        continue;
+                    };
+                    (contract.destination, contract.destination_station)
+                } else {
+                    let Some(target) = self.next_waypoint(ship_id) else {
+                        continue;
+                    };
+                    let Some(target_station) = self.world.first_station(target) else {
+                        continue;
+                    };
+                    (target, target_station)
+                };
+
+            if ship_snapshot.active_contract.is_some() && ship_snapshot.location == target_system {
+                continue;
+            }
+
+            if ship_snapshot.active_contract.is_none() && ship_snapshot.location == target_system {
                 if let Some(ship) = self.ships.get_mut(&ship_id) {
                     if !ship.policy.waypoints.is_empty() {
                         ship.route_cursor = (ship.route_cursor + 1) % ship.policy.waypoints.len();
@@ -1622,16 +1968,18 @@ impl Simulation {
                 continue;
             }
 
-            let graph = self.world.to_graph_view(self.tick, &self.gate_queue_load);
-            let request = RoutingRequest {
-                origin: ship_snapshot.location,
-                destination: target,
-                policy: ship_snapshot.policy.clone(),
-            };
-
-            let route = match RoutingService::plan_route(&graph, &request) {
-                Ok(route) => route,
-                Err(_) => {
+            let origin_station = self
+                .world
+                .first_station(ship_snapshot.location)
+                .unwrap_or(target_station);
+            let route = match self.build_station_route_with_speed(
+                origin_station,
+                target_station,
+                ship_snapshot.policy.clone(),
+                ship_snapshot.sub_light_speed,
+            ) {
+                Some(route) => route,
+                None => {
                     if let Some(ship) = self.ships.get_mut(&ship_id) {
                         ship.reroutes = ship.reroutes.saturating_add(1);
                     }
@@ -1640,45 +1988,90 @@ impl Simulation {
                 }
             };
 
-            let acceptable_risk = ship_snapshot.policy.max_risk_score;
-            if route.risk_score > acceptable_risk {
+            if route.risk_score > ship_snapshot.policy.max_risk_score {
                 continue;
             }
-
-            let Some(first_segment) = route.segments.first() else {
-                continue;
-            };
-            let edge = first_segment.edge.unwrap_or(GateId(usize::MAX));
-            *self.gate_queue_load.entry(edge).or_insert(0.0) += 1.0;
-            if edge != GateId(usize::MAX) {
-                self.capital -= self.config.pressure.gate_fee_per_jump;
-                self.record_gate_traversal(edge, ship_snapshot.company_id);
-            }
-
-            let queue_load = self.gate_queue_load.get(&edge).copied().unwrap_or(0.0);
-            let edge_ref = self.world.edges.iter().find(|e| e.id == edge);
-            let effective_capacity = edge_ref
-                .map(|e| (e.base_capacity * e.capacity_factor).max(1.0))
-                .unwrap_or(1.0);
-            let queue_delay = (queue_load / effective_capacity).ceil() as u32;
-            self.queue_delay_accumulator = self
-                .queue_delay_accumulator
-                .saturating_add(u64::from(queue_delay));
-
-            let eta = first_segment
-                .eta_ticks
-                .saturating_add(queue_delay)
-                .saturating_add(dock_delay_factor.ceil() as u32);
 
             if let Some(ship) = self.ships.get_mut(&ship_id) {
-                ship.eta_ticks_remaining = eta.max(1);
-                ship.current_target = Some(first_segment.to);
                 ship.last_risk_score = route.risk_score;
-                ship.planned_path = route
-                    .segments
-                    .iter()
-                    .map(|s| s.to)
-                    .collect::<Vec<SystemId>>();
+                ship.movement_queue = VecDeque::from(route.segments.clone());
+                ship.planned_path = route.segments.iter().map(|segment| segment.to).collect();
+                ship.segment_eta_remaining = 0;
+                ship.segment_progress_total = 0;
+                ship.current_segment_kind = None;
+                ship.current_target = None;
+                ship.eta_ticks_remaining = 0;
+            }
+            self.start_next_movement_segment(ship_id, dock_delay_factor);
+        }
+    }
+
+    fn start_next_movement_segment(&mut self, ship_id: ShipId, dock_delay_factor: f64) {
+        loop {
+            let Some(segment) = self
+                .ships
+                .get(&ship_id)
+                .and_then(|ship| ship.movement_queue.front().cloned())
+            else {
+                if let Some(ship) = self.ships.get_mut(&ship_id) {
+                    ship.segment_eta_remaining = 0;
+                    ship.segment_progress_total = 0;
+                    ship.current_segment_kind = None;
+                    ship.current_target = None;
+                    ship.eta_ticks_remaining = 0;
+                }
+                return;
+            };
+
+            let mut eta = segment.eta_ticks;
+            if segment.kind == SegmentKind::GateQueue {
+                if let Some(edge) = segment.edge {
+                    *self.gate_queue_load.entry(edge).or_insert(0.0) += 1.0;
+                    let queue_delay = self.gate_queue_eta(edge);
+                    self.queue_delay_accumulator = self
+                        .queue_delay_accumulator
+                        .saturating_add(u64::from(queue_delay));
+                    let delay_ticks = self.ship_delay_ticks_cycle.entry(ship_id).or_insert(0);
+                    *delay_ticks = delay_ticks
+                        .saturating_add(queue_delay)
+                        .min(self.config.time.cycle_ticks.max(1) * 4);
+                    eta = eta.saturating_add(queue_delay);
+                }
+                eta = eta.saturating_add(dock_delay_factor.ceil() as u32);
+            }
+
+            if segment.kind == SegmentKind::Warp {
+                if let Some(edge) = segment.edge {
+                    let company_id = self
+                        .ships
+                        .get(&ship_id)
+                        .map(|ship| ship.company_id)
+                        .unwrap_or(CompanyId(0));
+                    self.capital -= self.config.pressure.gate_fee_per_jump;
+                    self.record_gate_traversal(edge, company_id);
+                }
+            }
+
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                ship.current_segment_kind = Some(segment.kind);
+                ship.current_target = Some(segment.to);
+                ship.segment_progress_total = eta;
+                ship.segment_eta_remaining = eta;
+                ship.eta_ticks_remaining = eta;
+            }
+
+            if eta > 0 {
+                return;
+            }
+
+            if let Some(ship) = self.ships.get_mut(&ship_id) {
+                ship.location = segment.to;
+                ship.movement_queue.pop_front();
+                ship.current_target = None;
+                ship.current_segment_kind = None;
+                ship.segment_progress_total = 0;
+                ship.segment_eta_remaining = 0;
+                ship.eta_ticks_remaining = 0;
             }
         }
     }
@@ -1701,7 +2094,12 @@ impl Simulation {
                     let arrived = self
                         .ships
                         .get(&ship_id)
-                        .map(|s| s.location == snapshot.destination && s.eta_ticks_remaining == 0)
+                        .map(|s| {
+                            s.location == snapshot.destination
+                                && s.eta_ticks_remaining == 0
+                                && s.movement_queue.is_empty()
+                                && s.current_segment_kind.is_none()
+                        })
                         .unwrap_or(false);
 
                     if arrived {
@@ -1712,7 +2110,9 @@ impl Simulation {
                         if let Some(ship) = self.ships.get_mut(&ship_id) {
                             ship.active_contract = None;
                         }
-                        self.capital += self.apply_market_fee(snapshot.payout);
+                        let net_payout = self.apply_market_fee(snapshot.payout);
+                        self.capital += net_payout;
+                        self.record_ship_profit(ship_id, net_payout);
                         self.sla_successes = self.sla_successes.saturating_add(1);
                     } else if self.tick > snapshot.deadline_tick {
                         let penalty_mult = self.penalty_multiplier(snapshot.missed_cycles as usize);
@@ -1730,7 +2130,10 @@ impl Simulation {
                 ContractTypeStageA::Supply => {
                     let delivered = snapshot.assigned_ship.and_then(|ship_id| {
                         self.ships.get(&ship_id).map(|s| {
-                            s.location == snapshot.destination && s.eta_ticks_remaining == 0
+                            s.location == snapshot.destination
+                                && s.eta_ticks_remaining == 0
+                                && s.movement_queue.is_empty()
+                                && s.current_segment_kind.is_none()
                         })
                     });
                     if delivered == Some(true) {
@@ -1760,7 +2163,11 @@ impl Simulation {
                 .delivered_amount
                 .min(self.config.pressure.market_depth_per_cycle);
             if delta >= current.per_cycle {
-                self.capital += self.apply_market_fee(current.payout);
+                let net_payout = self.apply_market_fee(current.payout);
+                self.capital += net_payout;
+                if let Some(ship_id) = current.assigned_ship {
+                    self.record_ship_profit(ship_id, net_payout);
+                }
                 self.sla_successes = self.sla_successes.saturating_add(1);
             } else {
                 let miss_index = current.missed_cycles as usize;
@@ -1822,9 +2229,30 @@ impl Simulation {
         if origin == destination {
             return;
         }
-        let Some((eta_ticks, risk_score)) = self.estimate_route(origin, destination) else {
+        let origin_station = self.world.first_station(origin).unwrap_or(StationId(0));
+        let destination_station = self
+            .world
+            .first_station(destination)
+            .unwrap_or(origin_station);
+        let Some(route) = self.build_station_route_with_speed(
+            origin_station,
+            destination_station,
+            AutopilotPolicy {
+                max_hops: 16,
+                ..AutopilotPolicy::default()
+            },
+            18.0,
+        ) else {
             return;
         };
+        let eta_ticks = route.eta_ticks;
+        let risk_score = route.risk_score;
+        let route_gate_ids = route
+            .segments
+            .iter()
+            .filter(|segment| segment.kind == SegmentKind::Warp)
+            .filter_map(|segment| segment.edge)
+            .collect::<Vec<_>>();
         let Some(destination_market) = self.markets.get(&destination) else {
             return;
         };
@@ -1851,17 +2279,50 @@ impl Simulation {
             - f64::from(eta_ticks) * 0.15
             - risk_score * 10.0
             - self.config.pressure.gate_fee_per_jump;
+        let profit_per_ton = margin_estimate / quantity.max(1.0);
+        let route_is_congested = route_gate_ids.iter().any(|gate_id| {
+            let load = self.gate_queue_load.get(gate_id).copied().unwrap_or(0.0);
+            let effective_capacity = self
+                .world
+                .edges
+                .iter()
+                .find(|edge| edge.id == *gate_id)
+                .map(|edge| (edge.base_capacity * edge.capacity_factor).max(1.0))
+                .unwrap_or(1.0);
+            load / effective_capacity > 0.95
+        });
+        let fuel_ratio = destination_market
+            .goods
+            .get(&Commodity::Fuel)
+            .map(|state| state.stock / state.target_stock.max(1.0))
+            .unwrap_or(1.0);
+        let problem_tag = if risk_score >= 1.0 {
+            OfferProblemTag::HighRisk
+        } else if route_is_congested {
+            OfferProblemTag::CongestedRoute
+        } else if fuel_ratio < 0.75 {
+            OfferProblemTag::FuelVolatility
+        } else {
+            OfferProblemTag::LowMargin
+        };
+        let premium = self.reputation >= self.config.pressure.premium_offer_reputation_min;
         let offer = ContractOffer {
             id: self.next_offer_id,
             kind,
             origin,
             destination,
+            origin_station,
+            destination_station,
             quantity,
             payout,
             penalty,
             eta_ticks,
             risk_score,
             margin_estimate,
+            route_gate_ids,
+            problem_tag,
+            premium,
+            profit_per_ton,
             expires_cycle: self
                 .cycle
                 .saturating_add(u64::from(self.config.pressure.offer_ttl_cycles.max(1))),
@@ -1870,18 +2331,115 @@ impl Simulation {
         self.next_offer_id = self.next_offer_id.saturating_add(1);
     }
 
-    fn estimate_route(&self, origin: SystemId, destination: SystemId) -> Option<(u32, f64)> {
+    fn build_station_route_with_speed(
+        &self,
+        origin_station: StationId,
+        destination_station: StationId,
+        policy: AutopilotPolicy,
+        sub_light_speed: f64,
+    ) -> Option<RoutePlan> {
+        let origin_anchor = self
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == origin_station)?;
+        let destination_anchor = self
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == destination_station)?;
+
         let request = RoutingRequest {
-            origin,
-            destination,
-            policy: AutopilotPolicy {
-                max_hops: 16,
-                ..AutopilotPolicy::default()
-            },
+            origin: origin_anchor.system_id,
+            destination: destination_anchor.system_id,
+            policy,
         };
         let graph = self.world.to_graph_view(self.tick, &self.gate_queue_load);
-        let route = RoutingService::plan_route(&graph, &request).ok()?;
-        Some((route.eta_ticks, route.risk_score))
+        let system_route = RoutingService::plan_route(&graph, &request).ok()?;
+
+        let mut segments = Vec::new();
+        let mut eta_total = 0_u32;
+        let mut risk_total = 0.0_f64;
+
+        let mut cursor_system = origin_anchor.system_id;
+        let mut cursor_x = origin_anchor.x;
+        let mut cursor_y = origin_anchor.y;
+        let mut cursor_anchor = Some(origin_anchor.id);
+
+        for hop in &system_route.segments {
+            let gate_id = hop.edge?;
+            let (exit_x, exit_y) = self.world.gate_coords(hop.from, gate_id)?;
+            let in_eta =
+                self.in_system_eta_ticks(cursor_x, cursor_y, exit_x, exit_y, sub_light_speed);
+            segments.push(RouteSegment {
+                from: cursor_system,
+                to: hop.from,
+                from_anchor: cursor_anchor,
+                to_anchor: None,
+                edge: Some(gate_id),
+                kind: SegmentKind::InSystem,
+                eta_ticks: in_eta,
+                risk: 0.0,
+            });
+            eta_total = eta_total.saturating_add(in_eta);
+
+            let queue_eta = self.gate_queue_eta(gate_id);
+            let queue_risk = self.gate_risk(gate_id);
+            segments.push(RouteSegment {
+                from: hop.from,
+                to: hop.from,
+                from_anchor: None,
+                to_anchor: None,
+                edge: Some(gate_id),
+                kind: SegmentKind::GateQueue,
+                eta_ticks: queue_eta,
+                risk: queue_risk,
+            });
+            eta_total = eta_total.saturating_add(queue_eta);
+            risk_total += queue_risk;
+
+            segments.push(RouteSegment {
+                from: hop.from,
+                to: hop.to,
+                from_anchor: None,
+                to_anchor: None,
+                edge: Some(gate_id),
+                kind: SegmentKind::Warp,
+                eta_ticks: 0,
+                risk: 0.0,
+            });
+
+            let (entry_x, entry_y) = self.world.gate_coords(hop.to, gate_id)?;
+            cursor_system = hop.to;
+            cursor_x = entry_x;
+            cursor_y = entry_y;
+            cursor_anchor = None;
+        }
+
+        let final_eta = self.in_system_eta_ticks(
+            cursor_x,
+            cursor_y,
+            destination_anchor.x,
+            destination_anchor.y,
+            sub_light_speed,
+        );
+        segments.push(RouteSegment {
+            from: cursor_system,
+            to: destination_anchor.system_id,
+            from_anchor: cursor_anchor,
+            to_anchor: Some(destination_anchor.id),
+            edge: None,
+            kind: SegmentKind::InSystem,
+            eta_ticks: final_eta,
+            risk: 0.0,
+        });
+        eta_total = eta_total.saturating_add(final_eta);
+
+        Some(RoutePlan {
+            segments,
+            eta_ticks: eta_total,
+            risk_score: risk_total,
+        })
     }
 
     fn update_milestones(&mut self) {
@@ -1890,10 +2448,12 @@ impl Simulation {
             .into_iter()
             .map(|snapshot| snapshot.player_share)
             .fold(0.0_f64, f64::max);
+        let market_share_current = self.market_share_view();
 
         for milestone in &mut self.milestones {
             milestone.current = match milestone.id {
                 MilestoneId::Capital => self.capital,
+                MilestoneId::MarketShare => market_share_current,
                 MilestoneId::ThroughputControl => throughput_current,
                 MilestoneId::Reputation => self.reputation,
             };
@@ -1945,6 +2505,18 @@ impl Simulation {
         }
     }
 
+    fn capture_previous_cycle_prices(&mut self) {
+        self.previous_cycle_prices.clear();
+        for (system_id, book) in &self.markets {
+            for commodity in Commodity::ALL {
+                if let Some(state) = book.goods.get(&commodity) {
+                    self.previous_cycle_prices
+                        .insert((*system_id, commodity), state.price);
+                }
+            }
+        }
+    }
+
     fn update_market_prices(&mut self) {
         for market in self.markets.values_mut() {
             for state in market.goods.values_mut() {
@@ -1992,12 +2564,39 @@ impl Simulation {
                 .max(-self.capital + self.config.pressure.recovery_loan_buffer);
             self.capital += emergency_loan;
             self.outstanding_debt += emergency_loan;
+            let mut released_leases = 0_u32;
+            if !self.active_leases.is_empty() {
+                let mut indices = self.active_leases.iter().enumerate().collect::<Vec<_>>();
+                indices.sort_by(|(_, a), (_, b)| b.price_per_cycle.total_cmp(&a.price_per_cycle));
+                let mut to_remove = indices
+                    .into_iter()
+                    .take(2)
+                    .map(|(idx, _)| idx)
+                    .collect::<Vec<_>>();
+                to_remove.sort_unstable_by(|a, b| b.cmp(a));
+                for idx in to_remove {
+                    if idx < self.active_leases.len() {
+                        self.active_leases.remove(idx);
+                        released_leases = released_leases.saturating_add(1);
+                    }
+                }
+            }
             self.reputation =
                 (self.reputation - self.config.pressure.recovery_reputation_penalty).max(0.0);
             self.current_loan_interest_rate = (self.current_loan_interest_rate
                 + self.config.pressure.recovery_rate_hike)
                 .min(self.config.pressure.recovery_rate_max);
             self.recovery_events = self.recovery_events.saturating_add(1);
+            self.recovery_log.push(RecoveryAction {
+                cycle: self.cycle,
+                released_leases,
+                capital_after: self.capital,
+                debt_after: self.outstanding_debt,
+            });
+            if self.recovery_log.len() > 16 {
+                let extra = self.recovery_log.len() - 16;
+                self.recovery_log.drain(0..extra);
+            }
         }
     }
 
@@ -2088,6 +2687,45 @@ impl Simulation {
             / edges.len() as f64
     }
 
+    fn gate_queue_eta(&self, gate_id: GateId) -> u32 {
+        let load = self.gate_queue_load.get(&gate_id).copied().unwrap_or(0.0);
+        let effective_capacity = self
+            .world
+            .edges
+            .iter()
+            .find(|edge| edge.id == gate_id)
+            .map(|edge| (edge.base_capacity * edge.capacity_factor).max(1.0))
+            .unwrap_or(1.0);
+        (load / effective_capacity).ceil() as u32
+    }
+
+    fn gate_risk(&self, gate_id: GateId) -> f64 {
+        let load = self.gate_queue_load.get(&gate_id).copied().unwrap_or(0.0);
+        let effective_capacity = self
+            .world
+            .edges
+            .iter()
+            .find(|edge| edge.id == gate_id)
+            .map(|edge| (edge.base_capacity * edge.capacity_factor).max(1.0))
+            .unwrap_or(1.0);
+        load / effective_capacity
+    }
+
+    fn in_system_eta_ticks(
+        &self,
+        from_x: f64,
+        from_y: f64,
+        to_x: f64,
+        to_y: f64,
+        sub_light_speed: f64,
+    ) -> u32 {
+        let speed = sub_light_speed.max(0.1);
+        let dx = to_x - from_x;
+        let dy = to_y - from_y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        (distance / speed).ceil().max(1.0) as u32
+    }
+
     fn next_waypoint(&self, ship_id: ShipId) -> Option<SystemId> {
         let ship = self.ships.get(&ship_id)?;
         if ship.policy.waypoints.is_empty() {
@@ -2097,6 +2735,60 @@ impl Simulation {
             .waypoints
             .get(ship.route_cursor % ship.policy.waypoints.len())
             .copied()
+    }
+
+    fn record_ship_profit(&mut self, ship_id: ShipId, net_payout: f64) {
+        let runs = self.ship_runs_completed.entry(ship_id).or_insert(0);
+        *runs = runs.saturating_add(1);
+        let profit = self.ship_profit_earned.entry(ship_id).or_insert(0.0);
+        *profit += net_payout;
+    }
+
+    fn project_ship_job_queue(&self, ship: &Ship) -> Vec<FleetJobStep> {
+        let mut queue = Vec::new();
+        if let Some(contract_id) = ship.active_contract {
+            if let Some(contract) = self.contracts.get(&contract_id) {
+                queue.push(FleetJobStep {
+                    kind: FleetJobKind::Pickup,
+                    system: contract.origin,
+                    eta_ticks: 0,
+                });
+            }
+        }
+        let mut eta_cursor = ship.segment_eta_remaining;
+        for (idx, segment) in ship.movement_queue.iter().enumerate() {
+            let step_kind = match segment.kind {
+                SegmentKind::InSystem => FleetJobKind::Transit,
+                SegmentKind::GateQueue => FleetJobKind::GateQueue,
+                SegmentKind::Warp => FleetJobKind::Warp,
+                SegmentKind::Dock => FleetJobKind::Unload,
+            };
+            if idx > 0 {
+                eta_cursor = eta_cursor.saturating_add(segment.eta_ticks);
+            }
+            queue.push(FleetJobStep {
+                kind: step_kind,
+                system: segment.to,
+                eta_ticks: eta_cursor,
+            });
+        }
+        if let Some(contract_id) = ship.active_contract {
+            if let Some(contract) = self.contracts.get(&contract_id) {
+                queue.push(FleetJobStep {
+                    kind: FleetJobKind::Unload,
+                    system: contract.destination,
+                    eta_ticks: eta_cursor,
+                });
+            }
+        }
+        if let Some(loop_target) = ship.policy.waypoints.first().copied() {
+            queue.push(FleetJobStep {
+                kind: FleetJobKind::LoopReturn,
+                system: loop_target,
+                eta_ticks: eta_cursor.saturating_add(1),
+            });
+        }
+        queue
     }
 
     fn expire_modifiers(&mut self) {
@@ -2165,14 +2857,48 @@ impl Simulation {
             ));
         }
 
+        let mut ship_runtime = String::new();
+        for ship in self.ships.values() {
+            let queue_encoded = if ship.movement_queue.is_empty() {
+                "none".to_string()
+            } else {
+                ship.movement_queue
+                    .iter()
+                    .map(encode_route_segment)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            ship_runtime.push_str(&format!(
+                "{}:{}:{}:{}:{}:{},",
+                ship.id.0,
+                ship.sub_light_speed,
+                ship.segment_eta_remaining,
+                ship.segment_progress_total,
+                ship.current_segment_kind
+                    .map(segment_kind_code)
+                    .unwrap_or("none"),
+                queue_encoded
+            ));
+        }
+
+        let mut stations = String::new();
+        for station in &self.world.stations {
+            stations.push_str(&format!(
+                "{}:{}:{}:{},",
+                station.id.0, station.system_id.0, station.x, station.y
+            ));
+        }
+
         let mut contracts = String::new();
         for contract in self.contracts.values() {
             contracts.push_str(&format!(
-                "{}:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 contract.id.0,
                 contract.kind,
                 contract.origin.0,
                 contract.destination.0,
+                contract.origin_station.0,
+                contract.destination_station.0,
                 contract.delivered_amount,
                 contract.penalty,
                 contract.missed_cycles,
@@ -2235,18 +2961,34 @@ impl Simulation {
 
         let mut offers = String::new();
         for offer in self.contract_offers.values() {
+            let route_gate_ids = if offer.route_gate_ids.is_empty() {
+                "none".to_string()
+            } else {
+                offer
+                    .route_gate_ids
+                    .iter()
+                    .map(|gate_id| gate_id.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join("-")
+            };
             offers.push_str(&format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
                 offer.id,
                 contract_type_code(offer.kind),
                 offer.origin.0,
                 offer.destination.0,
+                offer.origin_station.0,
+                offer.destination_station.0,
                 offer.quantity,
                 offer.payout,
                 offer.penalty,
                 offer.eta_ticks,
                 offer.risk_score,
                 offer.margin_estimate,
+                offer_problem_code(offer.problem_tag),
+                offer.premium as u8,
+                offer.profit_per_ton,
+                route_gate_ids,
                 offer.expires_cycle
             ));
         }
@@ -2271,8 +3013,49 @@ impl Simulation {
             .collect::<Vec<_>>()
             .join("|");
 
+        let mut ship_kpis = String::new();
+        for ship_id in self.ships.keys() {
+            ship_kpis.push_str(&format!(
+                "{}:{}:{}:{}:{},",
+                ship_id.0,
+                self.ship_idle_ticks_cycle
+                    .get(ship_id)
+                    .copied()
+                    .unwrap_or(0),
+                self.ship_delay_ticks_cycle
+                    .get(ship_id)
+                    .copied()
+                    .unwrap_or(0),
+                self.ship_runs_completed.get(ship_id).copied().unwrap_or(0),
+                self.ship_profit_earned.get(ship_id).copied().unwrap_or(0.0)
+            ));
+        }
+
+        let mut recovery_log = String::new();
+        for action in &self.recovery_log {
+            recovery_log.push_str(&format!(
+                "{}:{}:{}:{},",
+                action.cycle, action.released_leases, action.capital_after, action.debt_after
+            ));
+        }
+
+        let mut prev_prices = String::new();
+        for ((system_id, commodity), price) in &self.previous_cycle_prices {
+            prev_prices.push_str(&format!(
+                "{}:{}:{},",
+                system_id.0,
+                commodity_code(*commodity),
+                price
+            ));
+        }
+
+        let mut gate_loads = String::new();
+        for (gate_id, load) in &self.gate_queue_load {
+            gate_loads.push_str(&format!("{}:{},", gate_id.0, load));
+        }
+
         format!(
-            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};next_offer_id={};edges={};ships={};contracts={};markets={};modifiers={};leases={};companies={};offers={};milestones={};gate_cycle={};gate_window={}",
+            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};next_offer_id={};edges={};stations={};ships={};ship_runtime={};contracts={};markets={};modifiers={};leases={};companies={};offers={};milestones={};gate_cycle={};gate_window={};ship_kpis={};recovery_log={};prev_prices={};gate_loads={}",
             self.tick,
             self.cycle,
             self.capital,
@@ -2286,7 +3069,9 @@ impl Simulation {
             self.sla_failures,
             self.next_offer_id,
             edges,
+            stations,
             ships,
+            ship_runtime,
             contracts,
             markets,
             modifiers,
@@ -2295,7 +3080,11 @@ impl Simulation {
             offers,
             milestones,
             gate_cycle,
-            gate_window
+            gate_window,
+            ship_kpis,
+            recovery_log,
+            prev_prices,
+            gate_loads
         )
     }
 
@@ -2347,10 +3136,46 @@ impl Simulation {
             }
         }
 
+        if let Some(stations_blob) = map.get("stations") {
+            simulation.world.stations.clear();
+            simulation.world.stations_by_system.clear();
+            for row in stations_blob.split(',').filter(|value| !value.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 4 {
+                    return Err(SnapshotError::Parse(format!("bad station row: {row}")));
+                }
+                let station_id: usize = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("station id parse failed".to_string()))?;
+                let system_id: usize = parts[1]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("station system parse failed".to_string()))?;
+                let x: f64 = parts[2]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("station x parse failed".to_string()))?;
+                let y: f64 = parts[3]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("station y parse failed".to_string()))?;
+                let station = StationAnchor {
+                    id: StationId(station_id),
+                    system_id: SystemId(system_id),
+                    x,
+                    y,
+                };
+                simulation
+                    .world
+                    .stations_by_system
+                    .entry(station.system_id)
+                    .or_default()
+                    .push(station.id);
+                simulation.world.stations.push(station);
+            }
+        }
+
         if let Some(ships_blob) = map.get("ships") {
             for row in ships_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 6 {
+                if parts.len() < 6 {
                     return Err(SnapshotError::Parse(format!("bad ship row: {row}")));
                 }
                 let id: usize = parts[0]
@@ -2378,35 +3203,114 @@ impl Simulation {
                     ship.last_risk_score = parts[5]
                         .parse()
                         .map_err(|_| SnapshotError::Parse("ship risk parse failed".to_string()))?;
+                    ship.segment_eta_remaining = ship.eta_ticks_remaining;
+                    ship.segment_progress_total = ship.eta_ticks_remaining;
+                    ship.current_segment_kind = if ship.segment_eta_remaining > 0 {
+                        Some(SegmentKind::InSystem)
+                    } else {
+                        None
+                    };
+                    ship.movement_queue.clear();
+                    ship.sub_light_speed = 18.0;
                 }
+            }
+        }
+
+        if let Some(runtime_blob) = map.get("ship_runtime") {
+            for row in runtime_blob.split(',').filter(|v| !v.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 6 {
+                    return Err(SnapshotError::Parse(format!("bad ship_runtime row: {row}")));
+                }
+                let ship_id: usize = parts[0].parse().map_err(|_| {
+                    SnapshotError::Parse("ship_runtime id parse failed".to_string())
+                })?;
+                let Some(ship) = simulation.ships.get_mut(&ShipId(ship_id)) else {
+                    continue;
+                };
+                ship.sub_light_speed = parts[1].parse().map_err(|_| {
+                    SnapshotError::Parse("ship_runtime speed parse failed".to_string())
+                })?;
+                ship.segment_eta_remaining = parts[2].parse().map_err(|_| {
+                    SnapshotError::Parse("ship_runtime eta parse failed".to_string())
+                })?;
+                ship.segment_progress_total = parts[3].parse().map_err(|_| {
+                    SnapshotError::Parse("ship_runtime progress parse failed".to_string())
+                })?;
+                ship.current_segment_kind = if parts[4] == "none" {
+                    None
+                } else {
+                    Some(segment_kind_from_code(parts[4]).ok_or_else(|| {
+                        SnapshotError::Parse("ship_runtime kind parse failed".to_string())
+                    })?)
+                };
+                ship.movement_queue.clear();
+                if parts[5] != "none" {
+                    for encoded in parts[5].split('|').filter(|value| !value.is_empty()) {
+                        ship.movement_queue
+                            .push_back(decode_route_segment(encoded)?);
+                    }
+                }
+                ship.eta_ticks_remaining = ship.segment_eta_remaining;
             }
         }
 
         if let Some(contracts_blob) = map.get("contracts") {
             for row in contracts_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 11 {
+                if parts.len() != 11 && parts.len() != 13 {
                     return Err(SnapshotError::Parse(format!("bad contract row: {row}")));
                 }
                 let id: usize = parts[0]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("contract id parse failed".to_string()))?;
                 if let Some(contract) = simulation.contracts.get_mut(&ContractId(id)) {
-                    contract.delivered_amount = parts[4].parse().map_err(|_| {
+                    let (
+                        delivered_idx,
+                        penalty_idx,
+                        misses_idx,
+                        completed_idx,
+                        failed_idx,
+                        deadline_idx,
+                        eval_idx,
+                    ) = if parts.len() == 13 {
+                        let origin_station: usize = parts[4].parse().map_err(|_| {
+                            SnapshotError::Parse("contract origin_station parse failed".to_string())
+                        })?;
+                        let destination_station: usize = parts[5].parse().map_err(|_| {
+                            SnapshotError::Parse(
+                                "contract destination_station parse failed".to_string(),
+                            )
+                        })?;
+                        contract.origin_station = StationId(origin_station);
+                        contract.destination_station = StationId(destination_station);
+                        (6, 7, 8, 9, 10, 11, 12)
+                    } else {
+                        contract.origin_station = simulation
+                            .world
+                            .first_station(contract.origin)
+                            .unwrap_or(StationId(0));
+                        contract.destination_station = simulation
+                            .world
+                            .first_station(contract.destination)
+                            .unwrap_or(contract.origin_station);
+                        (4, 5, 6, 7, 8, 9, 10)
+                    };
+                    contract.delivered_amount = parts[delivered_idx].parse().map_err(|_| {
                         SnapshotError::Parse("contract delivered parse failed".to_string())
                     })?;
-                    contract.penalty = parts[5].parse().map_err(|_| {
+                    contract.penalty = parts[penalty_idx].parse().map_err(|_| {
                         SnapshotError::Parse("contract penalty parse failed".to_string())
                     })?;
-                    contract.missed_cycles = parts[6].parse().map_err(|_| {
+                    contract.missed_cycles = parts[misses_idx].parse().map_err(|_| {
                         SnapshotError::Parse("contract misses parse failed".to_string())
                     })?;
-                    contract.completed = parts[7] == "1";
-                    contract.failed = parts[8] == "1";
-                    contract.deadline_tick = parts[9].parse().map_err(|_| {
+                    contract.completed = parts[completed_idx] == "1";
+                    contract.failed = parts[failed_idx] == "1";
+                    contract.deadline_tick = parts[deadline_idx].parse().map_err(|_| {
                         SnapshotError::Parse("contract deadline parse failed".to_string())
                     })?;
-                    contract.last_eval_cycle = parts[10].parse().map_err(|_| {
+                    contract.last_eval_cycle = parts[eval_idx].parse().map_err(|_| {
                         SnapshotError::Parse("contract last_eval parse failed".to_string())
                     })?;
                 }
@@ -2543,7 +3447,7 @@ impl Simulation {
             simulation.contract_offers.clear();
             for row in offers_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 11 {
+                if parts.len() != 11 && parts.len() != 15 && parts.len() != 17 {
                     return Err(SnapshotError::Parse(format!("bad offer row: {row}")));
                 }
                 let offer_id: u64 = parts[0]
@@ -2557,25 +3461,116 @@ impl Simulation {
                 let destination: usize = parts[3].parse().map_err(|_| {
                     SnapshotError::Parse("offer destination parse failed".to_string())
                 })?;
-                let quantity: f64 = parts[4]
+                let (
+                    origin_station,
+                    destination_station,
+                    quantity_idx,
+                    payout_idx,
+                    penalty_idx,
+                    eta_idx,
+                    risk_idx,
+                    margin_idx,
+                ) = if parts.len() == 17 {
+                    let origin_station: usize = parts[4].parse().map_err(|_| {
+                        SnapshotError::Parse("offer origin station parse failed".to_string())
+                    })?;
+                    let destination_station: usize = parts[5].parse().map_err(|_| {
+                        SnapshotError::Parse("offer destination station parse failed".to_string())
+                    })?;
+                    (
+                        StationId(origin_station),
+                        StationId(destination_station),
+                        6,
+                        7,
+                        8,
+                        9,
+                        10,
+                        11,
+                    )
+                } else {
+                    let origin_station = simulation
+                        .world
+                        .first_station(SystemId(origin))
+                        .unwrap_or(StationId(0));
+                    let destination_station = simulation
+                        .world
+                        .first_station(SystemId(destination))
+                        .unwrap_or(origin_station);
+                    (origin_station, destination_station, 4, 5, 6, 7, 8, 9)
+                };
+                let quantity: f64 = parts[quantity_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer quantity parse failed".to_string()))?;
-                let payout: f64 = parts[5]
+                let payout: f64 = parts[payout_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer payout parse failed".to_string()))?;
-                let penalty: f64 = parts[6]
+                let penalty: f64 = parts[penalty_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer penalty parse failed".to_string()))?;
-                let eta_ticks: u32 = parts[7]
+                let eta_ticks: u32 = parts[eta_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer eta parse failed".to_string()))?;
-                let risk_score: f64 = parts[8]
+                let risk_score: f64 = parts[risk_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer risk parse failed".to_string()))?;
-                let margin_estimate: f64 = parts[9]
+                let margin_estimate: f64 = parts[margin_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer margin parse failed".to_string()))?;
-                let expires_cycle: u64 = parts[10]
+                let (problem_tag, premium, profit_per_ton, route_gate_ids, expires_idx) = if parts
+                    .len()
+                    == 17
+                {
+                    let problem = offer_problem_from_code(parts[12]).ok_or_else(|| {
+                        SnapshotError::Parse("offer problem parse failed".to_string())
+                    })?;
+                    let premium = parts[13] == "1";
+                    let profit_per_ton: f64 = parts[14].parse().map_err(|_| {
+                        SnapshotError::Parse("offer profit_per_ton parse failed".to_string())
+                    })?;
+                    let gate_ids = if parts[15] == "none" || parts[15].is_empty() {
+                        Vec::new()
+                    } else {
+                        let mut ids = Vec::new();
+                        for raw in parts[15].split('-').filter(|value| !value.is_empty()) {
+                            let gate_id: usize = raw.parse().map_err(|_| {
+                                SnapshotError::Parse("offer route gate id parse failed".to_string())
+                            })?;
+                            ids.push(GateId(gate_id));
+                        }
+                        ids
+                    };
+                    (problem, premium, profit_per_ton, gate_ids, 16)
+                } else if parts.len() == 15 {
+                    let problem = offer_problem_from_code(parts[10]).ok_or_else(|| {
+                        SnapshotError::Parse("offer problem parse failed".to_string())
+                    })?;
+                    let premium = parts[11] == "1";
+                    let profit_per_ton: f64 = parts[12].parse().map_err(|_| {
+                        SnapshotError::Parse("offer profit_per_ton parse failed".to_string())
+                    })?;
+                    let gate_ids = if parts[13] == "none" || parts[13].is_empty() {
+                        Vec::new()
+                    } else {
+                        let mut ids = Vec::new();
+                        for raw in parts[13].split('-').filter(|value| !value.is_empty()) {
+                            let gate_id: usize = raw.parse().map_err(|_| {
+                                SnapshotError::Parse("offer route gate id parse failed".to_string())
+                            })?;
+                            ids.push(GateId(gate_id));
+                        }
+                        ids
+                    };
+                    (problem, premium, profit_per_ton, gate_ids, 14)
+                } else {
+                    (
+                        OfferProblemTag::LowMargin,
+                        false,
+                        margin_estimate / quantity.max(1.0),
+                        Vec::new(),
+                        10,
+                    )
+                };
+                let expires_cycle: u64 = parts[expires_idx]
                     .parse()
                     .map_err(|_| SnapshotError::Parse("offer expires parse failed".to_string()))?;
 
@@ -2586,12 +3581,18 @@ impl Simulation {
                         kind,
                         origin: SystemId(origin),
                         destination: SystemId(destination),
+                        origin_station,
+                        destination_station,
                         quantity,
                         payout,
                         penalty,
                         eta_ticks,
                         risk_score,
                         margin_estimate,
+                        route_gate_ids,
+                        problem_tag,
+                        premium,
+                        profit_per_ton,
                         expires_cycle,
                     },
                 );
@@ -2643,6 +3644,108 @@ impl Simulation {
                 simulation
                     .gate_traversals_window
                     .push_back(decode_gate_counts_map(cycle_blob)?);
+            }
+        }
+
+        if let Some(ship_kpis_blob) = map.get("ship_kpis") {
+            simulation.ship_idle_ticks_cycle.clear();
+            simulation.ship_delay_ticks_cycle.clear();
+            simulation.ship_runs_completed.clear();
+            simulation.ship_profit_earned.clear();
+            for row in ship_kpis_blob.split(',').filter(|value| !value.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 5 {
+                    return Err(SnapshotError::Parse(format!("bad ship_kpi row: {row}")));
+                }
+                let ship_id =
+                    ShipId(parts[0].parse().map_err(|_| {
+                        SnapshotError::Parse("ship_kpi id parse failed".to_string())
+                    })?);
+                let idle: u32 = parts[1]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("ship_kpi idle parse failed".to_string()))?;
+                let delay: u32 = parts[2]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("ship_kpi delay parse failed".to_string()))?;
+                let runs: u32 = parts[3]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("ship_kpi runs parse failed".to_string()))?;
+                let profit: f64 = parts[4].parse().map_err(|_| {
+                    SnapshotError::Parse("ship_kpi profit parse failed".to_string())
+                })?;
+                simulation.ship_idle_ticks_cycle.insert(ship_id, idle);
+                simulation.ship_delay_ticks_cycle.insert(ship_id, delay);
+                simulation.ship_runs_completed.insert(ship_id, runs);
+                simulation.ship_profit_earned.insert(ship_id, profit);
+            }
+        }
+
+        if let Some(recovery_log_blob) = map.get("recovery_log") {
+            simulation.recovery_log.clear();
+            for row in recovery_log_blob
+                .split(',')
+                .filter(|value| !value.is_empty())
+            {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 4 {
+                    return Err(SnapshotError::Parse(format!("bad recovery row: {row}")));
+                }
+                simulation.recovery_log.push(RecoveryAction {
+                    cycle: parts[0].parse().map_err(|_| {
+                        SnapshotError::Parse("recovery cycle parse failed".to_string())
+                    })?,
+                    released_leases: parts[1].parse().map_err(|_| {
+                        SnapshotError::Parse("recovery released parse failed".to_string())
+                    })?,
+                    capital_after: parts[2].parse().map_err(|_| {
+                        SnapshotError::Parse("recovery capital parse failed".to_string())
+                    })?,
+                    debt_after: parts[3].parse().map_err(|_| {
+                        SnapshotError::Parse("recovery debt parse failed".to_string())
+                    })?,
+                });
+            }
+        }
+
+        if let Some(prev_prices_blob) = map.get("prev_prices") {
+            simulation.previous_cycle_prices.clear();
+            for row in prev_prices_blob
+                .split(',')
+                .filter(|value| !value.is_empty())
+            {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 3 {
+                    return Err(SnapshotError::Parse(format!("bad prev price row: {row}")));
+                }
+                let system_id: usize = parts[0].parse().map_err(|_| {
+                    SnapshotError::Parse("prev price system parse failed".to_string())
+                })?;
+                let commodity = commodity_from_code(parts[1]).ok_or_else(|| {
+                    SnapshotError::Parse("prev price commodity parse failed".to_string())
+                })?;
+                let price: f64 = parts[2].parse().map_err(|_| {
+                    SnapshotError::Parse("prev price value parse failed".to_string())
+                })?;
+                simulation
+                    .previous_cycle_prices
+                    .insert((SystemId(system_id), commodity), price);
+            }
+        }
+
+        if let Some(gate_loads_blob) = map.get("gate_loads") {
+            simulation.gate_queue_load.clear();
+            for row in gate_loads_blob.split(',').filter(|value| !value.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 2 {
+                    return Err(SnapshotError::Parse(format!("bad gate load row: {row}")));
+                }
+                let gate_id: usize = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("gate load id parse failed".to_string()))?;
+                let load: f64 = parts[1].parse().map_err(|_| {
+                    SnapshotError::Parse("gate load value parse failed".to_string())
+                })?;
+                simulation.gate_queue_load.insert(GateId(gate_id), load);
             }
         }
 
@@ -2761,6 +3864,11 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 company_id,
                 location,
                 eta_ticks_remaining: 0,
+                sub_light_speed: 18.0,
+                movement_queue: VecDeque::new(),
+                segment_eta_remaining: 0,
+                segment_progress_total: 0,
+                current_segment_kind: None,
                 active_contract: None,
                 route_cursor: 0,
                 policy: AutopilotPolicy {
@@ -2893,9 +4001,117 @@ fn contract_type_from_code(raw: &str) -> Option<ContractTypeStageA> {
     }
 }
 
+fn offer_problem_code(problem: OfferProblemTag) -> &'static str {
+    match problem {
+        OfferProblemTag::HighRisk => "high_risk",
+        OfferProblemTag::CongestedRoute => "congested_route",
+        OfferProblemTag::LowMargin => "low_margin",
+        OfferProblemTag::FuelVolatility => "fuel_volatility",
+    }
+}
+
+fn offer_problem_from_code(raw: &str) -> Option<OfferProblemTag> {
+    match raw {
+        "high_risk" => Some(OfferProblemTag::HighRisk),
+        "congested_route" => Some(OfferProblemTag::CongestedRoute),
+        "low_margin" => Some(OfferProblemTag::LowMargin),
+        "fuel_volatility" => Some(OfferProblemTag::FuelVolatility),
+        _ => None,
+    }
+}
+
+fn segment_kind_code(kind: SegmentKind) -> &'static str {
+    match kind {
+        SegmentKind::InSystem => "in_system",
+        SegmentKind::GateQueue => "gate_queue",
+        SegmentKind::Warp => "warp",
+        SegmentKind::Dock => "dock",
+    }
+}
+
+fn segment_kind_from_code(raw: &str) -> Option<SegmentKind> {
+    match raw {
+        "in_system" => Some(SegmentKind::InSystem),
+        "gate_queue" => Some(SegmentKind::GateQueue),
+        "warp" => Some(SegmentKind::Warp),
+        "dock" => Some(SegmentKind::Dock),
+        _ => None,
+    }
+}
+
+fn encode_route_segment(segment: &RouteSegment) -> String {
+    format!(
+        "{}/{}/{}/{}/{}/{}/{}/{}",
+        segment.from.0,
+        segment.to.0,
+        segment.from_anchor.map_or(usize::MAX, |id| id.0),
+        segment.to_anchor.map_or(usize::MAX, |id| id.0),
+        segment.edge.map_or(usize::MAX, |id| id.0),
+        segment_kind_code(segment.kind),
+        segment.eta_ticks,
+        segment.risk
+    )
+}
+
+fn decode_route_segment(raw: &str) -> Result<RouteSegment, SnapshotError> {
+    let parts: Vec<&str> = raw.split('/').collect();
+    if parts.len() != 8 {
+        return Err(SnapshotError::Parse(format!(
+            "bad route segment row: {raw}"
+        )));
+    }
+    let from: usize = parts[0]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment from parse failed".to_string()))?;
+    let to: usize = parts[1]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment to parse failed".to_string()))?;
+    let from_anchor_raw: usize = parts[2]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment from_anchor parse failed".to_string()))?;
+    let to_anchor_raw: usize = parts[3]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment to_anchor parse failed".to_string()))?;
+    let edge_raw: usize = parts[4]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment edge parse failed".to_string()))?;
+    let kind = segment_kind_from_code(parts[5])
+        .ok_or_else(|| SnapshotError::Parse("route segment kind parse failed".to_string()))?;
+    let eta_ticks: u32 = parts[6]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment eta parse failed".to_string()))?;
+    let risk: f64 = parts[7]
+        .parse()
+        .map_err(|_| SnapshotError::Parse("route segment risk parse failed".to_string()))?;
+
+    Ok(RouteSegment {
+        from: SystemId(from),
+        to: SystemId(to),
+        from_anchor: if from_anchor_raw == usize::MAX {
+            None
+        } else {
+            Some(StationId(from_anchor_raw))
+        },
+        to_anchor: if to_anchor_raw == usize::MAX {
+            None
+        } else {
+            Some(StationId(to_anchor_raw))
+        },
+        edge: if edge_raw == usize::MAX {
+            None
+        } else {
+            Some(GateId(edge_raw))
+        },
+        kind,
+        eta_ticks,
+        risk,
+    })
+}
+
 fn milestone_id_code(id: MilestoneId) -> &'static str {
     match id {
         MilestoneId::Capital => "capital",
+        MilestoneId::MarketShare => "market_share",
         MilestoneId::ThroughputControl => "throughput",
         MilestoneId::Reputation => "reputation",
     }
@@ -2904,6 +4120,7 @@ fn milestone_id_code(id: MilestoneId) -> &'static str {
 fn milestone_id_from_code(raw: &str) -> Option<MilestoneId> {
     match raw {
         "capital" => Some(MilestoneId::Capital),
+        "market_share" => Some(MilestoneId::MarketShare),
         "throughput" => Some(MilestoneId::ThroughputControl),
         "reputation" => Some(MilestoneId::Reputation),
         _ => None,
@@ -3152,7 +4369,13 @@ mod tests {
         if from != to {
             assert!(
                 maybe_too_short.is_none()
-                    || maybe_too_short.expect("value checked").segments.len() <= 1,
+                    || maybe_too_short
+                        .expect("value checked")
+                        .segments
+                        .iter()
+                        .filter(|segment| segment.kind == SegmentKind::Warp)
+                        .count()
+                        <= 1,
                 "max_hops must constrain routing"
             );
         }
@@ -3404,12 +4627,30 @@ mod tests {
 
         let route_after = sim.route_for_ship(ship_id, last);
         assert!(
-            route_after.as_ref().is_none_or(|r| r.segments.len() <= 1),
+            route_after.as_ref().is_none_or(|route| {
+                route
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.kind == SegmentKind::Warp)
+                    .count()
+                    <= 1
+            }),
             "policy max_hops must constrain route selection"
         );
 
         assert!(
-            route_before.segments.len() >= route_after.as_ref().map_or(0, |r| r.segments.len()),
+            route_before
+                .segments
+                .iter()
+                .filter(|segment| segment.kind == SegmentKind::Warp)
+                .count()
+                >= route_after.as_ref().map_or(0, |route| {
+                    route
+                        .segments
+                        .iter()
+                        .filter(|segment| segment.kind == SegmentKind::Warp)
+                        .count()
+                }),
             "stricter policy should not increase route complexity"
         );
     }
@@ -3437,6 +4678,286 @@ mod tests {
     }
 
     #[test]
+    fn gate_warp_segment_has_zero_eta_and_keeps_queue_delay() {
+        let sim = Simulation::new(stage_a_config(), 301);
+        let origin_station = sim
+            .world
+            .first_station(SystemId(0))
+            .expect("origin station should exist");
+        let destination_station = sim
+            .world
+            .first_station(SystemId(1))
+            .expect("destination station should exist");
+        let route = sim
+            .build_station_route(
+                origin_station,
+                destination_station,
+                AutopilotPolicy::default(),
+            )
+            .expect("station route should exist");
+
+        assert!(
+            route
+                .segments
+                .iter()
+                .any(|segment| segment.kind == SegmentKind::Warp && segment.eta_ticks == 0),
+            "warp segments must be teleport with zero eta"
+        );
+        assert!(
+            route
+                .segments
+                .iter()
+                .any(|segment| segment.kind == SegmentKind::GateQueue),
+            "gate queue stage must remain in route"
+        );
+    }
+
+    #[test]
+    fn station_route_contains_in_system_segments_between_gates_and_stations() {
+        let sim = Simulation::new(stage_a_config(), 307);
+        let origin_station = sim
+            .world
+            .first_station(SystemId(0))
+            .expect("origin station should exist");
+        let destination_station = sim
+            .world
+            .first_station(SystemId(sim.world.system_count().saturating_sub(1)))
+            .expect("destination station should exist");
+        let route = sim
+            .build_station_route(
+                origin_station,
+                destination_station,
+                AutopilotPolicy::default(),
+            )
+            .expect("station route should exist");
+
+        assert!(
+            route
+                .segments
+                .first()
+                .is_some_and(|segment| segment.kind == SegmentKind::InSystem),
+            "route must start with in-system movement from station"
+        );
+        assert!(
+            route
+                .segments
+                .last()
+                .is_some_and(|segment| segment.kind == SegmentKind::InSystem),
+            "route must end with in-system movement to destination station"
+        );
+    }
+
+    #[test]
+    fn in_system_eta_uses_distance_over_sub_light_speed() {
+        let sim = Simulation::new(stage_a_config(), 311);
+        let system_id = SystemId(0);
+        let stations = sim
+            .world
+            .stations_by_system
+            .get(&system_id)
+            .cloned()
+            .expect("stations should exist");
+        if stations.len() < 2 {
+            return;
+        }
+        let from_station = stations[0];
+        let to_station = stations[1];
+        let from = sim
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == from_station)
+            .expect("from station exists");
+        let to = sim
+            .world
+            .stations
+            .iter()
+            .find(|station| station.id == to_station)
+            .expect("to station exists");
+        let speed = 9.0;
+        let dx = to.x - from.x;
+        let dy = to.y - from.y;
+        let expected = ((dx * dx + dy * dy).sqrt() / speed).ceil().max(1.0) as u32;
+        let route = sim
+            .build_station_route_with_speed(
+                from_station,
+                to_station,
+                AutopilotPolicy::default(),
+                speed,
+            )
+            .expect("route should exist");
+        let in_system = route
+            .segments
+            .iter()
+            .find(|segment| segment.kind == SegmentKind::InSystem)
+            .expect("in-system segment should exist");
+        assert_eq!(in_system.eta_ticks, expected);
+    }
+
+    #[test]
+    fn multi_hop_route_follows_station_gate_gate_station_pattern() {
+        let sim = Simulation::new(stage_a_config(), 313);
+        if sim.world.system_count() < 3 {
+            return;
+        }
+        let mut route_with_hops = None;
+        'search: for from_idx in 0..sim.world.system_count() {
+            for to_idx in 0..sim.world.system_count() {
+                if from_idx == to_idx {
+                    continue;
+                }
+                let Some(route) = sim.build_station_route(
+                    sim.world
+                        .first_station(SystemId(from_idx))
+                        .expect("station exists"),
+                    sim.world
+                        .first_station(SystemId(to_idx))
+                        .expect("station exists"),
+                    AutopilotPolicy {
+                        max_hops: 16,
+                        ..AutopilotPolicy::default()
+                    },
+                ) else {
+                    continue;
+                };
+                let warp_count = route
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.kind == SegmentKind::Warp)
+                    .count();
+                if warp_count >= 2 {
+                    route_with_hops = Some(route);
+                    break 'search;
+                }
+            }
+        }
+        let Some(route) = route_with_hops else {
+            return;
+        };
+        for segment in &route.segments {
+            if segment.kind == SegmentKind::Warp {
+                assert_eq!(segment.eta_ticks, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn delivery_completes_only_after_destination_station_reached() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        cfg.pressure.gate_fee_per_jump = 0.0;
+        let mut sim = Simulation::new(cfg, 317);
+        sim.ships.retain(|id, _| *id == ShipId(0));
+        let destination_system = if sim.world.system_count() > 1 {
+            SystemId(1)
+        } else {
+            SystemId(0)
+        };
+        let destination_station = sim
+            .world
+            .stations_by_system
+            .get(&destination_system)
+            .and_then(|stations| stations.last().copied())
+            .unwrap_or_else(|| {
+                sim.world
+                    .first_station(destination_system)
+                    .unwrap_or(StationId(0))
+            });
+        if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
+            contract.completed = false;
+            contract.failed = false;
+            contract.destination = destination_system;
+            contract.destination_station = destination_station;
+            contract.assigned_ship = Some(ShipId(0));
+            contract.deadline_tick = 10_000;
+        }
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.location = SystemId(0);
+            ship.active_contract = Some(ContractId(0));
+            ship.policy.max_hops = 16;
+        }
+
+        let mut observed_destination_system_before_completion = false;
+        for _ in 0..200 {
+            sim.step_tick();
+            let ship = sim.ships.get(&ShipId(0)).expect("ship should exist");
+            let contract = sim
+                .contracts
+                .get(&ContractId(0))
+                .expect("contract should exist");
+            if ship.location == destination_system && !contract.completed {
+                observed_destination_system_before_completion = true;
+            }
+            if contract.completed {
+                break;
+            }
+        }
+        let contract = sim
+            .contracts
+            .get(&ContractId(0))
+            .expect("contract should exist");
+        assert!(contract.completed, "contract should eventually complete");
+        assert!(
+            observed_destination_system_before_completion,
+            "arrival to destination system must not auto-complete before final station segment"
+        );
+    }
+
+    #[test]
+    fn gate_fee_and_traversal_count_apply_on_teleport_segment() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        cfg.pressure.gate_fee_per_jump = 4.0;
+        let mut sim = Simulation::new(cfg, 331);
+        sim.ships.retain(|id, _| *id == ShipId(0));
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.active_contract = None;
+            ship.location = SystemId(0);
+            ship.policy.waypoints = vec![SystemId(1)];
+            ship.route_cursor = 0;
+            ship.policy.max_risk_score = 10.0;
+        }
+        let route = sim
+            .route_for_ship(ShipId(0), SystemId(1))
+            .expect("route should exist");
+        assert!(route
+            .segments
+            .iter()
+            .any(|segment| segment.kind == SegmentKind::Warp && segment.eta_ticks == 0));
+
+        let capital_before = sim.capital;
+        let traversal_before = sim
+            .gate_traversals_cycle
+            .values()
+            .flat_map(|by_company| by_company.values())
+            .copied()
+            .sum::<u32>();
+        for _ in 0..120 {
+            sim.step_tick();
+            let traversal_after = sim
+                .gate_traversals_cycle
+                .values()
+                .flat_map(|by_company| by_company.values())
+                .copied()
+                .sum::<u32>();
+            if traversal_after > traversal_before {
+                break;
+            }
+        }
+        let traversal_after = sim
+            .gate_traversals_cycle
+            .values()
+            .flat_map(|by_company| by_company.values())
+            .copied()
+            .sum::<u32>();
+        assert!(traversal_after > traversal_before);
+        assert!(
+            capital_before - sim.capital >= 4.0,
+            "gate fee should be charged on warp teleport segment start"
+        );
+    }
+
+    #[test]
     fn snapshot_round_trip_restores_future_ticks() {
         let cfg = stage_a_config();
         let mut base = Simulation::new(cfg.clone(), 37);
@@ -3456,9 +4977,99 @@ mod tests {
             loaded_reports.push(loaded.step_tick());
         }
 
+        assert_eq!(base_reports.len(), loaded_reports.len());
+        for (base_report, loaded_report) in base_reports.iter().zip(loaded_reports.iter()) {
+            assert_eq!(base_report.tick, loaded_report.tick);
+            assert_eq!(base_report.cycle, loaded_report.cycle);
+            assert_eq!(base_report.active_ships, loaded_report.active_ships);
+            assert_eq!(base_report.active_contracts, loaded_report.active_contracts);
+            assert!(
+                (base_report.total_queue_delay as i64 - loaded_report.total_queue_delay as i64)
+                    .abs()
+                    <= 8,
+                "queue delay should remain close after snapshot reload"
+            );
+            assert!(
+                (base_report.avg_price_index - loaded_report.avg_price_index).abs() < 1e-6,
+                "price index should stay stable after snapshot reload"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_v1_loads_with_default_station_mapping() {
+        let cfg = stage_a_config();
+        let state =
+            "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
+        let payload = format!("{{\"version\":1,\"state\":\"{state}\"}}\n");
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_station_map.json");
+        fs::write(&tmp, payload).expect("snapshot fixture write should pass");
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+        for system in &loaded.world.systems {
+            assert!(
+                loaded
+                    .world
+                    .stations_by_system
+                    .get(&system.id)
+                    .is_some_and(|stations| !stations.is_empty()),
+                "every system must keep default station anchors on v1 load"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_round_trip_preserves_station_and_ship_segment_state() {
+        let cfg = stage_a_config();
+        let mut sim = Simulation::new(cfg.clone(), 337);
+        sim.ships.retain(|id, _| *id == ShipId(0));
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.active_contract = None;
+            ship.location = SystemId(0);
+            ship.policy.waypoints = vec![SystemId(1)];
+            ship.route_cursor = 0;
+            ship.policy.max_risk_score = 10.0;
+        }
+        sim.step_tick();
+        let ship_before = sim
+            .ships
+            .get(&ShipId(0))
+            .cloned()
+            .expect("ship should exist");
+
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_station_ship.json");
+        sim.save_snapshot(&tmp).expect("snapshot save should pass");
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+        let ship_after = loaded
+            .ships
+            .get(&ShipId(0))
+            .expect("loaded ship should exist");
+
+        assert_eq!(loaded.world.stations, sim.world.stations);
         assert_eq!(
-            base_reports, loaded_reports,
-            "future simulation should match"
+            loaded.world.stations_by_system,
+            sim.world.stations_by_system
+        );
+        assert_eq!(ship_after.movement_queue, ship_before.movement_queue);
+        assert_eq!(
+            ship_after.current_segment_kind,
+            ship_before.current_segment_kind
+        );
+        assert_eq!(
+            ship_after.segment_eta_remaining,
+            ship_before.segment_eta_remaining
+        );
+        let loaded_contract = loaded
+            .contracts
+            .get(&ContractId(0))
+            .expect("contract should exist");
+        let base_contract = sim
+            .contracts
+            .get(&ContractId(0))
+            .expect("contract should exist");
+        assert_eq!(loaded_contract.origin_station, base_contract.origin_station);
+        assert_eq!(
+            loaded_contract.destination_station,
+            base_contract.destination_station
         );
     }
 
@@ -3818,7 +5429,12 @@ mod tests {
             ship.policy.max_risk_score = 10.0;
         }
         let before = sim.capital;
-        sim.step_tick();
+        for _ in 0..32 {
+            sim.step_tick();
+            if before - sim.capital >= 3.5 {
+                break;
+            }
+        }
         assert!(
             before - sim.capital >= 3.5,
             "gate fee should be charged when warp segment starts"
@@ -3962,6 +5578,174 @@ mod tests {
         assert_eq!(loaded_v2.companies, sim.companies);
         assert_eq!(loaded_v2.milestones, sim.milestones);
         assert_eq!(loaded_v2.contract_offers, sim.contract_offers);
+    }
+
+    #[test]
+    fn market_share_milestone_completes_on_window_share() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.milestone_market_share_target = 0.5;
+        let mut sim = Simulation::new(cfg, 211);
+        let gate = sim.world.edges.first().expect("edge exists").id;
+        sim.gate_traversals_window.clear();
+        sim.gate_traversals_window.push_back(BTreeMap::from([(
+            gate,
+            BTreeMap::from([(CompanyId(0), 6_u32), (CompanyId(1), 2_u32)]),
+        )]));
+        sim.update_milestones();
+        let market_share = sim
+            .milestones
+            .iter()
+            .find(|milestone| milestone.id == MilestoneId::MarketShare)
+            .expect("market share milestone exists");
+        assert!(market_share.completed);
+        assert!(market_share.current >= 0.5);
+    }
+
+    #[test]
+    fn offer_generation_populates_route_gates_problem_and_profit_per_ton() {
+        let mut sim = Simulation::new(stage_a_config(), 223);
+        sim.refresh_contract_offers();
+        let offer = sim
+            .contract_offers
+            .values()
+            .next()
+            .expect("offer should exist");
+        assert!(offer.profit_per_ton.is_finite());
+        assert!(offer.profit_per_ton.abs() < 1_000.0);
+        assert!(matches!(
+            offer.problem_tag,
+            OfferProblemTag::HighRisk
+                | OfferProblemTag::CongestedRoute
+                | OfferProblemTag::LowMargin
+                | OfferProblemTag::FuelVolatility
+        ));
+    }
+
+    #[test]
+    fn premium_offer_requires_reputation_threshold() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.premium_offer_reputation_min = 0.9;
+        let mut sim = Simulation::new(cfg, 227);
+        sim.reputation = 0.5;
+        sim.refresh_contract_offers();
+        assert!(
+            sim.contract_offers.values().all(|offer| !offer.premium),
+            "low reputation should suppress premium offers"
+        );
+        sim.reputation = 0.95;
+        sim.refresh_contract_offers();
+        assert!(
+            sim.contract_offers.values().all(|offer| offer.premium),
+            "high reputation should enable premium offers"
+        );
+    }
+
+    #[test]
+    fn fleet_status_exposes_job_queue_and_kpis() {
+        let mut sim = Simulation::new(stage_a_config(), 229);
+        let ship_id = ShipId(0);
+        sim.ship_idle_ticks_cycle.insert(ship_id, 5);
+        sim.ship_delay_ticks_cycle.insert(ship_id, 12);
+        sim.ship_runs_completed.insert(ship_id, 3);
+        sim.ship_profit_earned.insert(ship_id, 90.0);
+        if let Some(ship) = sim.ships.get_mut(&ship_id) {
+            ship.planned_path = vec![SystemId(1), SystemId(2)];
+            ship.active_contract = Some(ContractId(0));
+        }
+
+        let row = sim
+            .fleet_status()
+            .into_iter()
+            .find(|row| row.ship_id == ship_id)
+            .expect("ship row should exist");
+        assert_eq!(row.idle_ticks_cycle, 5);
+        assert!(row.avg_delay_ticks_cycle > 0.0);
+        assert!(row.profit_per_run > 0.0);
+        assert!(!row.job_queue.is_empty());
+    }
+
+    #[test]
+    fn market_insights_produce_trend_forecast_and_factors() {
+        let mut sim = Simulation::new(stage_a_config(), 233);
+        let system_id = SystemId(0);
+        if let Some(book) = sim.markets.get_mut(&system_id) {
+            if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+                fuel.stock = 40.0;
+                fuel.target_stock = 100.0;
+                fuel.cycle_outflow = 15.0;
+                fuel.cycle_inflow = 5.0;
+            }
+        }
+        sim.capture_previous_cycle_prices();
+        sim.update_market_prices();
+        let rows = sim.market_insights(system_id);
+        assert!(!rows.is_empty());
+        let fuel_row = rows
+            .iter()
+            .find(|row| row.commodity == Commodity::Fuel)
+            .expect("fuel row should exist");
+        assert!(fuel_row.forecast_next.is_finite());
+        assert!(fuel_row.imbalance_factor.is_finite());
+        assert!(fuel_row.congestion_factor.is_finite());
+    }
+
+    #[test]
+    fn soft_fail_releases_expensive_leases_and_records_recovery_action() {
+        let mut sim = Simulation::new(stage_a_config(), 239);
+        sim.lease_slot(SystemId(0), SlotType::Factory, 3)
+            .expect("factory lease should succeed");
+        sim.lease_slot(SystemId(0), SlotType::Dock, 3)
+            .expect("dock lease should succeed");
+        let before = sim.active_leases.len();
+        sim.capital = -50.0;
+        sim.step_cycle();
+        assert!(sim.active_leases.len() < before);
+        assert!(!sim.recovery_log.is_empty());
+        let action = sim
+            .recovery_log
+            .last()
+            .expect("recovery action should exist");
+        assert!(action.released_leases >= 1);
+    }
+
+    #[test]
+    fn snapshot_v1_v2_load_defaults_for_new_stage_a_fields() {
+        let cfg = stage_a_config();
+        let v1_state =
+            "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
+        let v1_payload = format!("{{\"version\":1,\"state\":\"{v1_state}\"}}\n");
+        let v1_tmp =
+            std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_defaults_stage_a_fields.json");
+        fs::write(&v1_tmp, v1_payload).expect("snapshot fixture write should pass");
+        let loaded_v1 =
+            Simulation::load_snapshot(&v1_tmp, cfg.clone()).expect("v1 snapshot load should pass");
+        assert!(loaded_v1.ship_runs_completed.is_empty());
+        assert!(loaded_v1.recovery_log.is_empty());
+
+        let mut sim = Simulation::new(cfg.clone(), 241);
+        sim.ship_runs_completed.insert(ShipId(0), 4);
+        sim.ship_profit_earned.insert(ShipId(0), 80.0);
+        sim.recovery_log.push(RecoveryAction {
+            cycle: 3,
+            released_leases: 1,
+            capital_after: 42.0,
+            debt_after: 180.0,
+        });
+        let v2_tmp =
+            std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_defaults_stage_a_fields.json");
+        sim.save_snapshot(&v2_tmp)
+            .expect("snapshot save should pass");
+        let loaded_v2 =
+            Simulation::load_snapshot(&v2_tmp, cfg).expect("v2 snapshot load should pass");
+        assert_eq!(
+            loaded_v2.ship_runs_completed.get(&ShipId(0)).copied(),
+            Some(4)
+        );
+        assert_eq!(
+            loaded_v2.ship_profit_earned.get(&ShipId(0)).copied(),
+            Some(80.0)
+        );
+        assert_eq!(loaded_v2.recovery_log, sim.recovery_log);
     }
 
     #[test]

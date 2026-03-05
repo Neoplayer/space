@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::PrimaryEguiContext;
-use gatebound_core::{Commodity, ShipId, Simulation, SystemId};
+use gatebound_core::{Commodity, SegmentKind, ShipId, Simulation, StationId, SystemId};
 use std::collections::BTreeMap;
 
 use crate::sim_runtime::SimResource;
@@ -38,18 +38,35 @@ pub fn update_ship_motion_cache(mut cache: ResMut<ShipMotionCache>, sim: Res<Sim
     for (ship_id, ship) in &sim.simulation.ships {
         stale.retain(|candidate| candidate != ship_id);
 
-        if ship.eta_ticks_remaining == 0 {
+        if ship.segment_eta_remaining == 0
+            || ship.current_segment_kind != Some(SegmentKind::InSystem)
+        {
             cache.segments.remove(ship_id);
             continue;
         }
 
-        let Some(target_system) = ship.current_target else {
+        let Some(segment) = ship.movement_queue.front() else {
             cache.segments.remove(ship_id);
             continue;
         };
+        if segment.kind != SegmentKind::InSystem {
+            cache.segments.remove(ship_id);
+            continue;
+        }
 
-        let from = system_position(&sim.simulation, ship.location);
-        let to = system_position(&sim.simulation, target_system);
+        let from = segment_endpoint(
+            &sim.simulation,
+            segment.from,
+            segment.from_anchor,
+            segment.edge,
+        );
+        let to = if let Some(anchor_id) = segment.to_anchor {
+            station_position(&sim.simulation, anchor_id).unwrap_or_else(|| {
+                segment_endpoint(&sim.simulation, segment.to, None, segment.edge)
+            })
+        } else {
+            segment_endpoint(&sim.simulation, segment.to, None, segment.edge)
+        };
 
         let replace = cache
             .segments
@@ -57,7 +74,7 @@ pub fn update_ship_motion_cache(mut cache: ResMut<ShipMotionCache>, sim: Res<Sim
             .map(|existing| {
                 existing.to != to
                     || existing.from != from
-                    || ship.eta_ticks_remaining > existing.total_ticks
+                    || ship.segment_progress_total > existing.total_ticks
             })
             .unwrap_or(true);
 
@@ -67,7 +84,7 @@ pub fn update_ship_motion_cache(mut cache: ResMut<ShipMotionCache>, sim: Res<Sim
                 ShipMotionState {
                     from,
                     to,
-                    total_ticks: ship.eta_ticks_remaining.max(1),
+                    total_ticks: ship.segment_progress_total.max(1),
                 },
             );
         }
@@ -110,55 +127,112 @@ pub fn draw_world_gizmos(
 
     for system in &simulation.world.systems {
         let center = Vec2::new(system.x as f32, system.y as f32);
-        let dock_pressure = dock_congestion_index(simulation, system.id);
-        let fuel_stress = fuel_stress_index(simulation, system.id);
+        let system_open = system_objects_visible_in_current_view(ui_state.mode, system.id);
         let color = match ui_state.mode {
             CameraMode::System(selected) if selected == system.id => Color::srgb(0.40, 0.80, 1.0),
             _ => Color::srgb(0.20, 0.55, 0.95),
         };
         gizmos.circle_2d(center, system.radius as f32 * 0.18, color);
 
-        if dock_pressure > 0.15 {
-            gizmos.circle_2d(
-                center,
-                system.radius as f32 * (0.24 + dock_pressure * 0.08),
-                Color::srgba(1.0, 0.72, 0.18, 0.4 + dock_pressure * 0.2),
-            );
-        }
-        if fuel_stress > 0.20 {
-            gizmos.circle_2d(
-                center,
-                system.radius as f32 * (0.30 + fuel_stress * 0.12),
-                Color::srgba(1.0, 0.2, 0.2, 0.35 + fuel_stress * 0.25),
-            );
-        }
+        if system_open {
+            let dock_pressure = dock_congestion_index(simulation, system.id);
+            let fuel_stress = fuel_stress_index(simulation, system.id);
+            if dock_pressure > 0.15 {
+                gizmos.circle_2d(
+                    center,
+                    system.radius as f32 * (0.24 + dock_pressure * 0.08),
+                    Color::srgba(1.0, 0.72, 0.18, 0.4 + dock_pressure * 0.2),
+                );
+            }
+            if fuel_stress > 0.20 {
+                gizmos.circle_2d(
+                    center,
+                    system.radius as f32 * (0.30 + fuel_stress * 0.12),
+                    Color::srgba(1.0, 0.2, 0.2, 0.35 + fuel_stress * 0.25),
+                );
+            }
 
-        if matches!(ui_state.mode, CameraMode::System(selected) if selected == system.id) {
+            for station_id in simulation
+                .world
+                .stations_by_system
+                .get(&system.id)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(station) = simulation
+                    .world
+                    .stations
+                    .iter()
+                    .find(|anchor| anchor.id == *station_id)
+                {
+                    gizmos.circle_2d(
+                        Vec2::new(station.x as f32, station.y as f32),
+                        3.8,
+                        Color::srgba(0.78, 0.90, 1.0, 0.95),
+                    );
+                }
+            }
+            let tick_phase = (simulation.tick % 120) as f32 / 120.0;
+            let pulse = 0.85 + 0.25 * (tick_phase * std::f32::consts::TAU).sin().abs();
             gizmos.circle_2d(
                 center,
                 system.radius as f32,
                 Color::srgba(0.45, 0.75, 1.0, 0.55),
             );
+            gizmos.circle_2d(
+                center,
+                system.radius as f32 * 0.12,
+                Color::srgba(1.0, 0.85, 0.25, 0.8),
+            );
+            for orbit in [0.26_f32, 0.42_f32, 0.58_f32] {
+                gizmos.circle_2d(
+                    center,
+                    system.radius as f32 * orbit,
+                    Color::srgba(0.7, 0.8, 1.0, 0.16),
+                );
+            }
             for gate in &system.gate_nodes {
                 gizmos.circle_2d(
                     Vec2::new(gate.x as f32, gate.y as f32),
                     6.0,
                     Color::srgb(0.95, 0.65, 0.15),
                 );
+                gizmos.circle_2d(
+                    Vec2::new(gate.x as f32, gate.y as f32),
+                    8.0 * pulse,
+                    Color::srgba(1.0, 0.7, 0.2, 0.3),
+                );
             }
         }
     }
 
     for (ship_id, ship) in &simulation.ships {
+        if !ship_is_visible_in_current_view(ui_state.mode, ship.location) {
+            continue;
+        }
         let position = ship_position(
             simulation,
             ship_id,
             ship.location,
-            ship.eta_ticks_remaining,
+            ship.segment_eta_remaining,
             &cache,
         );
         gizmos.circle_2d(position, 4.0, Color::srgb(0.94, 0.94, 0.32));
     }
+}
+
+pub(crate) fn ship_is_visible_in_current_view(mode: CameraMode, ship_location: SystemId) -> bool {
+    match mode {
+        CameraMode::Galaxy => false,
+        CameraMode::System(selected_system) => ship_location == selected_system,
+    }
+}
+
+pub(crate) fn system_objects_visible_in_current_view(
+    mode: CameraMode,
+    system_id: SystemId,
+) -> bool {
+    matches!(mode, CameraMode::System(selected_system) if selected_system == system_id)
 }
 
 fn ship_position(
@@ -175,6 +249,25 @@ fn ship_position(
     system_position(simulation, fallback_system)
 }
 
+fn segment_endpoint(
+    simulation: &Simulation,
+    system_id: SystemId,
+    station_id: Option<StationId>,
+    edge: Option<gatebound_core::GateId>,
+) -> Vec2 {
+    if let Some(station_id) = station_id {
+        if let Some(position) = station_position(simulation, station_id) {
+            return position;
+        }
+    }
+    if let Some(gate_id) = edge {
+        if let Some((x, y)) = simulation.world.gate_coords(system_id, gate_id) {
+            return Vec2::new(x as f32, y as f32);
+        }
+    }
+    system_position(simulation, system_id)
+}
+
 fn system_position(simulation: &Simulation, system_id: SystemId) -> Vec2 {
     simulation
         .world
@@ -183,6 +276,12 @@ fn system_position(simulation: &Simulation, system_id: SystemId) -> Vec2 {
         .find(|system| system.id == system_id)
         .map(|system| Vec2::new(system.x as f32, system.y as f32))
         .unwrap_or(Vec2::ZERO)
+}
+
+fn station_position(simulation: &Simulation, station_id: StationId) -> Option<Vec2> {
+    simulation
+        .station_position(station_id)
+        .map(|(x, y)| Vec2::new(x as f32, y as f32))
 }
 
 fn dock_congestion_index(simulation: &Simulation, system_id: SystemId) -> f32 {

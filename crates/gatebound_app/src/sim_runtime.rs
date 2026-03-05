@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use gatebound_core::{
-    CompanyId, ContractOffer, CycleReport, LeaseError, RiskEvent, ShipId, Simulation, SlotType,
-    SystemId, TickReport,
+    CompanyId, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag, RiskEvent, ShipId,
+    Simulation, SlotType, SystemId, TickReport,
 };
+use std::collections::VecDeque;
 
 use crate::hud::HudMessages;
 use crate::view_mode::{CameraMode, CameraUiState};
@@ -40,6 +41,9 @@ pub struct ContractsFilterState {
     pub min_margin: f64,
     pub max_risk: f64,
     pub max_eta: u32,
+    pub route_gate: Option<GateId>,
+    pub problem: Option<OfferProblemTag>,
+    pub premium_only: bool,
     pub sort_mode: OfferSortMode,
 }
 
@@ -49,8 +53,76 @@ impl Default for ContractsFilterState {
             min_margin: 0.0,
             max_risk: 2.0,
             max_eta: 240,
+            route_gate: None,
+            problem: None,
+            premium_only: false,
             sort_mode: OfferSortMode::MarginDesc,
         }
+    }
+}
+
+#[derive(Resource, Debug, Clone, PartialEq)]
+pub struct UiKpiTracker {
+    pub manual_action_ticks: VecDeque<u64>,
+    pub policy_edit_ticks: VecDeque<u64>,
+    pub manual_actions_per_min: f64,
+    pub policy_edits_per_min: f64,
+    pub avg_route_hops_player: f64,
+}
+
+impl Default for UiKpiTracker {
+    fn default() -> Self {
+        Self {
+            manual_action_ticks: VecDeque::new(),
+            policy_edit_ticks: VecDeque::new(),
+            manual_actions_per_min: 0.0,
+            policy_edits_per_min: 0.0,
+            avg_route_hops_player: 0.0,
+        }
+    }
+}
+
+impl UiKpiTracker {
+    pub fn record_manual_action(&mut self, tick: u64) {
+        self.manual_action_ticks.push_back(tick);
+    }
+
+    pub fn record_policy_edit(&mut self, tick: u64) {
+        self.policy_edit_ticks.push_back(tick);
+    }
+
+    pub fn update(&mut self, simulation: &Simulation) {
+        let window = u64::from(simulation.config.time.cycle_ticks.max(1));
+        let min_tick = simulation.tick.saturating_sub(window);
+        while self
+            .manual_action_ticks
+            .front()
+            .is_some_and(|tick| *tick < min_tick)
+        {
+            self.manual_action_ticks.pop_front();
+        }
+        while self
+            .policy_edit_ticks
+            .front()
+            .is_some_and(|tick| *tick < min_tick)
+        {
+            self.policy_edit_ticks.pop_front();
+        }
+
+        self.manual_actions_per_min = self.manual_action_ticks.len() as f64;
+        self.policy_edits_per_min = self.policy_edit_ticks.len() as f64;
+
+        let mut hops_sum = 0.0;
+        let mut ships = 0.0;
+        for ship in simulation
+            .ships
+            .values()
+            .filter(|ship| ship.company_id == CompanyId(0))
+        {
+            hops_sum += ship.planned_path.len() as f64;
+            ships += 1.0;
+        }
+        self.avg_route_hops_player = if ships > 0.0 { hops_sum / ships } else { 0.0 };
     }
 }
 
@@ -231,6 +303,13 @@ pub fn apply_offer_filters(
         offer.margin_estimate >= filters.min_margin
             && offer.risk_score <= filters.max_risk
             && offer.eta_ticks <= filters.max_eta
+            && filters
+                .route_gate
+                .is_none_or(|gate_id| offer.route_gate_ids.contains(&gate_id))
+            && filters
+                .problem
+                .is_none_or(|problem| offer.problem_tag == problem)
+            && (!filters.premium_only || offer.premium)
     });
     match filters.sort_mode {
         OfferSortMode::MarginDesc => {
@@ -289,21 +368,28 @@ pub fn handle_panel_hotkeys(
     mut panels: ResMut<UiPanelState>,
     mut selected_ship: ResMut<SelectedShip>,
     sim: Res<SimResource>,
+    mut kpi: ResMut<UiKpiTracker>,
 ) {
+    let mut manual_action = false;
     if keys.just_pressed(KeyCode::F1) {
         apply_panel_toggle(&mut panels, 1);
+        manual_action = true;
     }
     if keys.just_pressed(KeyCode::F2) {
         apply_panel_toggle(&mut panels, 2);
+        manual_action = true;
     }
     if keys.just_pressed(KeyCode::F3) {
         apply_panel_toggle(&mut panels, 3);
+        manual_action = true;
     }
     if keys.just_pressed(KeyCode::F4) {
         apply_panel_toggle(&mut panels, 4);
+        manual_action = true;
     }
     if keys.just_pressed(KeyCode::F5) {
         apply_panel_toggle(&mut panels, 5);
+        manual_action = true;
     }
 
     let ship_ids = player_ship_ids(&sim.simulation);
@@ -312,9 +398,15 @@ pub fn handle_panel_hotkeys(
     }
     if keys.just_pressed(KeyCode::BracketRight) {
         selected_ship.ship_id = cycle_selected_ship(selected_ship.ship_id, &ship_ids, true);
+        manual_action = true;
     }
     if keys.just_pressed(KeyCode::BracketLeft) {
         selected_ship.ship_id = cycle_selected_ship(selected_ship.ship_id, &ship_ids, false);
+        manual_action = true;
+    }
+
+    if manual_action {
+        kpi.record_manual_action(sim.simulation.tick);
     }
 }
 
@@ -322,6 +414,7 @@ pub fn handle_risk_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut sim: ResMut<SimResource>,
     mut messages: ResMut<HudMessages>,
+    mut kpi: ResMut<UiKpiTracker>,
 ) {
     let cycle_ticks = sim.simulation.config.time.cycle_ticks;
     let action = if keys.just_pressed(KeyCode::KeyG) {
@@ -337,6 +430,7 @@ pub fn handle_risk_hotkeys(
     let Some(action) = action else {
         return;
     };
+    kpi.record_manual_action(sim.simulation.tick);
 
     match action {
         RiskHotkey::GateCongestion => {
@@ -375,6 +469,7 @@ pub fn handle_lease_hotkeys(
     mut selection: ResMut<LeaseSelection>,
     mut sim: ResMut<SimResource>,
     mut messages: ResMut<HudMessages>,
+    mut kpi: ResMut<UiKpiTracker>,
 ) {
     let action = if keys.just_pressed(KeyCode::KeyZ) {
         hotkey_to_lease('z')
@@ -393,6 +488,7 @@ pub fn handle_lease_hotkeys(
     let Some(action) = action else {
         return;
     };
+    kpi.record_manual_action(sim.simulation.tick);
 
     let selected_system = selected_system.system_id;
     const DEFAULT_LEASE_CYCLES: u32 = 3;
@@ -453,6 +549,7 @@ pub fn drive_simulation(
     time: Res<Time>,
     mut clock: ResMut<SimClock>,
     mut sim: ResMut<SimResource>,
+    mut kpi: ResMut<UiKpiTracker>,
 ) {
     let tick_seconds = sim.simulation.config.time.tick_seconds;
     let ticks = consume_ticks(&mut clock, time.delta_secs_f64(), tick_seconds);
@@ -464,6 +561,7 @@ pub fn drive_simulation(
             sim.last_cycle_report = derive_cycle_report(&sim.simulation);
         }
     }
+    kpi.update(&sim.simulation);
 }
 
 pub fn derive_cycle_report(simulation: &Simulation) -> CycleReport {
