@@ -1121,6 +1121,7 @@ pub struct Ship {
     pub policy: AutopilotPolicy,
     pub planned_path: Vec<SystemId>,
     pub current_target: Option<SystemId>,
+    pub last_gate_arrival: Option<GateId>,
     pub last_risk_score: f64,
     pub reroutes: u64,
 }
@@ -1920,6 +1921,9 @@ impl Simulation {
             if let Some(segment) = completed_segment {
                 if let Some(ship) = self.ships.get_mut(&ship_id) {
                     ship.location = segment.to;
+                    if segment.kind == SegmentKind::Warp {
+                        ship.last_gate_arrival = segment.edge;
+                    }
                 }
             }
 
@@ -2001,6 +2005,7 @@ impl Simulation {
                 ship.current_segment_kind = None;
                 ship.current_target = None;
                 ship.eta_ticks_remaining = 0;
+                ship.last_gate_arrival = None;
             }
             self.start_next_movement_segment(ship_id, dock_delay_factor);
         }
@@ -2053,6 +2058,9 @@ impl Simulation {
             }
 
             if let Some(ship) = self.ships.get_mut(&ship_id) {
+                if segment.from_anchor.is_some() {
+                    ship.last_gate_arrival = None;
+                }
                 ship.current_segment_kind = Some(segment.kind);
                 ship.current_target = Some(segment.to);
                 ship.segment_progress_total = eta;
@@ -2066,6 +2074,9 @@ impl Simulation {
 
             if let Some(ship) = self.ships.get_mut(&ship_id) {
                 ship.location = segment.to;
+                if segment.kind == SegmentKind::Warp {
+                    ship.last_gate_arrival = segment.edge;
+                }
                 ship.movement_queue.pop_front();
                 ship.current_target = None;
                 ship.current_segment_kind = None;
@@ -2869,7 +2880,7 @@ impl Simulation {
                     .join("|")
             };
             ship_runtime.push_str(&format!(
-                "{}:{}:{}:{}:{}:{},",
+                "{}:{}:{}:{}:{}:{}:{},",
                 ship.id.0,
                 ship.sub_light_speed,
                 ship.segment_eta_remaining,
@@ -2877,7 +2888,8 @@ impl Simulation {
                 ship.current_segment_kind
                     .map(segment_kind_code)
                     .unwrap_or("none"),
-                queue_encoded
+                queue_encoded,
+                ship.last_gate_arrival.map_or(usize::MAX, |gate| gate.0)
             ));
         }
 
@@ -3212,6 +3224,7 @@ impl Simulation {
                     };
                     ship.movement_queue.clear();
                     ship.sub_light_speed = 18.0;
+                    ship.last_gate_arrival = None;
                 }
             }
         }
@@ -3219,7 +3232,7 @@ impl Simulation {
         if let Some(runtime_blob) = map.get("ship_runtime") {
             for row in runtime_blob.split(',').filter(|v| !v.is_empty()) {
                 let parts: Vec<&str> = row.split(':').collect();
-                if parts.len() != 6 {
+                if parts.len() != 6 && parts.len() != 7 {
                     return Err(SnapshotError::Parse(format!("bad ship_runtime row: {row}")));
                 }
                 let ship_id: usize = parts[0].parse().map_err(|_| {
@@ -3251,6 +3264,20 @@ impl Simulation {
                             .push_back(decode_route_segment(encoded)?);
                     }
                 }
+                ship.last_gate_arrival = if parts.len() == 7 {
+                    let gate_raw: usize = parts[6].parse().map_err(|_| {
+                        SnapshotError::Parse(
+                            "ship_runtime last_gate_arrival parse failed".to_string(),
+                        )
+                    })?;
+                    if gate_raw == usize::MAX {
+                        None
+                    } else {
+                        Some(GateId(gate_raw))
+                    }
+                } else {
+                    None
+                };
                 ship.eta_ticks_remaining = ship.segment_eta_remaining;
             }
         }
@@ -3877,6 +3904,7 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 },
                 planned_path: Vec::new(),
                 current_target: None,
+                last_gate_arrival: None,
                 last_risk_score: 0.0,
                 reroutes: 0,
             },
@@ -4713,6 +4741,67 @@ mod tests {
     }
 
     #[test]
+    fn warp_completion_sets_last_gate_arrival() {
+        let mut sim = Simulation::new(stage_a_config(), 303);
+        sim.ships.retain(|id, _| *id == ShipId(0));
+        let Some(edge) = sim.world.edges.first().cloned() else {
+            return;
+        };
+        let ship_id = ShipId(0);
+        if let Some(ship) = sim.ships.get_mut(&ship_id) {
+            ship.location = edge.a;
+            ship.movement_queue = VecDeque::from([RouteSegment {
+                from: edge.a,
+                to: edge.b,
+                from_anchor: None,
+                to_anchor: None,
+                edge: Some(edge.id),
+                kind: SegmentKind::Warp,
+                eta_ticks: 0,
+                risk: 0.0,
+            }]);
+            ship.segment_eta_remaining = 0;
+            ship.segment_progress_total = 0;
+            ship.current_segment_kind = None;
+            ship.current_target = None;
+            ship.last_gate_arrival = None;
+        }
+        sim.start_next_movement_segment(ship_id, 1.0);
+        let ship = sim.ships.get(&ship_id).expect("ship should exist");
+        assert_eq!(ship.location, edge.b);
+        assert_eq!(ship.last_gate_arrival, Some(edge.id));
+    }
+
+    #[test]
+    fn last_gate_arrival_cleared_on_new_station_route() {
+        let mut sim = Simulation::new(stage_a_config(), 305);
+        sim.ships.retain(|id, _| *id == ShipId(0));
+        if sim.world.system_count() < 2 {
+            return;
+        }
+        let ship_id = ShipId(0);
+        let fallback_gate = sim.world.edges.first().map(|edge| edge.id);
+        if let Some(ship) = sim.ships.get_mut(&ship_id) {
+            ship.active_contract = None;
+            ship.location = SystemId(0);
+            ship.policy.waypoints = vec![SystemId(1)];
+            ship.policy.max_risk_score = 10.0;
+            ship.route_cursor = 0;
+            ship.movement_queue.clear();
+            ship.segment_eta_remaining = 0;
+            ship.segment_progress_total = 0;
+            ship.current_segment_kind = None;
+            ship.current_target = None;
+            ship.last_gate_arrival = fallback_gate;
+        }
+
+        sim.update_ship_movements();
+
+        let ship = sim.ships.get(&ship_id).expect("ship should exist");
+        assert_eq!(ship.last_gate_arrival, None);
+    }
+
+    #[test]
     fn station_route_contains_in_system_segments_between_gates_and_stations() {
         let sim = Simulation::new(stage_a_config(), 307);
         let origin_station = sim
@@ -5015,6 +5104,13 @@ mod tests {
                 "every system must keep default station anchors on v1 load"
             );
         }
+        assert!(
+            loaded
+                .ships
+                .values()
+                .all(|ship| ship.last_gate_arrival.is_none()),
+            "v1 load should default last_gate_arrival to None"
+        );
     }
 
     #[test]
@@ -5022,12 +5118,14 @@ mod tests {
         let cfg = stage_a_config();
         let mut sim = Simulation::new(cfg.clone(), 337);
         sim.ships.retain(|id, _| *id == ShipId(0));
+        let gate_id = sim.world.edges.first().map(|edge| edge.id);
         if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
             ship.active_contract = None;
             ship.location = SystemId(0);
             ship.policy.waypoints = vec![SystemId(1)];
             ship.route_cursor = 0;
             ship.policy.max_risk_score = 10.0;
+            ship.last_gate_arrival = gate_id;
         }
         sim.step_tick();
         let ship_before = sim
@@ -5058,6 +5156,7 @@ mod tests {
             ship_after.segment_eta_remaining,
             ship_before.segment_eta_remaining
         );
+        assert_eq!(ship_after.last_gate_arrival, ship_before.last_gate_arrival);
         let loaded_contract = loaded
             .contracts
             .get(&ContractId(0))
@@ -5071,6 +5170,24 @@ mod tests {
             loaded_contract.destination_station,
             base_contract.destination_station
         );
+    }
+
+    #[test]
+    fn snapshot_v2_preserves_last_gate_arrival() {
+        let cfg = stage_a_config();
+        let mut sim = Simulation::new(cfg.clone(), 341);
+        let Some(gate_id) = sim.world.edges.first().map(|edge| edge.id) else {
+            return;
+        };
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.last_gate_arrival = Some(gate_id);
+        }
+
+        let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_last_gate_arrival.json");
+        sim.save_snapshot(&tmp).expect("snapshot save should pass");
+        let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+        let loaded_ship = loaded.ships.get(&ShipId(0)).expect("ship should exist");
+        assert_eq!(loaded_ship.last_gate_arrival, Some(gate_id));
     }
 
     #[test]

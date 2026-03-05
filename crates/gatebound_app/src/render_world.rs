@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::PrimaryEguiContext;
-use gatebound_core::{Commodity, SegmentKind, ShipId, Simulation, StationId, SystemId};
+use gatebound_core::{
+    Commodity, RouteSegment, SegmentKind, Ship, ShipId, Simulation, StationId, SystemId,
+};
 use std::collections::BTreeMap;
 
 use crate::sim_runtime::SimResource;
@@ -54,12 +56,7 @@ pub fn update_ship_motion_cache(mut cache: ResMut<ShipMotionCache>, sim: Res<Sim
             continue;
         }
 
-        let from = segment_endpoint(
-            &sim.simulation,
-            segment.from,
-            segment.from_anchor,
-            segment.edge,
-        );
+        let from = segment_from_point(&sim.simulation, ship, segment);
         let to = if let Some(anchor_id) = segment.to_anchor {
             station_position(&sim.simulation, anchor_id).unwrap_or_else(|| {
                 segment_endpoint(&sim.simulation, segment.to, None, segment.edge)
@@ -247,6 +244,24 @@ fn ship_position(
         return segment.from.lerp(segment.to, t);
     }
     system_position(simulation, fallback_system)
+}
+
+pub(crate) fn segment_from_point(
+    simulation: &Simulation,
+    ship: &Ship,
+    segment: &RouteSegment,
+) -> Vec2 {
+    if let Some(station_id) = segment.from_anchor {
+        if let Some(position) = station_position(simulation, station_id) {
+            return position;
+        }
+    }
+    if let Some(gate_id) = ship.last_gate_arrival {
+        if let Some((x, y)) = simulation.world.gate_coords(segment.from, gate_id) {
+            return Vec2::new(x as f32, y as f32);
+        }
+    }
+    segment_endpoint(simulation, segment.from, None, segment.edge)
 }
 
 fn segment_endpoint(

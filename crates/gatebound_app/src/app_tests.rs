@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use crate::hud::build_hud_snapshot;
 use crate::render_world::{
-    ship_is_visible_in_current_view, system_objects_visible_in_current_view,
+    segment_from_point, ship_is_visible_in_current_view, system_objects_visible_in_current_view,
     update_ship_motion_cache, ShipMotionCache,
 };
 use crate::sim_runtime::{
@@ -414,6 +414,113 @@ fn render_world_uses_station_anchor_positions_for_ship_motion() {
         .expect("ship motion state should exist");
     assert_eq!(state.from, Vec2::new(from.0 as f32, from.1 as f32));
     assert_eq!(state.to, Vec2::new(to.0 as f32, to.1 as f32));
+}
+
+#[test]
+fn ship_motion_after_warp_starts_at_entry_gate_not_center() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 52);
+    let Some(edge) = sim.world.edges.first().cloned() else {
+        return;
+    };
+    let ship_id = gatebound_core::ShipId(0);
+    let target_system = edge.b;
+    let destination_station = sim
+        .world
+        .first_station(target_system)
+        .expect("destination station should exist");
+    let (entry_x, entry_y) = sim
+        .world
+        .gate_coords(target_system, edge.id)
+        .expect("entry gate coords should exist");
+    let center = sim
+        .world
+        .systems
+        .iter()
+        .find(|system| system.id == target_system)
+        .map(|system| Vec2::new(system.x as f32, system.y as f32))
+        .expect("target system should exist");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = target_system;
+        ship.last_gate_arrival = Some(edge.id);
+        ship.movement_queue = VecDeque::from([RouteSegment {
+            from: target_system,
+            to: target_system,
+            from_anchor: None,
+            to_anchor: Some(destination_station),
+            edge: None,
+            kind: SegmentKind::InSystem,
+            eta_ticks: 10,
+            risk: 0.0,
+        }]);
+        ship.current_segment_kind = Some(SegmentKind::InSystem);
+        ship.segment_progress_total = 10;
+        ship.segment_eta_remaining = 10;
+        ship.eta_ticks_remaining = 10;
+    }
+
+    let mut app = App::new();
+    app.insert_resource(SimResource::new(sim))
+        .insert_resource(ShipMotionCache::default())
+        .add_systems(Update, update_ship_motion_cache);
+    app.update();
+
+    let cache = app.world().resource::<ShipMotionCache>();
+    let state = cache
+        .segments
+        .get(&ship_id)
+        .copied()
+        .expect("ship motion state should exist");
+    assert_eq!(state.from, Vec2::new(entry_x as f32, entry_y as f32));
+    assert_ne!(state.from, center);
+}
+
+#[test]
+fn in_system_motion_entry_gate_to_station_interpolates_correctly() {
+    let mut sim = Simulation::new(RuntimeConfig::default(), 54);
+    let Some(edge) = sim.world.edges.first().cloned() else {
+        return;
+    };
+    let ship_id = gatebound_core::ShipId(0);
+    let target_system = edge.b;
+    let destination_station = sim
+        .world
+        .first_station(target_system)
+        .expect("destination station should exist");
+    let destination = sim
+        .station_position(destination_station)
+        .expect("destination station coords should exist");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = target_system;
+        ship.last_gate_arrival = Some(edge.id);
+        ship.movement_queue = VecDeque::from([RouteSegment {
+            from: target_system,
+            to: target_system,
+            from_anchor: None,
+            to_anchor: Some(destination_station),
+            edge: None,
+            kind: SegmentKind::InSystem,
+            eta_ticks: 8,
+            risk: 0.0,
+        }]);
+        ship.current_segment_kind = Some(SegmentKind::InSystem);
+        ship.segment_progress_total = 8;
+        ship.segment_eta_remaining = 4;
+        ship.eta_ticks_remaining = 4;
+    }
+
+    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    let segment = ship
+        .movement_queue
+        .front()
+        .expect("movement segment should exist");
+    let from = segment_from_point(&sim, ship, segment);
+    let to = Vec2::new(destination.0 as f32, destination.1 as f32);
+    let t =
+        ShipMotionCache::progress_ratio(ship.segment_progress_total, ship.segment_eta_remaining);
+    let interpolated = from.lerp(to, t);
+    let expected = from.lerp(to, 0.5);
+    assert!((interpolated.x - expected.x).abs() < 1e-4);
+    assert!((interpolated.y - expected.y).abs() < 1e-4);
 }
 
 #[test]
