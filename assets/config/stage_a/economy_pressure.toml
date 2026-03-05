@@ -1,0 +1,4 @@
+loan_interest_rate = 0.02
+ship_upkeep_per_tick = 0.5
+slot_lease_cost = 2.0
+sla_penalty_curve = [1.0, 1.3, 1.7, 2.2, 2.8]

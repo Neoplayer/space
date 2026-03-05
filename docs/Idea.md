@@ -37,6 +37,27 @@ NPC-компании добывают, производят, перевозят 
 - Для Stage A приоритет: скорость итераций, ясная управляемость и проверяемый баланс.
 - Решения “не сейчас”: мультиплеер, full manual routing, тактические бои.
 
+### 2.2) Term Units (Stage A)
+- `tick = 1 second`
+- `cycle = 60 ticks = 60 sec @1x`
+- `rolling_window_cycles = 20`
+- Все SLA, события, штрафы и периодические обязательства Stage A измеряются в `cycles`.
+
+### 2.3) Stage A In/Out (жёсткий scope)
+- `ContractTypeStageA = { Delivery, Supply }`
+- `RiskStageA = { gate_congestion, dock_congestion, fuel_shock }`
+- In Scope:
+  - Delivery/Supply контракты
+  - policy-based autopilot
+  - lease + slot pricing
+  - congestion + fuel shock
+- Out of Scope:
+  - Route Contract / Station Service
+  - station construction
+  - full manual routing
+  - reliability failures / piracy / storms
+  - multiplayer / combat loop
+
 ---
 
 ## 3) Камера / визуальный стиль
@@ -119,7 +140,7 @@ NPC-компании добывают, производят, перевозят 
 
 **Никаких “фиксированных прайсов”.** Только рынок.
 
-### 5.2) Ресурсы (примерный минимальный набор)
+### 5.2) Ресурсы Stage A (фиксированный минимальный набор)
 **Tier 0 (сырьё):**
 - Ore (руда)
 - Ice (лёд/вода)
@@ -128,18 +149,14 @@ NPC-компании добывают, производят, перевозят 
 **Tier 1 (переработка):**
 - Metal (металл)
 - Fuel (топливо)
-- Polymers (полимеры)
 
 **Tier 2 (промка):**
 - Parts (детали)
 - Electronics (электроника)
 
-**Service/virtual goods:**
-- Transport capacity (услуга перевозки)
-- Storage (услуга складирования)
-
 > Важно: экономика оживает, когда есть минимум 2-3 цепочки и общий “бутылочный” ресурс (обычно Fuel + Dock slots).
-> Ограничение Stage A: **5-7 товарных категорий**, чтобы не раздувать баланс до стабилизации ядра.
+> Ограничение Stage A: **ровно 7 товарных категорий** (перечень выше), чтобы стабилизировать баланс.
+> `Polymers` и service/virtual goods (Transport capacity / Storage как отдельные товарные позиции) переносятся в Stage B+.
 
 ### 5.3) Производство
 Каждый завод:
@@ -152,9 +169,9 @@ NPC-компании добывают, производят, перевозят 
 
 ### 5.4) Потребление
 Планеты/колонии имеют **профили спроса**:
-- Civilian world: Food/Water/Consumer goods (можно абстрактно)
-- Industrial world: Metal/Parts/Fuel
-- Research world: Electronics/Parts
+- Civilian world: `Ice`, `Fuel`, `Electronics` (бытовой спрос моделируется через эти категории)
+- Industrial world: `Ore`, `Metal`, `Parts`, `Fuel`
+- Research world: `Electronics`, `Parts`, `Fuel`
 
 Потребление идёт постоянно -> если поставки срываются:
 - растут цены
@@ -167,9 +184,21 @@ NPC-компании добывают, производят, перевозят 
 - скорости притока/оттока (flow)
 - целевому уровню запасов (target)
 
-Пример (интуитивно):
-- stock сильно ниже target -> P растёт быстро
-- stock выше target -> P падает
+Формула Stage A (обновление **за 1 cycle**):
+```text
+imbalance     = (target_stock - stock) / max(target_stock, 1)
+flow_pressure = (outflow - inflow) / max(target_stock, 1)
+raw_delta     = k_stock * imbalance + k_flow * flow_pressure
+delta         = clamp(raw_delta, -delta_cap, +delta_cap)
+P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
+```
+
+Дефолтные коэффициенты Stage A:
+- `k_stock = 0.08`
+- `k_flow = 0.04`
+- `delta_cap = 0.10` (макс. изменение цены за cycle)
+- `price_floor = 0.25 * base_price`
+- `price_ceiling = 4.0 * base_price`
 
 ### 5.6) Прозрачность рынка и разведданные
 - Данные рынка в текущем локальном кластере — точные и актуальные.
@@ -199,11 +228,18 @@ NPC-компании добывают, производят, перевозят 
    Генерируют долгие контракты на снабжение, штрафуют за срывы.
 
 ### 6.2) Стартовая конфигурация (пример)
-- 5-7 систем
-- 2 “центральных” хаба
-- 3 компании-перевозчика (по 2-4 корабля)
-- 2 компании-производителя
-- 1 добытчик
+- **Stage A baseline (каноничный):**
+  - 3-7 систем
+  - 2 “центральных” хаба
+  - 2 компании-перевозчика (по 2-4 корабля)
+  - 1 компания-производитель
+  - 1 добытчик
+- **Stage B+ / расширенный балансный сценарий:**
+  - 5-7 систем
+  - 2 “центральных” хаба
+  - 3 компании-перевозчика
+  - 2 компании-производителя
+  - 1 добытчик
 
 Игрок появляется, когда рынок уже работает.
 
@@ -253,6 +289,9 @@ NPC-компании добывают, производят, перевозят 
 Контракт — это “квест”, который создаёт экономика.
 
 ### 9.1) Типы контрактов
+`ContractTypeStageA = { Delivery, Supply }`
+
+**Stage A (обязательные):**
 1) **Delivery (разовая доставка)**
 - забрать X units в A
 - доставить в B до T
@@ -265,6 +304,7 @@ NPC-компании добывают, производят, перевозят 
 - штрафы за недопоставку
 - бонус за стабильность
 
+**Stage B+ / advanced toggles (не часть Stage A baseline):**
 3) **Route Contract (обслуживание линии)**
 - поддерживать линию A↔B с частотой F
 - оплата за “выполненные рейсы”
@@ -406,12 +446,15 @@ NPC-компании добывают, производят, перевозят 
 ## 13) События и динамика (чтобы мир “дышал”)
 События должны быть **экономическими**, не “рандом ради рандома”.
 
-Примеры:
+### 13.1) Stage A events (по `RiskStageA`)
 - **Gate Maintenance**: ворота работают на 50% capacity 10 циклов -> кризис поставок.
-- **Industrial Boom**: планета запускает программу -> спрос на Parts/Electronics x2.
 - **Fuel Shock**: добыча газа упала -> Fuel дорожает -> всё остальное дорожает.
 - **Dock Strike**: доки медленнее -> очереди -> растёт ценность складов.
+
+### 13.2) Stage B+ events (после основы)
+- **Industrial Boom**: планета запускает программу -> спрос на Parts/Electronics x2.
 - **New Competitor**: NPC компания покупает 3 bulk-корабля -> демпинг на маршруте.
+- Reliability/piracy/storm сценарии (после включения соответствующих risk-слоёв).
 
 ---
 
@@ -419,7 +462,8 @@ NPC-компании добывают, производят, перевозят 
 Игра остаётся sandbox, но ведёт игрока через карьерные milestones:
 - **Milestone 1: Capital** — достигнуть целевого капитала (Net Worth).
 - **Milestone 2: Market Share** — занять долю перевозок в выбранном кластере.
-- **Milestone 3: Throughput Control** — контролировать throughput ключевых ворот.
+- **Milestone 3: Throughput Control** — контролировать throughput выбранной пары ключевых ворот:
+  `throughput_control = player_share(gate_pair, rolling_window_cycles=20) >= 35%`.
 - **Milestone 4: Reputation** — открыть премиальные контракты через стабильный SLA.
 
 Итоговые метрики поздней игры:
@@ -493,6 +537,13 @@ NPC-компании добывают, производят, перевозят 
 - За повторные SLA-срывы действует **прогрессивная penalty curve**.
 - Принцип отказоустойчивости: ошибки болезненны, но не приводят к мгновенному “смерть-run”.
 
+### 16.1.1) Soft-fail при банкротстве (Stage A)
+- Если в конце `cycle` игрок не покрывает обязательные выплаты, включается recovery-режим:
+  - аварийный кредит;
+  - автопродажа/деактивация части низкодоходных активов;
+  - репутационный штраф и повышенная ставка по новым кредитам.
+- Run продолжается (без hard game over), но условия рынка для игрока ухудшаются.
+
 ### 16.2) Анти-эксплойты
 - Вводить **транзакционные издержки**:
   - комиссия рынка
@@ -516,14 +567,22 @@ NPC-компании добывают, производят, перевозят 
 ### Stage A (играбельный кластер)
 - локальный кластер 3-7 систем в рамках архитектуры полной галактики;
 - 2 NPC перевозчика (по 2-4 корабля);
-- 5-7 товарных категорий;
+- 1 добытчик + 1 производитель;
+- фиксированные 7 товарных категорий: Ore, Ice, Gas, Metal, Fuel, Parts, Electronics;
 - 1 добыча -> 1 переработка -> 1 потребитель;
-- контракты Delivery + базовые Supply/route SLA;
+- контракты только Delivery + Supply;
 - покупка игроком 1 корабля;
 - lease + slot pricing (без station construction);
 - док-очереди/ворота + базовые цены, зависящие от запасов и времени доставки.
 - policy-based autopilot (без full manual routing).
 - single-player only.
+
+| Stage A In Scope | Stage A Out of Scope |
+| --- | --- |
+| Delivery / Supply контракты | Route Contract / Station Service |
+| Policy-based autopilot | Full manual routing |
+| Lease + slot pricing | Station construction |
+| Gate/Dock congestion + Fuel shock | Reliability failures / Piracy / Storms |
 
 ### Stage B (масштаб до 200 систем)
 - включение полной процедурной галактики (200 систем) по тем же правилам;
@@ -539,11 +598,13 @@ NPC-компании добывают, производят, перевозят 
 ## 18) Техническая концепция под Bevy (2D)
 ### 18.1) Симуляция (tick-based)
 - “экономический тик” раз в **1 секунду** (дефолт)
+- `cycle = 60 ticks` (60 секунд в `1x`)
 - симуляция **детерминированная** во всех системах (не только в открытой камерой)
 - управление временем: `1x / 2x / 4x`
 - между тиками: визуальное движение кораблей
 
 ### 18.2) Основные сущности (ECS)
+- `TimeUnits` (`tick_seconds=1`, `cycle_ticks=60`, `rolling_window_cycles=20`)
 - `GalaxyGenConfig` (`seed`, `system_count=200`, `cluster_count`, `min_degree`, `max_degree`)
 - `SystemNode` (звёздная система)
 - `SystemLayout` (`radius`, `sun`, `orbit_bands`, `gate_nodes[]`)
@@ -557,6 +618,8 @@ NPC-компании добывают, производят, перевозят 
 - `AutopilotPolicy` (`min_margin`, `max_risk_score`, `max_hops`, `priority_mode`, `waypoints`, `repeat_mode`)
 - `MarketIntel` (`system_id`, `observed_tick`, `staleness_ticks`, `confidence`)
 - `ContractRiskModel` (`eta_ticks`, `risk_score`, `sla_penalty_multiplier`, `reroute_cost_estimate`)
+- `ContractTypeStageA` (`Delivery | Supply`)
+- `RiskStageA` (`gate_congestion`, `dock_congestion`, `fuel_shock`)
 - `Market` (на станции/планете)
 - `Contract` (job)
 - `CameraState` (`GalaxyView | SystemView(system_id)`, `zoom_level`, `zoom_min`, `zoom_max`, `snap_thresholds`)
@@ -599,6 +662,9 @@ NPC-компании добывают, производят, перевозят 
   - локальные рынки всегда точные;
   - удалённые рынки имеют staleness/confidence.
 - **Scope guard tests (Stage A)**:
+  - `cycle = 60 ticks`, все SLA/события/штрафы считаются в cycles;
+  - доступны только `ContractTypeStageA = {Delivery, Supply}`;
+  - активны только `RiskStageA = {gate_congestion, dock_congestion, fuel_shock}`;
   - отсутствует механика station construction;
   - присутствуют lease + slot pricing.
 - **Progression tests**:

@@ -1,0 +1,3 @@
+tick_seconds = 1
+cycle_ticks = 60
+rolling_window_cycles = 20

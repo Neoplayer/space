@@ -1,0 +1,5 @@
+k_stock = 0.08
+k_flow = 0.04
+delta_cap = 0.10
+floor_mult = 0.25
+ceiling_mult = 4.0

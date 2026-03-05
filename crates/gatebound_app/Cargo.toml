@@ -1,0 +1,22 @@
+[package]
+name = "gatebound_app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gatebound_app"
+path = "src/main.rs"
+
+[features]
+default = ["stage_a"]
+stage_a = []
+
+[dependencies]
+bevy = "0.18.1"
+bevy_egui = "0.39.1"
+gatebound_core = { path = "../gatebound_core" }
+
+[lints]
+workspace = true

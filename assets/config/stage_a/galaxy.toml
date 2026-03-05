@@ -1,0 +1,8 @@
+seed = 42
+cluster_system_min = 3
+cluster_system_max = 7
+min_degree = 1
+max_degree = 3
+system_radius = 100.0
+base_gate_capacity = 8.0
+base_gate_travel_ticks = 15
