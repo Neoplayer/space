@@ -1,6 +1,14 @@
 loan_interest_rate = 0.02
 ship_upkeep_per_tick = 0.5
 slot_lease_cost = 2.0
+gate_fee_per_jump = 0.4
+market_fee_rate = 0.05
+market_depth_per_cycle = 16.0
+offer_refresh_cycles = 2
+offer_ttl_cycles = 6
+milestone_capital_target = 900.0
+milestone_throughput_target_share = 0.35
+milestone_reputation_target = 0.85
 lease_price_throughput_k = 0.60
 lease_price_gate_k = 0.35
 lease_price_congestion_k = 0.80

@@ -94,6 +94,14 @@ pub struct EconomyPressureConfig {
     pub loan_interest_rate: f64,
     pub ship_upkeep_per_tick: f64,
     pub slot_lease_cost: f64,
+    pub gate_fee_per_jump: f64,
+    pub market_fee_rate: f64,
+    pub market_depth_per_cycle: f64,
+    pub offer_refresh_cycles: u32,
+    pub offer_ttl_cycles: u32,
+    pub milestone_capital_target: f64,
+    pub milestone_throughput_target_share: f64,
+    pub milestone_reputation_target: f64,
     pub lease_price_throughput_k: f64,
     pub lease_price_gate_k: f64,
     pub lease_price_congestion_k: f64,
@@ -113,6 +121,14 @@ impl Default for EconomyPressureConfig {
             loan_interest_rate: 0.02,
             ship_upkeep_per_tick: 0.5,
             slot_lease_cost: 2.0,
+            gate_fee_per_jump: 0.4,
+            market_fee_rate: 0.05,
+            market_depth_per_cycle: 16.0,
+            offer_refresh_cycles: 2,
+            offer_ttl_cycles: 6,
+            milestone_capital_target: 900.0,
+            milestone_throughput_target_share: 0.35,
+            milestone_reputation_target: 0.85,
             lease_price_throughput_k: 0.60,
             lease_price_gate_k: 0.35,
             lease_price_congestion_k: 0.80,
@@ -179,6 +195,18 @@ impl RuntimeConfig {
         cfg.pressure.loan_interest_rate = parse_required_f64(&pressure, "loan_interest_rate")?;
         cfg.pressure.ship_upkeep_per_tick = parse_required_f64(&pressure, "ship_upkeep_per_tick")?;
         cfg.pressure.slot_lease_cost = parse_required_f64(&pressure, "slot_lease_cost")?;
+        cfg.pressure.gate_fee_per_jump = parse_required_f64(&pressure, "gate_fee_per_jump")?;
+        cfg.pressure.market_fee_rate = parse_required_f64(&pressure, "market_fee_rate")?;
+        cfg.pressure.market_depth_per_cycle =
+            parse_required_f64(&pressure, "market_depth_per_cycle")?;
+        cfg.pressure.offer_refresh_cycles = parse_required_u32(&pressure, "offer_refresh_cycles")?;
+        cfg.pressure.offer_ttl_cycles = parse_required_u32(&pressure, "offer_ttl_cycles")?;
+        cfg.pressure.milestone_capital_target =
+            parse_required_f64(&pressure, "milestone_capital_target")?;
+        cfg.pressure.milestone_throughput_target_share =
+            parse_required_f64(&pressure, "milestone_throughput_target_share")?;
+        cfg.pressure.milestone_reputation_target =
+            parse_required_f64(&pressure, "milestone_reputation_target")?;
         cfg.pressure.lease_price_throughput_k =
             parse_required_f64(&pressure, "lease_price_throughput_k")?;
         cfg.pressure.lease_price_gate_k = parse_required_f64(&pressure, "lease_price_gate_k")?;
@@ -240,6 +268,28 @@ impl RuntimeConfig {
         if self.pressure.sla_penalty_curve.is_empty() {
             return Err(ConfigError::Validation(
                 "sla_penalty_curve must not be empty".to_string(),
+            ));
+        }
+        if self.pressure.market_fee_rate < 0.0 || self.pressure.market_fee_rate >= 1.0 {
+            return Err(ConfigError::Validation(
+                "market_fee_rate must be in [0,1)".to_string(),
+            ));
+        }
+        if self.pressure.market_depth_per_cycle <= 0.0 {
+            return Err(ConfigError::Validation(
+                "market_depth_per_cycle must be > 0".to_string(),
+            ));
+        }
+        if self.pressure.offer_refresh_cycles == 0 || self.pressure.offer_ttl_cycles == 0 {
+            return Err(ConfigError::Validation(
+                "offer cycles must be > 0".to_string(),
+            ));
+        }
+        if self.pressure.milestone_throughput_target_share < 0.0
+            || self.pressure.milestone_throughput_target_share > 1.0
+        {
+            return Err(ConfigError::Validation(
+                "milestone_throughput_target_share must be in [0,1]".to_string(),
             ));
         }
         if self.pressure.lease_price_min_mult <= 0.0
@@ -432,6 +482,88 @@ pub enum LeaseError {
     NoCapacity,
     InvalidCycles,
     UnknownSystem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompanyArchetype {
+    Player,
+    Hauler,
+    Miner,
+    Industrial,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Company {
+    pub id: CompanyId,
+    pub name: String,
+    pub archetype: CompanyArchetype,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContractOffer {
+    pub id: u64,
+    pub kind: ContractTypeStageA,
+    pub origin: SystemId,
+    pub destination: SystemId,
+    pub quantity: f64,
+    pub payout: f64,
+    pub penalty: f64,
+    pub eta_ticks: u32,
+    pub risk_score: f64,
+    pub margin_estimate: f64,
+    pub expires_cycle: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferError {
+    UnknownOffer,
+    ExpiredOffer,
+    ShipBusy,
+    InvalidAssignment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetWarning {
+    HighRisk,
+    HighQueueDelay,
+    NoRoute,
+    ShipIdle,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetShipStatus {
+    pub ship_id: ShipId,
+    pub company_id: CompanyId,
+    pub location: SystemId,
+    pub target: Option<SystemId>,
+    pub eta: u32,
+    pub active_contract: Option<ContractId>,
+    pub route_len: usize,
+    pub reroutes: u64,
+    pub warning: Option<FleetWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MilestoneId {
+    Capital,
+    ThroughputControl,
+    Reputation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MilestoneStatus {
+    pub id: MilestoneId,
+    pub current: f64,
+    pub target: f64,
+    pub completed: bool,
+    pub completed_cycle: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GateThroughputSnapshot {
+    pub gate_id: GateId,
+    pub player_share: f64,
+    pub total_flow: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -860,15 +992,21 @@ pub struct Simulation {
     pub world: World,
     pub tick: u64,
     pub cycle: u64,
+    pub companies: BTreeMap<CompanyId, Company>,
     pub markets: BTreeMap<SystemId, MarketBook>,
     pub contracts: BTreeMap<ContractId, Contract>,
+    pub contract_offers: BTreeMap<u64, ContractOffer>,
+    pub next_offer_id: u64,
     pub ships: BTreeMap<ShipId, Ship>,
+    pub milestones: Vec<MilestoneStatus>,
     pub capital: f64,
     pub active_leases: Vec<LeasePosition>,
     pub outstanding_debt: f64,
     pub reputation: f64,
     pub current_loan_interest_rate: f64,
     pub recovery_events: u32,
+    pub gate_traversals_cycle: BTreeMap<GateId, BTreeMap<CompanyId, u32>>,
+    pub gate_traversals_window: VecDeque<BTreeMap<GateId, BTreeMap<CompanyId, u32>>>,
     pub queue_delay_accumulator: u64,
     pub reroute_count: u64,
     pub sla_successes: u64,
@@ -901,9 +1039,10 @@ impl Simulation {
             markets.insert(system.id, MarketBook { goods });
         }
 
+        let companies = seed_stage_a_companies();
+        let mut ships = seed_stage_a_ships(&world);
         let mut contracts = BTreeMap::new();
-        let mut ships = BTreeMap::new();
-        if world.system_count() >= 2 {
+        if world.system_count() >= 2 && ships.contains_key(&ShipId(0)) {
             contracts.insert(
                 ContractId(0),
                 Contract {
@@ -925,50 +1064,63 @@ impl Simulation {
                     last_eval_cycle: 0,
                 },
             );
-
-            let policy = AutopilotPolicy {
-                waypoints: vec![SystemId(0), SystemId(1)],
-                ..AutopilotPolicy::default()
-            };
-            ships.insert(
-                ShipId(0),
-                Ship {
-                    id: ShipId(0),
-                    company_id: CompanyId(0),
-                    location: SystemId(0),
-                    eta_ticks_remaining: 0,
-                    active_contract: Some(ContractId(0)),
-                    route_cursor: 0,
-                    policy,
-                    planned_path: Vec::new(),
-                    current_target: None,
-                    last_risk_score: 0.0,
-                    reroutes: 0,
-                },
-            );
+            if let Some(player_ship) = ships.get_mut(&ShipId(0)) {
+                player_ship.active_contract = Some(ContractId(0));
+            }
         }
 
-        Self {
+        let mut simulation = Self {
             config,
             world,
             tick: 0,
             cycle: 0,
+            companies,
             markets,
             contracts,
+            contract_offers: BTreeMap::new(),
+            next_offer_id: 0,
             ships,
+            milestones: Vec::new(),
             capital: 500.0,
             active_leases: Vec::new(),
             outstanding_debt: 0.0,
             reputation: 1.0,
             current_loan_interest_rate: initial_loan_interest_rate,
             recovery_events: 0,
+            gate_traversals_cycle: BTreeMap::new(),
+            gate_traversals_window: VecDeque::new(),
             queue_delay_accumulator: 0,
             reroute_count: 0,
             sla_successes: 0,
             sla_failures: 0,
             gate_queue_load: BTreeMap::new(),
             modifiers: Vec::new(),
-        }
+        };
+        simulation.milestones = vec![
+            MilestoneStatus {
+                id: MilestoneId::Capital,
+                current: simulation.capital,
+                target: simulation.config.pressure.milestone_capital_target,
+                completed: false,
+                completed_cycle: None,
+            },
+            MilestoneStatus {
+                id: MilestoneId::ThroughputControl,
+                current: 0.0,
+                target: simulation.config.pressure.milestone_throughput_target_share,
+                completed: false,
+                completed_cycle: None,
+            },
+            MilestoneStatus {
+                id: MilestoneId::Reputation,
+                current: simulation.reputation,
+                target: simulation.config.pressure.milestone_reputation_target,
+                completed: false,
+                completed_cycle: None,
+            },
+        ];
+        simulation.refresh_contract_offers();
+        simulation
     }
 
     pub fn step_tick(&mut self) -> TickReport {
@@ -1006,6 +1158,15 @@ impl Simulation {
         self.evaluate_supply_contracts();
         self.advance_lease_cycle();
         self.apply_cycle_financial_pressure();
+        self.roll_gate_traversal_window();
+        self.expire_contract_offers();
+        if self
+            .cycle
+            .is_multiple_of(u64::from(self.config.pressure.offer_refresh_cycles.max(1)))
+        {
+            self.refresh_contract_offers();
+        }
+        self.update_milestones();
 
         let total_sla = self.sla_successes + self.sla_failures;
         let sla_success_rate = if total_sla == 0 {
@@ -1165,6 +1326,168 @@ impl Simulation {
             },
         );
         next_id
+    }
+
+    pub fn refresh_contract_offers(&mut self) {
+        let mut offers = BTreeMap::new();
+        let system_ids: Vec<SystemId> = self.world.systems.iter().map(|system| system.id).collect();
+
+        for window in system_ids.windows(2) {
+            let origin = window[0];
+            let destination = window[1];
+            self.maybe_push_offer(
+                origin,
+                destination,
+                ContractTypeStageA::Delivery,
+                &mut offers,
+            );
+            self.maybe_push_offer(destination, origin, ContractTypeStageA::Supply, &mut offers);
+        }
+
+        self.contract_offers = offers;
+    }
+
+    pub fn accept_contract_offer(
+        &mut self,
+        offer_id: u64,
+        ship_id: ShipId,
+    ) -> Result<ContractId, OfferError> {
+        let Some(offer) = self.contract_offers.get(&offer_id).cloned() else {
+            return Err(OfferError::UnknownOffer);
+        };
+        if offer.expires_cycle < self.cycle {
+            self.contract_offers.remove(&offer_id);
+            return Err(OfferError::ExpiredOffer);
+        }
+        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
+            return Err(OfferError::InvalidAssignment);
+        };
+        if ship_snapshot.company_id != CompanyId(0) {
+            return Err(OfferError::InvalidAssignment);
+        }
+        if ship_snapshot.active_contract.is_some() || ship_snapshot.eta_ticks_remaining > 0 {
+            return Err(OfferError::ShipBusy);
+        }
+
+        let contract_id = ContractId(
+            self.contracts
+                .keys()
+                .map(|id| id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+        );
+        let is_supply = offer.kind == ContractTypeStageA::Supply;
+        let cycle_ticks = u64::from(self.config.time.cycle_ticks.max(1));
+        self.contracts.insert(
+            contract_id,
+            Contract {
+                id: contract_id,
+                kind: offer.kind,
+                origin: offer.origin,
+                destination: offer.destination,
+                quantity: offer.quantity,
+                deadline_tick: self
+                    .tick
+                    .saturating_add(u64::from(offer.eta_ticks).saturating_add(cycle_ticks * 3)),
+                per_cycle: if is_supply { offer.quantity } else { 0.0 },
+                total_cycles: if is_supply { 6 } else { 0 },
+                payout: offer.payout,
+                penalty: offer.penalty,
+                assigned_ship: Some(ship_id),
+                delivered_amount: 0.0,
+                missed_cycles: 0,
+                completed: false,
+                failed: false,
+                last_eval_cycle: self.cycle,
+            },
+        );
+        if let Some(ship) = self.ships.get_mut(&ship_id) {
+            ship.active_contract = Some(contract_id);
+            ship.route_cursor = 0;
+            ship.policy.waypoints = vec![ship.location, offer.destination];
+        }
+
+        self.contract_offers.remove(&offer_id);
+        Ok(contract_id)
+    }
+
+    pub fn fleet_status(&self) -> Vec<FleetShipStatus> {
+        let high_queue = self
+            .gate_queue_load
+            .values()
+            .copied()
+            .fold(0.0_f64, f64::max)
+            > 1.0;
+        let mut status = self
+            .ships
+            .values()
+            .map(|ship| {
+                let warning = if ship.eta_ticks_remaining == 0 && ship.active_contract.is_none() {
+                    Some(FleetWarning::ShipIdle)
+                } else if ship.active_contract.is_some()
+                    && ship.current_target.is_none()
+                    && ship.planned_path.is_empty()
+                {
+                    Some(FleetWarning::NoRoute)
+                } else if ship.last_risk_score >= 1.0 {
+                    Some(FleetWarning::HighRisk)
+                } else if high_queue {
+                    Some(FleetWarning::HighQueueDelay)
+                } else {
+                    None
+                };
+
+                FleetShipStatus {
+                    ship_id: ship.id,
+                    company_id: ship.company_id,
+                    location: ship.location,
+                    target: ship.current_target,
+                    eta: ship.eta_ticks_remaining,
+                    active_contract: ship.active_contract,
+                    route_len: ship.planned_path.len(),
+                    reroutes: ship.reroutes,
+                    warning,
+                }
+            })
+            .collect::<Vec<_>>();
+        status.sort_by_key(|entry| entry.ship_id.0);
+        status
+    }
+
+    pub fn gate_throughput_view(&self) -> Vec<GateThroughputSnapshot> {
+        self.world
+            .edges
+            .iter()
+            .map(|edge| {
+                let mut total = 0_u32;
+                let mut player = 0_u32;
+                for cycle_map in &self.gate_traversals_window {
+                    if let Some(by_company) = cycle_map.get(&edge.id) {
+                        for (company_id, count) in by_company {
+                            total = total.saturating_add(*count);
+                            if *company_id == CompanyId(0) {
+                                player = player.saturating_add(*count);
+                            }
+                        }
+                    }
+                }
+                let player_share = if total == 0 {
+                    0.0
+                } else {
+                    player as f64 / total as f64
+                };
+                GateThroughputSnapshot {
+                    gate_id: edge.id,
+                    player_share,
+                    total_flow: total,
+                }
+            })
+            .collect()
+    }
+
+    pub fn milestone_status(&self) -> &[MilestoneStatus] {
+        &self.milestones
     }
 
     pub fn lease_slot(
@@ -1327,6 +1650,10 @@ impl Simulation {
             };
             let edge = first_segment.edge.unwrap_or(GateId(usize::MAX));
             *self.gate_queue_load.entry(edge).or_insert(0.0) += 1.0;
+            if edge != GateId(usize::MAX) {
+                self.capital -= self.config.pressure.gate_fee_per_jump;
+                self.record_gate_traversal(edge, ship_snapshot.company_id);
+            }
 
             let queue_load = self.gate_queue_load.get(&edge).copied().unwrap_or(0.0);
             let edge_ref = self.world.edges.iter().find(|e| e.id == edge);
@@ -1382,7 +1709,10 @@ impl Simulation {
                             c.completed = true;
                             c.delivered_amount = c.quantity;
                         }
-                        self.capital += snapshot.payout;
+                        if let Some(ship) = self.ships.get_mut(&ship_id) {
+                            ship.active_contract = None;
+                        }
+                        self.capital += self.apply_market_fee(snapshot.payout);
                         self.sla_successes = self.sla_successes.saturating_add(1);
                     } else if self.tick > snapshot.deadline_tick {
                         let penalty_mult = self.penalty_multiplier(snapshot.missed_cycles as usize);
@@ -1390,6 +1720,9 @@ impl Simulation {
                         if let Some(c) = self.contracts.get_mut(&cid) {
                             c.failed = true;
                             c.missed_cycles = c.missed_cycles.saturating_add(1);
+                        }
+                        if let Some(ship) = self.ships.get_mut(&ship_id) {
+                            ship.active_contract = None;
                         }
                         self.sla_failures = self.sla_failures.saturating_add(1);
                     }
@@ -1423,9 +1756,11 @@ impl Simulation {
                 continue;
             }
 
-            let delta = current.delivered_amount;
+            let delta = current
+                .delivered_amount
+                .min(self.config.pressure.market_depth_per_cycle);
             if delta >= current.per_cycle {
-                self.capital += current.payout;
+                self.capital += self.apply_market_fee(current.payout);
                 self.sla_successes = self.sla_successes.saturating_add(1);
             } else {
                 let miss_index = current.missed_cycles as usize;
@@ -1442,7 +1777,129 @@ impl Simulation {
                 contract.last_eval_cycle = self.cycle;
                 if self.cycle >= u64::from(contract.total_cycles.max(1)) {
                     contract.completed = true;
+                    if let Some(ship_id) = contract.assigned_ship {
+                        if let Some(ship) = self.ships.get_mut(&ship_id) {
+                            ship.active_contract = None;
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    fn apply_market_fee(&self, gross: f64) -> f64 {
+        gross * (1.0 - self.config.pressure.market_fee_rate)
+    }
+
+    fn record_gate_traversal(&mut self, gate_id: GateId, company_id: CompanyId) {
+        let by_company = self.gate_traversals_cycle.entry(gate_id).or_default();
+        let count = by_company.entry(company_id).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
+    fn roll_gate_traversal_window(&mut self) {
+        self.gate_traversals_window
+            .push_back(self.gate_traversals_cycle.clone());
+        self.gate_traversals_cycle.clear();
+        let max_len = usize::try_from(self.config.time.rolling_window_cycles).unwrap_or(1);
+        while self.gate_traversals_window.len() > max_len {
+            self.gate_traversals_window.pop_front();
+        }
+    }
+
+    fn expire_contract_offers(&mut self) {
+        self.contract_offers
+            .retain(|_, offer| offer.expires_cycle >= self.cycle);
+    }
+
+    fn maybe_push_offer(
+        &mut self,
+        origin: SystemId,
+        destination: SystemId,
+        kind: ContractTypeStageA,
+        offers: &mut BTreeMap<u64, ContractOffer>,
+    ) {
+        if origin == destination {
+            return;
+        }
+        let Some((eta_ticks, risk_score)) = self.estimate_route(origin, destination) else {
+            return;
+        };
+        let Some(destination_market) = self.markets.get(&destination) else {
+            return;
+        };
+
+        let imbalance = destination_market
+            .goods
+            .values()
+            .map(|state| {
+                ((state.target_stock - state.stock) / state.target_stock.max(1.0)).max(0.0)
+            })
+            .sum::<f64>()
+            / destination_market.goods.len().max(1) as f64;
+        let flow_pressure = destination_market
+            .goods
+            .values()
+            .map(|state| (state.cycle_outflow - state.cycle_inflow).max(0.0))
+            .sum::<f64>()
+            / destination_market.goods.len().max(1) as f64;
+
+        let quantity = (8.0 + imbalance * 12.0 + flow_pressure * 0.8).clamp(5.0, 30.0);
+        let payout = 18.0 + quantity * 2.2 + eta_ticks as f64 * 0.3;
+        let penalty = (payout * 0.45).max(8.0);
+        let margin_estimate = payout
+            - f64::from(eta_ticks) * 0.15
+            - risk_score * 10.0
+            - self.config.pressure.gate_fee_per_jump;
+        let offer = ContractOffer {
+            id: self.next_offer_id,
+            kind,
+            origin,
+            destination,
+            quantity,
+            payout,
+            penalty,
+            eta_ticks,
+            risk_score,
+            margin_estimate,
+            expires_cycle: self
+                .cycle
+                .saturating_add(u64::from(self.config.pressure.offer_ttl_cycles.max(1))),
+        };
+        offers.insert(self.next_offer_id, offer);
+        self.next_offer_id = self.next_offer_id.saturating_add(1);
+    }
+
+    fn estimate_route(&self, origin: SystemId, destination: SystemId) -> Option<(u32, f64)> {
+        let request = RoutingRequest {
+            origin,
+            destination,
+            policy: AutopilotPolicy {
+                max_hops: 16,
+                ..AutopilotPolicy::default()
+            },
+        };
+        let graph = self.world.to_graph_view(self.tick, &self.gate_queue_load);
+        let route = RoutingService::plan_route(&graph, &request).ok()?;
+        Some((route.eta_ticks, route.risk_score))
+    }
+
+    fn update_milestones(&mut self) {
+        let throughput_current = self
+            .gate_throughput_view()
+            .into_iter()
+            .map(|snapshot| snapshot.player_share)
+            .fold(0.0_f64, f64::max);
+
+        for milestone in &mut self.milestones {
+            milestone.current = match milestone.id {
+                MilestoneId::Capital => self.capital,
+                MilestoneId::ThroughputControl => throughput_current,
+                MilestoneId::Reputation => self.reputation,
+            };
+            if !milestone.completed && milestone.current >= milestone.target {
+                milestone.completed = true;
+                milestone.completed_cycle = Some(self.cycle);
             }
         }
     }
@@ -1766,8 +2223,56 @@ impl Simulation {
             ));
         }
 
+        let mut companies = String::new();
+        for company in self.companies.values() {
+            companies.push_str(&format!(
+                "{}:{}:{},",
+                company.id.0,
+                company_archetype_code(company.archetype),
+                sanitize_snapshot_text(&company.name)
+            ));
+        }
+
+        let mut offers = String::new();
+        for offer in self.contract_offers.values() {
+            offers.push_str(&format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{},",
+                offer.id,
+                contract_type_code(offer.kind),
+                offer.origin.0,
+                offer.destination.0,
+                offer.quantity,
+                offer.payout,
+                offer.penalty,
+                offer.eta_ticks,
+                offer.risk_score,
+                offer.margin_estimate,
+                offer.expires_cycle
+            ));
+        }
+
+        let mut milestones = String::new();
+        for milestone in &self.milestones {
+            milestones.push_str(&format!(
+                "{}:{}:{}:{}:{},",
+                milestone_id_code(milestone.id),
+                milestone.current,
+                milestone.target,
+                milestone.completed as u8,
+                milestone.completed_cycle.unwrap_or(u64::MAX)
+            ));
+        }
+
+        let gate_cycle = encode_gate_counts_map(&self.gate_traversals_cycle);
+        let gate_window = self
+            .gate_traversals_window
+            .iter()
+            .map(encode_gate_counts_map)
+            .collect::<Vec<_>>()
+            .join("|");
+
         format!(
-            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};edges={};ships={};contracts={};markets={};modifiers={};leases={}",
+            "tick={};cycle={};capital={};debt={};reputation={};loan_rate={};recovery_events={};qdelay={};reroutes={};sla_s={};sla_f={};next_offer_id={};edges={};ships={};contracts={};markets={};modifiers={};leases={};companies={};offers={};milestones={};gate_cycle={};gate_window={}",
             self.tick,
             self.cycle,
             self.capital,
@@ -1779,12 +2284,18 @@ impl Simulation {
             self.reroute_count,
             self.sla_successes,
             self.sla_failures,
+            self.next_offer_id,
             edges,
             ships,
             contracts,
             markets,
             modifiers,
-            leases
+            leases,
+            companies,
+            offers,
+            milestones,
+            gate_cycle,
+            gate_window
         )
     }
 
@@ -1805,6 +2316,8 @@ impl Simulation {
         simulation.reroute_count = parse_required_u64_from_map(&map, "reroutes")?;
         simulation.sla_successes = parse_required_u64_from_map(&map, "sla_s")?;
         simulation.sla_failures = parse_required_u64_from_map(&map, "sla_f")?;
+        simulation.next_offer_id =
+            parse_optional_u64_from_map(&map, "next_offer_id").unwrap_or(simulation.next_offer_id);
 
         if let Some(edges_blob) = map.get("edges") {
             for row in edges_blob.split(',').filter(|v| !v.is_empty()) {
@@ -2002,6 +2515,137 @@ impl Simulation {
             }
         }
 
+        if let Some(companies_blob) = map.get("companies") {
+            simulation.companies.clear();
+            for row in companies_blob.split(',').filter(|v| !v.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 3 {
+                    return Err(SnapshotError::Parse(format!("bad company row: {row}")));
+                }
+                let company_id: usize = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("company id parse failed".to_string()))?;
+                let archetype = company_archetype_from_code(parts[1]).ok_or_else(|| {
+                    SnapshotError::Parse("company archetype parse failed".to_string())
+                })?;
+                simulation.companies.insert(
+                    CompanyId(company_id),
+                    Company {
+                        id: CompanyId(company_id),
+                        name: restore_snapshot_text(parts[2]),
+                        archetype,
+                    },
+                );
+            }
+        }
+
+        if let Some(offers_blob) = map.get("offers") {
+            simulation.contract_offers.clear();
+            for row in offers_blob.split(',').filter(|v| !v.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 11 {
+                    return Err(SnapshotError::Parse(format!("bad offer row: {row}")));
+                }
+                let offer_id: u64 = parts[0]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer id parse failed".to_string()))?;
+                let kind = contract_type_from_code(parts[1])
+                    .ok_or_else(|| SnapshotError::Parse("offer kind parse failed".to_string()))?;
+                let origin: usize = parts[2]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer origin parse failed".to_string()))?;
+                let destination: usize = parts[3].parse().map_err(|_| {
+                    SnapshotError::Parse("offer destination parse failed".to_string())
+                })?;
+                let quantity: f64 = parts[4]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer quantity parse failed".to_string()))?;
+                let payout: f64 = parts[5]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer payout parse failed".to_string()))?;
+                let penalty: f64 = parts[6]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer penalty parse failed".to_string()))?;
+                let eta_ticks: u32 = parts[7]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer eta parse failed".to_string()))?;
+                let risk_score: f64 = parts[8]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer risk parse failed".to_string()))?;
+                let margin_estimate: f64 = parts[9]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer margin parse failed".to_string()))?;
+                let expires_cycle: u64 = parts[10]
+                    .parse()
+                    .map_err(|_| SnapshotError::Parse("offer expires parse failed".to_string()))?;
+
+                simulation.contract_offers.insert(
+                    offer_id,
+                    ContractOffer {
+                        id: offer_id,
+                        kind,
+                        origin: SystemId(origin),
+                        destination: SystemId(destination),
+                        quantity,
+                        payout,
+                        penalty,
+                        eta_ticks,
+                        risk_score,
+                        margin_estimate,
+                        expires_cycle,
+                    },
+                );
+            }
+        }
+
+        if let Some(milestones_blob) = map.get("milestones") {
+            simulation.milestones.clear();
+            for row in milestones_blob.split(',').filter(|v| !v.is_empty()) {
+                let parts: Vec<&str> = row.split(':').collect();
+                if parts.len() != 5 {
+                    return Err(SnapshotError::Parse(format!("bad milestone row: {row}")));
+                }
+                let id = milestone_id_from_code(parts[0])
+                    .ok_or_else(|| SnapshotError::Parse("milestone id parse failed".to_string()))?;
+                let current: f64 = parts[1].parse().map_err(|_| {
+                    SnapshotError::Parse("milestone current parse failed".to_string())
+                })?;
+                let target: f64 = parts[2].parse().map_err(|_| {
+                    SnapshotError::Parse("milestone target parse failed".to_string())
+                })?;
+                let completed = parts[3] == "1";
+                let completed_raw: u64 = parts[4].parse().map_err(|_| {
+                    SnapshotError::Parse("milestone completed cycle parse failed".to_string())
+                })?;
+                simulation.milestones.push(MilestoneStatus {
+                    id,
+                    current,
+                    target,
+                    completed,
+                    completed_cycle: if completed_raw == u64::MAX {
+                        None
+                    } else {
+                        Some(completed_raw)
+                    },
+                });
+            }
+        }
+
+        if let Some(gate_cycle_blob) = map.get("gate_cycle") {
+            simulation.gate_traversals_cycle = decode_gate_counts_map(gate_cycle_blob)?;
+        }
+        if let Some(gate_window_blob) = map.get("gate_window") {
+            simulation.gate_traversals_window.clear();
+            for cycle_blob in gate_window_blob
+                .split('|')
+                .filter(|value| !value.is_empty())
+            {
+                simulation
+                    .gate_traversals_window
+                    .push_back(decode_gate_counts_map(cycle_blob)?);
+            }
+        }
+
         Ok(simulation)
     }
 }
@@ -2045,6 +2689,92 @@ impl DeterministicRng {
     fn next_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / ((1_u64 << 53) as f64)
     }
+}
+
+fn seed_stage_a_companies() -> BTreeMap<CompanyId, Company> {
+    let mut companies = BTreeMap::new();
+    companies.insert(
+        CompanyId(0),
+        Company {
+            id: CompanyId(0),
+            name: "Player Logistics".to_string(),
+            archetype: CompanyArchetype::Player,
+        },
+    );
+    companies.insert(
+        CompanyId(1),
+        Company {
+            id: CompanyId(1),
+            name: "Haulers Alpha".to_string(),
+            archetype: CompanyArchetype::Hauler,
+        },
+    );
+    companies.insert(
+        CompanyId(2),
+        Company {
+            id: CompanyId(2),
+            name: "Haulers Beta".to_string(),
+            archetype: CompanyArchetype::Hauler,
+        },
+    );
+    companies.insert(
+        CompanyId(3),
+        Company {
+            id: CompanyId(3),
+            name: "Miner Guild".to_string(),
+            archetype: CompanyArchetype::Miner,
+        },
+    );
+    companies.insert(
+        CompanyId(4),
+        Company {
+            id: CompanyId(4),
+            name: "Industrial Combine".to_string(),
+            archetype: CompanyArchetype::Industrial,
+        },
+    );
+    companies
+}
+
+fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
+    let mut ships = BTreeMap::new();
+    if world.system_count() == 0 {
+        return ships;
+    }
+    let sid = |idx: usize| SystemId(idx % world.system_count());
+    let wp = |a: usize, b: usize| vec![sid(a), sid(b)];
+    let configs = [
+        (ShipId(0), CompanyId(0), sid(0), wp(0, 1)),
+        (ShipId(1), CompanyId(1), sid(0), wp(0, 1)),
+        (ShipId(2), CompanyId(1), sid(1), wp(1, 2)),
+        (ShipId(3), CompanyId(2), sid(2), wp(2, 0)),
+        (ShipId(4), CompanyId(2), sid(1), wp(1, 0)),
+        (ShipId(5), CompanyId(3), sid(2), wp(2, 1)),
+        (ShipId(6), CompanyId(4), sid(0), wp(0, 2)),
+        (ShipId(7), CompanyId(4), sid(1), wp(1, 2)),
+    ];
+    for (ship_id, company_id, location, waypoints) in configs {
+        ships.insert(
+            ship_id,
+            Ship {
+                id: ship_id,
+                company_id,
+                location,
+                eta_ticks_remaining: 0,
+                active_contract: None,
+                route_cursor: 0,
+                policy: AutopilotPolicy {
+                    waypoints,
+                    ..AutopilotPolicy::default()
+                },
+                planned_path: Vec::new(),
+                current_target: None,
+                last_risk_score: 0.0,
+                reroutes: 0,
+            },
+        );
+    }
+    ships
 }
 
 fn base_price_for(commodity: Commodity) -> f64 {
@@ -2127,6 +2857,100 @@ fn slot_type_from_code(raw: &str) -> Option<SlotType> {
         "market" => Some(SlotType::Market),
         _ => None,
     }
+}
+
+fn company_archetype_code(archetype: CompanyArchetype) -> &'static str {
+    match archetype {
+        CompanyArchetype::Player => "player",
+        CompanyArchetype::Hauler => "hauler",
+        CompanyArchetype::Miner => "miner",
+        CompanyArchetype::Industrial => "industrial",
+    }
+}
+
+fn company_archetype_from_code(raw: &str) -> Option<CompanyArchetype> {
+    match raw {
+        "player" => Some(CompanyArchetype::Player),
+        "hauler" => Some(CompanyArchetype::Hauler),
+        "miner" => Some(CompanyArchetype::Miner),
+        "industrial" => Some(CompanyArchetype::Industrial),
+        _ => None,
+    }
+}
+
+fn contract_type_code(kind: ContractTypeStageA) -> &'static str {
+    match kind {
+        ContractTypeStageA::Delivery => "delivery",
+        ContractTypeStageA::Supply => "supply",
+    }
+}
+
+fn contract_type_from_code(raw: &str) -> Option<ContractTypeStageA> {
+    match raw {
+        "delivery" => Some(ContractTypeStageA::Delivery),
+        "supply" => Some(ContractTypeStageA::Supply),
+        _ => None,
+    }
+}
+
+fn milestone_id_code(id: MilestoneId) -> &'static str {
+    match id {
+        MilestoneId::Capital => "capital",
+        MilestoneId::ThroughputControl => "throughput",
+        MilestoneId::Reputation => "reputation",
+    }
+}
+
+fn milestone_id_from_code(raw: &str) -> Option<MilestoneId> {
+    match raw {
+        "capital" => Some(MilestoneId::Capital),
+        "throughput" => Some(MilestoneId::ThroughputControl),
+        "reputation" => Some(MilestoneId::Reputation),
+        _ => None,
+    }
+}
+
+fn sanitize_snapshot_text(raw: &str) -> String {
+    raw.replace([':', ','], "_")
+}
+
+fn restore_snapshot_text(raw: &str) -> String {
+    raw.to_string()
+}
+
+fn encode_gate_counts_map(map: &BTreeMap<GateId, BTreeMap<CompanyId, u32>>) -> String {
+    let mut encoded = String::new();
+    for (gate_id, by_company) in map {
+        for (company_id, count) in by_company {
+            encoded.push_str(&format!("{}-{}-{},", gate_id.0, company_id.0, count));
+        }
+    }
+    encoded
+}
+
+fn decode_gate_counts_map(
+    raw: &str,
+) -> Result<BTreeMap<GateId, BTreeMap<CompanyId, u32>>, SnapshotError> {
+    let mut map: BTreeMap<GateId, BTreeMap<CompanyId, u32>> = BTreeMap::new();
+    for row in raw.split(',').filter(|value| !value.is_empty()) {
+        let parts: Vec<&str> = row.split('-').collect();
+        if parts.len() != 3 {
+            return Err(SnapshotError::Parse(format!("bad gate count row: {row}")));
+        }
+        let gate_id: usize = parts[0]
+            .parse()
+            .map_err(|_| SnapshotError::Parse("gate count gate parse failed".to_string()))?;
+        let company_id: usize = parts[1]
+            .parse()
+            .map_err(|_| SnapshotError::Parse("gate count company parse failed".to_string()))?;
+        let count: u32 = parts[2]
+            .parse()
+            .map_err(|_| SnapshotError::Parse("gate count value parse failed".to_string()))?;
+        map.entry(GateId(gate_id))
+            .or_default()
+            .insert(CompanyId(company_id), count);
+    }
+    Ok(map)
 }
 
 fn parse_simple_toml_map(input: &str) -> BTreeMap<String, String> {
@@ -2902,6 +3726,242 @@ mod tests {
         assert!((loaded.current_loan_interest_rate - cfg.pressure.loan_interest_rate).abs() < 1e-9);
         assert_eq!(loaded.recovery_events, 0);
         assert!(loaded.active_leases.is_empty());
+    }
+
+    #[test]
+    fn offer_generation_reflects_market_imbalance_and_risk() {
+        let mut sim = Simulation::new(stage_a_config(), 101);
+        sim.refresh_contract_offers();
+        let baseline = sim
+            .contract_offers
+            .values()
+            .next()
+            .expect("offer must exist")
+            .quantity;
+
+        if let Some(market) = sim.markets.get_mut(&SystemId(1)) {
+            for state in market.goods.values_mut() {
+                state.stock = 10.0;
+                state.target_stock = 200.0;
+                state.cycle_outflow = 70.0;
+                state.cycle_inflow = 10.0;
+            }
+        }
+        sim.refresh_contract_offers();
+        let stressed = sim
+            .contract_offers
+            .values()
+            .next()
+            .expect("offer must exist")
+            .quantity;
+        assert!(
+            stressed >= baseline,
+            "higher imbalance should increase offer size"
+        );
+    }
+
+    #[test]
+    fn accept_offer_creates_contract_and_removes_offer() {
+        let mut sim = Simulation::new(stage_a_config(), 103);
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.active_contract = None;
+        }
+        if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
+            contract.completed = true;
+        }
+        sim.refresh_contract_offers();
+        let offer_id = *sim
+            .contract_offers
+            .keys()
+            .next()
+            .expect("offer must exist for acceptance");
+        let cid = sim
+            .accept_contract_offer(offer_id, ShipId(0))
+            .expect("offer acceptance should pass");
+        assert!(sim.contracts.contains_key(&cid));
+        assert!(
+            !sim.contract_offers.contains_key(&offer_id),
+            "accepted offer should be removed"
+        );
+    }
+
+    #[test]
+    fn offer_expiration_and_refresh_work_by_cycle() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.offer_refresh_cycles = 1;
+        cfg.pressure.offer_ttl_cycles = 1;
+        let mut sim = Simulation::new(cfg, 107);
+        sim.refresh_contract_offers();
+        let first_offer_ids = sim.contract_offers.keys().copied().collect::<Vec<_>>();
+
+        sim.step_cycle();
+        sim.step_cycle();
+
+        let has_old = first_offer_ids
+            .iter()
+            .any(|offer_id| sim.contract_offers.contains_key(offer_id));
+        assert!(!has_old, "expired offers should be replaced on refresh");
+    }
+
+    #[test]
+    fn gate_fee_is_charged_per_warp_segment() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        cfg.pressure.gate_fee_per_jump = 3.5;
+        let mut sim = Simulation::new(cfg, 109);
+        sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.active_contract = None;
+            ship.location = SystemId(0);
+            ship.policy.waypoints = vec![SystemId(1)];
+            ship.route_cursor = 0;
+            ship.policy.max_risk_score = 10.0;
+        }
+        let before = sim.capital;
+        sim.step_tick();
+        assert!(
+            before - sim.capital >= 3.5,
+            "gate fee should be charged when warp segment starts"
+        );
+    }
+
+    #[test]
+    fn market_fee_applies_to_payouts() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.ship_upkeep_per_tick = 0.0;
+        cfg.pressure.gate_fee_per_jump = 0.0;
+        cfg.pressure.market_fee_rate = 0.2;
+        let mut sim = Simulation::new(cfg, 113);
+        sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
+        if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
+            contract.completed = false;
+            contract.failed = false;
+            contract.destination = SystemId(0);
+            contract.assigned_ship = Some(ShipId(0));
+            contract.payout = 100.0;
+            contract.deadline_tick = 1_000;
+        }
+        if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
+            ship.location = SystemId(0);
+            ship.eta_ticks_remaining = 0;
+            ship.active_contract = Some(ContractId(0));
+        }
+
+        let before = sim.capital;
+        sim.step_tick();
+        let delta = sim.capital - before;
+        assert!(
+            (delta - 80.0).abs() < 1e-6,
+            "payout should include market fee deduction"
+        );
+    }
+
+    #[test]
+    fn market_depth_caps_effective_supply_delivery() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.market_depth_per_cycle = 5.0;
+        let mut sim = Simulation::new(cfg, 127);
+        let cid = sim.create_supply_contract(SystemId(0), SystemId(1), 10.0, 3);
+        if let Some(contract) = sim.contracts.get_mut(&cid) {
+            contract.delivered_amount = 10.0;
+            contract.per_cycle = 10.0;
+            contract.payout = 40.0;
+            contract.penalty = 12.0;
+        }
+        let before = sim.capital;
+        sim.step_cycle();
+        assert!(
+            sim.capital < before,
+            "depth cap should turn apparent full delivery into shortfall penalty"
+        );
+    }
+
+    #[test]
+    fn npc_stage_a_baseline_roster_is_created() {
+        let sim = Simulation::new(stage_a_config(), 131);
+        assert_eq!(sim.companies.len(), 5);
+        assert!(
+            sim.ships.len() >= 7 && sim.ships.len() <= 11,
+            "stage A ship count should stay in baseline range"
+        );
+        assert!(sim
+            .companies
+            .values()
+            .any(|company| company.archetype == CompanyArchetype::Hauler));
+        assert!(sim
+            .companies
+            .values()
+            .any(|company| company.archetype == CompanyArchetype::Miner));
+        assert!(sim
+            .companies
+            .values()
+            .any(|company| company.archetype == CompanyArchetype::Industrial));
+    }
+
+    #[test]
+    fn throughput_window_computes_player_share() {
+        let mut sim = Simulation::new(stage_a_config(), 137);
+        let gate = sim.world.edges.first().expect("edge exists").id;
+        let mut cycle_map = BTreeMap::new();
+        cycle_map.insert(
+            gate,
+            BTreeMap::from([(CompanyId(0), 3_u32), (CompanyId(1), 1_u32)]),
+        );
+        sim.gate_traversals_window.clear();
+        sim.gate_traversals_window.push_back(cycle_map);
+
+        let snapshot = sim
+            .gate_throughput_view()
+            .into_iter()
+            .find(|entry| entry.gate_id == gate)
+            .expect("gate throughput should exist");
+        assert!((snapshot.player_share - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn milestones_complete_when_targets_reached() {
+        let mut cfg = stage_a_config();
+        cfg.pressure.milestone_capital_target = 100.0;
+        cfg.pressure.milestone_throughput_target_share = 0.2;
+        cfg.pressure.milestone_reputation_target = 0.4;
+        let mut sim = Simulation::new(cfg, 149);
+        sim.capital = 500.0;
+        sim.reputation = 0.9;
+        let gate = sim.world.edges.first().expect("edge exists").id;
+        sim.gate_traversals_cycle.insert(
+            gate,
+            BTreeMap::from([(CompanyId(0), 2_u32), (CompanyId(1), 1_u32)]),
+        );
+        sim.step_cycle();
+        assert!(
+            sim.milestones.iter().all(|milestone| milestone.completed),
+            "all milestones should complete once thresholds are crossed"
+        );
+    }
+
+    #[test]
+    fn snapshot_v1_v2_load_defaults_for_new_fields() {
+        let cfg = stage_a_config();
+        let v1_state =
+            "tick=1;cycle=0;capital=500;qdelay=0;reroutes=0;sla_s=0;sla_f=0;edges=;ships=;contracts=;markets=;modifiers=";
+        let v1_payload = format!("{{\"version\":1,\"state\":\"{v1_state}\"}}\n");
+        let v1_tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v1_defaults.json");
+        fs::write(&v1_tmp, v1_payload).expect("snapshot fixture write should pass");
+        let loaded_v1 =
+            Simulation::load_snapshot(&v1_tmp, cfg.clone()).expect("v1 snapshot load should pass");
+        assert!(!loaded_v1.companies.is_empty());
+        assert!(!loaded_v1.milestones.is_empty());
+
+        let mut sim = Simulation::new(cfg.clone(), 151);
+        sim.refresh_contract_offers();
+        let v2_tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2_defaults.json");
+        sim.save_snapshot(&v2_tmp)
+            .expect("snapshot save should pass");
+        let loaded_v2 =
+            Simulation::load_snapshot(&v2_tmp, cfg).expect("v2 snapshot load should pass");
+        assert_eq!(loaded_v2.companies, sim.companies);
+        assert_eq!(loaded_v2.milestones, sim.milestones);
+        assert_eq!(loaded_v2.contract_offers, sim.contract_offers);
     }
 
     #[test]

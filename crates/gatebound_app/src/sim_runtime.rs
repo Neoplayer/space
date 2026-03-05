@@ -1,10 +1,76 @@
 use bevy::prelude::*;
 use gatebound_core::{
-    CycleReport, LeaseError, RiskEvent, Simulation, SlotType, SystemId, TickReport,
+    CompanyId, ContractOffer, CycleReport, LeaseError, RiskEvent, ShipId, Simulation, SlotType,
+    SystemId, TickReport,
 };
 
 use crate::hud::HudMessages;
 use crate::view_mode::{CameraMode, CameraUiState};
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct UiPanelState {
+    pub contracts: bool,
+    pub fleet: bool,
+    pub markets: bool,
+    pub assets: bool,
+    pub policies: bool,
+}
+
+impl Default for UiPanelState {
+    fn default() -> Self {
+        Self {
+            contracts: true,
+            fleet: true,
+            markets: true,
+            assets: true,
+            policies: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferSortMode {
+    MarginDesc,
+    RiskAsc,
+    EtaAsc,
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct ContractsFilterState {
+    pub min_margin: f64,
+    pub max_risk: f64,
+    pub max_eta: u32,
+    pub sort_mode: OfferSortMode,
+}
+
+impl Default for ContractsFilterState {
+    fn default() -> Self {
+        Self {
+            min_margin: 0.0,
+            max_risk: 2.0,
+            max_eta: 240,
+            sort_mode: OfferSortMode::MarginDesc,
+        }
+    }
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SelectedShip {
+    pub ship_id: Option<ShipId>,
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedSystem {
+    pub system_id: SystemId,
+}
+
+impl Default for SelectedSystem {
+    fn default() -> Self {
+        Self {
+            system_id: SystemId(0),
+        }
+    }
+}
 
 #[derive(Resource, Debug, Clone)]
 pub struct SimResource {
@@ -125,6 +191,79 @@ pub fn selected_system_from_camera(mode: CameraMode) -> SystemId {
     }
 }
 
+pub fn player_ship_ids(simulation: &Simulation) -> Vec<ShipId> {
+    let mut ids = simulation
+        .ships
+        .values()
+        .filter(|ship| ship.company_id == CompanyId(0))
+        .map(|ship| ship.id)
+        .collect::<Vec<_>>();
+    ids.sort_by_key(|id| id.0);
+    ids
+}
+
+pub fn cycle_selected_ship(
+    current: Option<ShipId>,
+    ship_ids: &[ShipId],
+    forward: bool,
+) -> Option<ShipId> {
+    if ship_ids.is_empty() {
+        return None;
+    }
+    let current_idx = current
+        .and_then(|id| ship_ids.iter().position(|candidate| *candidate == id))
+        .unwrap_or(0);
+    let next_idx = if forward {
+        (current_idx + 1) % ship_ids.len()
+    } else if current_idx == 0 {
+        ship_ids.len() - 1
+    } else {
+        current_idx - 1
+    };
+    Some(ship_ids[next_idx])
+}
+
+pub fn apply_offer_filters(
+    mut offers: Vec<ContractOffer>,
+    filters: ContractsFilterState,
+) -> Vec<ContractOffer> {
+    offers.retain(|offer| {
+        offer.margin_estimate >= filters.min_margin
+            && offer.risk_score <= filters.max_risk
+            && offer.eta_ticks <= filters.max_eta
+    });
+    match filters.sort_mode {
+        OfferSortMode::MarginDesc => {
+            offers.sort_by(|a, b| b.margin_estimate.total_cmp(&a.margin_estimate))
+        }
+        OfferSortMode::RiskAsc => offers.sort_by(|a, b| a.risk_score.total_cmp(&b.risk_score)),
+        OfferSortMode::EtaAsc => offers.sort_by_key(|offer| offer.eta_ticks),
+    }
+    offers
+}
+
+pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
+    match ch {
+        '1' => Some(1),
+        '2' => Some(2),
+        '3' => Some(3),
+        '4' => Some(4),
+        '5' => Some(5),
+        _ => None,
+    }
+}
+
+pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
+    match index {
+        1 => panels.contracts = !panels.contracts,
+        2 => panels.fleet = !panels.fleet,
+        3 => panels.markets = !panels.markets,
+        4 => panels.assets = !panels.assets,
+        5 => panels.policies = !panels.policies,
+        _ => {}
+    }
+}
+
 pub fn apply_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
     if keys.just_pressed(KeyCode::Space) {
         clock.paused = !clock.paused;
@@ -138,6 +277,44 @@ pub fn apply_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<Si
     }
     if keys.just_pressed(KeyCode::Digit4) {
         clock.speed_multiplier = 4;
+    }
+}
+
+pub fn sync_selected_system(camera: Res<CameraUiState>, mut selected: ResMut<SelectedSystem>) {
+    selected.system_id = selected_system_from_camera(camera.mode);
+}
+
+pub fn handle_panel_hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut panels: ResMut<UiPanelState>,
+    mut selected_ship: ResMut<SelectedShip>,
+    sim: Res<SimResource>,
+) {
+    if keys.just_pressed(KeyCode::F1) {
+        apply_panel_toggle(&mut panels, 1);
+    }
+    if keys.just_pressed(KeyCode::F2) {
+        apply_panel_toggle(&mut panels, 2);
+    }
+    if keys.just_pressed(KeyCode::F3) {
+        apply_panel_toggle(&mut panels, 3);
+    }
+    if keys.just_pressed(KeyCode::F4) {
+        apply_panel_toggle(&mut panels, 4);
+    }
+    if keys.just_pressed(KeyCode::F5) {
+        apply_panel_toggle(&mut panels, 5);
+    }
+
+    let ship_ids = player_ship_ids(&sim.simulation);
+    if selected_ship.ship_id.is_none() {
+        selected_ship.ship_id = ship_ids.first().copied();
+    }
+    if keys.just_pressed(KeyCode::BracketRight) {
+        selected_ship.ship_id = cycle_selected_ship(selected_ship.ship_id, &ship_ids, true);
+    }
+    if keys.just_pressed(KeyCode::BracketLeft) {
+        selected_ship.ship_id = cycle_selected_ship(selected_ship.ship_id, &ship_ids, false);
     }
 }
 
@@ -194,7 +371,7 @@ pub fn handle_risk_hotkeys(
 
 pub fn handle_lease_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
-    camera: Res<CameraUiState>,
+    selected_system: Res<SelectedSystem>,
     mut selection: ResMut<LeaseSelection>,
     mut sim: ResMut<SimResource>,
     mut messages: ResMut<HudMessages>,
@@ -217,7 +394,7 @@ pub fn handle_lease_hotkeys(
         return;
     };
 
-    let selected_system = selected_system_from_camera(camera.mode);
+    let selected_system = selected_system.system_id;
     const DEFAULT_LEASE_CYCLES: u32 = 3;
 
     match action {

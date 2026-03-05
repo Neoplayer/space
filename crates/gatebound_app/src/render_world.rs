@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::PrimaryEguiContext;
-use gatebound_core::{ShipId, Simulation, SystemId};
+use gatebound_core::{Commodity, ShipId, Simulation, SystemId};
 use std::collections::BTreeMap;
 
 use crate::sim_runtime::SimResource;
@@ -89,16 +89,49 @@ pub fn draw_world_gizmos(
     for edge in &simulation.world.edges {
         let from = system_position(simulation, edge.a);
         let to = system_position(simulation, edge.b);
-        gizmos.line_2d(from, to, Color::srgba(0.35, 0.45, 0.65, 0.85));
+        let load = simulation
+            .gate_queue_load
+            .get(&edge.id)
+            .copied()
+            .unwrap_or(0.0);
+        let effective_capacity = (edge.base_capacity * edge.capacity_factor).max(1.0);
+        let pressure = (load / effective_capacity).clamp(0.0, 2.0) as f32;
+        let color = Color::srgba(0.25 + pressure * 0.35, 0.40, 0.65 - pressure * 0.25, 0.90);
+        gizmos.line_2d(from, to, color);
+        if pressure > 0.15 {
+            let midpoint = from.lerp(to, 0.5);
+            gizmos.circle_2d(
+                midpoint,
+                1.0 + pressure * 2.5,
+                Color::srgba(1.0, 0.45, 0.15, 0.55),
+            );
+        }
     }
 
     for system in &simulation.world.systems {
         let center = Vec2::new(system.x as f32, system.y as f32);
+        let dock_pressure = dock_congestion_index(simulation, system.id);
+        let fuel_stress = fuel_stress_index(simulation, system.id);
         let color = match ui_state.mode {
             CameraMode::System(selected) if selected == system.id => Color::srgb(0.40, 0.80, 1.0),
             _ => Color::srgb(0.20, 0.55, 0.95),
         };
         gizmos.circle_2d(center, system.radius as f32 * 0.18, color);
+
+        if dock_pressure > 0.15 {
+            gizmos.circle_2d(
+                center,
+                system.radius as f32 * (0.24 + dock_pressure * 0.08),
+                Color::srgba(1.0, 0.72, 0.18, 0.4 + dock_pressure * 0.2),
+            );
+        }
+        if fuel_stress > 0.20 {
+            gizmos.circle_2d(
+                center,
+                system.radius as f32 * (0.30 + fuel_stress * 0.12),
+                Color::srgba(1.0, 0.2, 0.2, 0.35 + fuel_stress * 0.25),
+            );
+        }
 
         if matches!(ui_state.mode, CameraMode::System(selected) if selected == system.id) {
             gizmos.circle_2d(
@@ -150,4 +183,28 @@ fn system_position(simulation: &Simulation, system_id: SystemId) -> Vec2 {
         .find(|system| system.id == system_id)
         .map(|system| Vec2::new(system.x as f32, system.y as f32))
         .unwrap_or(Vec2::ZERO)
+}
+
+fn dock_congestion_index(simulation: &Simulation, system_id: SystemId) -> f32 {
+    let inbound = simulation
+        .ships
+        .values()
+        .filter(|ship| ship.current_target == Some(system_id) && ship.eta_ticks_remaining > 0)
+        .count() as f32;
+    (inbound / 6.0).clamp(0.0, 1.0)
+}
+
+fn fuel_stress_index(simulation: &Simulation, system_id: SystemId) -> f32 {
+    let Some(market) = simulation.markets.get(&system_id) else {
+        return 0.0;
+    };
+    let Some(fuel) = market.goods.get(&Commodity::Fuel) else {
+        return 0.0;
+    };
+    let ratio = if fuel.target_stock <= 0.0 {
+        1.0
+    } else {
+        (fuel.stock / fuel.target_stock).clamp(0.0, 1.0)
+    };
+    (1.0 - ratio as f32).clamp(0.0, 1.0)
 }

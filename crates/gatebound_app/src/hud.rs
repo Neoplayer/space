@@ -1,8 +1,14 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_core::{ContractTypeStageA, Simulation, SlotType, SystemId};
+use gatebound_core::{
+    Commodity, ContractOffer, ContractTypeStageA, FleetWarning, MilestoneStatus, OfferError,
+    PriorityMode, ShipId, Simulation, SlotType, SystemId,
+};
 
-use crate::sim_runtime::{derive_cycle_report, SimClock, SimResource};
+use crate::sim_runtime::{
+    apply_offer_filters, derive_cycle_report, ContractsFilterState, OfferSortMode, SelectedShip,
+    SelectedSystem, SimClock, SimResource, UiPanelState,
+};
 use crate::view_mode::CameraMode;
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -21,6 +27,15 @@ impl HudMessages {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct MarketRow {
+    pub commodity: Commodity,
+    pub price: f64,
+    pub stock: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HudSnapshot {
     pub tick: u64,
     pub cycle: u64,
@@ -33,16 +48,24 @@ pub struct HudSnapshot {
     pub active_ships: usize,
     pub active_leases: usize,
     pub selected_system_id: SystemId,
+    pub selected_ship_id: Option<ShipId>,
     pub paused: bool,
     pub speed_multiplier: u32,
     pub sla_success_rate: f64,
     pub reroutes: u64,
     pub avg_price_index: f64,
     pub camera_mode: String,
+    pub intel_staleness_ticks: u64,
+    pub intel_confidence: f64,
     pub contract_lines: Vec<String>,
     pub ship_lines: Vec<String>,
     pub lease_lines: Vec<String>,
     pub lease_market_lines: Vec<String>,
+    pub offers: Vec<ContractOffer>,
+    pub fleet_rows: Vec<gatebound_core::FleetShipStatus>,
+    pub market_rows: Vec<MarketRow>,
+    pub milestones: Vec<MilestoneStatus>,
+    pub throughput_rows: Vec<gatebound_core::GateThroughputSnapshot>,
 }
 
 pub fn build_hud_snapshot(
@@ -50,12 +73,11 @@ pub fn build_hud_snapshot(
     paused: bool,
     speed_multiplier: u32,
     camera_mode: CameraMode,
+    selected_system_id: SystemId,
+    selected_ship_id: Option<ShipId>,
+    filters: ContractsFilterState,
 ) -> HudSnapshot {
     let cycle_report = derive_cycle_report(simulation);
-    let selected_system_id = match camera_mode {
-        CameraMode::System(system_id) => system_id,
-        CameraMode::Galaxy => SystemId(0),
-    };
 
     let mut contracts: Vec<_> = simulation
         .contracts
@@ -63,17 +85,16 @@ pub fn build_hud_snapshot(
         .filter(|contract| !contract.completed && !contract.failed)
         .collect();
     contracts.sort_by_key(|contract| contract.id.0);
-
     let contract_lines = contracts
         .iter()
-        .take(6)
+        .take(8)
         .map(|contract| {
             let kind = match contract.kind {
                 ContractTypeStageA::Delivery => "Delivery",
                 ContractTypeStageA::Supply => "Supply",
             };
             format!(
-                "#{} {kind} {} -> {} qty={:.1} deadline={} miss={} ",
+                "#{} {kind} {} -> {} qty={:.1} deadline={} miss={}",
                 contract.id.0,
                 contract.origin.0,
                 contract.destination.0,
@@ -86,18 +107,18 @@ pub fn build_hud_snapshot(
 
     let mut ships: Vec<_> = simulation.ships.values().collect();
     ships.sort_by_key(|ship| ship.id.0);
-
     let ship_lines = ships
         .iter()
-        .take(8)
+        .take(10)
         .map(|ship| {
             let target = ship
                 .current_target
                 .map(|target| target.0.to_string())
                 .unwrap_or_else(|| "-".to_string());
             format!(
-                "#{} sys={} -> {} eta={} risk={:.2} reroutes={}",
+                "#{} c={} sys={} -> {} eta={} risk={:.2} reroutes={}",
                 ship.id.0,
+                ship.company_id.0,
                 ship.location.0,
                 target,
                 ship.eta_ticks_remaining,
@@ -111,7 +132,7 @@ pub fn build_hud_snapshot(
     leases.sort_by_key(|lease| (lease.system_id.0, lease.slot_type, lease.cycles_remaining));
     let lease_lines = leases
         .into_iter()
-        .take(8)
+        .take(10)
         .map(|lease| {
             format!(
                 "sys={} {:?} cycles={} price/cycle={:.1}",
@@ -133,6 +154,45 @@ pub fn build_hud_snapshot(
             )
         })
         .collect::<Vec<_>>();
+
+    let offers = apply_offer_filters(
+        simulation
+            .contract_offers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>(),
+        filters,
+    );
+    let fleet_rows = simulation.fleet_status();
+
+    let market_rows = simulation
+        .markets
+        .get(&selected_system_id)
+        .map(|market| {
+            Commodity::ALL
+                .iter()
+                .filter_map(|commodity| {
+                    market.goods.get(commodity).map(|state| MarketRow {
+                        commodity: *commodity,
+                        price: state.price,
+                        stock: state.stock,
+                        inflow: state.cycle_inflow,
+                        outflow: state.cycle_outflow,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let intel = simulation.market_intel(
+        selected_system_id,
+        matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
+    );
+
+    let mut throughput_rows = simulation.gate_throughput_view();
+    throughput_rows.sort_by(|a, b| b.player_share.total_cmp(&a.player_share));
+
+    let milestones = simulation.milestone_status().to_vec();
 
     let mut price_samples = 0_u64;
     let mut total_price_index = 0.0_f64;
@@ -162,6 +222,7 @@ pub fn build_hud_snapshot(
         active_ships: simulation.ships.len(),
         active_leases: simulation.active_leases.len(),
         selected_system_id,
+        selected_ship_id,
         paused,
         speed_multiplier,
         sla_success_rate: cycle_report.sla_success_rate,
@@ -171,31 +232,47 @@ pub fn build_hud_snapshot(
             CameraMode::Galaxy => "Galaxy".to_string(),
             CameraMode::System(system_id) => format!("System({})", system_id.0),
         },
+        intel_staleness_ticks: intel.map_or(0, |info| info.staleness_ticks),
+        intel_confidence: intel.map_or(1.0, |info| info.confidence),
         contract_lines,
         ship_lines,
         lease_lines,
         lease_market_lines,
+        offers,
+        fleet_rows,
+        market_rows,
+        milestones,
+        throughput_rows,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
-    sim: Res<SimResource>,
+    mut sim: ResMut<SimResource>,
     clock: Res<SimClock>,
     camera: Res<crate::view_mode::CameraUiState>,
-    messages: Res<HudMessages>,
+    selected_system: Res<SelectedSystem>,
+    mut selected_ship: ResMut<SelectedShip>,
+    mut filters: ResMut<ContractsFilterState>,
+    mut panels: ResMut<UiPanelState>,
+    mut messages: ResMut<HudMessages>,
 ) -> Result {
+    let selected_system_id = selected_system.system_id;
     let snapshot = build_hud_snapshot(
         &sim.simulation,
         clock.paused,
         clock.speed_multiplier,
         camera.mode,
+        selected_system_id,
+        selected_ship.ship_id,
+        *filters,
     );
 
     let ctx = egui_contexts.ctx_mut()?;
 
     egui::TopBottomPanel::top("gatebound_top_panel").show(ctx, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(format!("View: {}", snapshot.camera_mode));
             ui.separator();
             ui.label(format!("Tick: {}", snapshot.tick));
@@ -221,56 +298,28 @@ pub fn draw_hud_panel(
             ui.label(format!("Reroutes: {}", snapshot.reroutes));
             ui.separator();
             ui.label(format!("PriceIdx: {:.2}", snapshot.avg_price_index));
+            ui.separator();
+            ui.label(format!(
+                "Ship: {}",
+                snapshot
+                    .selected_ship_id
+                    .map(|ship_id| ship_id.0.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ));
         });
     });
 
     egui::SidePanel::left("gatebound_left_hud")
         .resizable(true)
         .show(ctx, |ui| {
-            ui.heading("Contracts");
-            ui.label(format!("Active: {}", snapshot.active_contracts));
-            for line in &snapshot.contract_lines {
-                ui.monospace(line);
-            }
-
-            ui.separator();
-            ui.heading("Fleet");
-            ui.label(format!("Ships: {}", snapshot.active_ships));
-            for line in &snapshot.ship_lines {
-                ui.monospace(line);
-            }
-
-            ui.separator();
-            ui.heading("Economy Pressure");
-            ui.label(format!("Debt: {:.1}", snapshot.debt));
-            ui.label(format!(
-                "Interest rate: {:.2}%",
-                snapshot.interest_rate * 100.0
-            ));
-            ui.label(format!("Reputation: {:.2}", snapshot.reputation));
-            ui.label(format!("Recovery events: {}", snapshot.recovery_events));
-
-            ui.separator();
-            ui.heading("Leases");
-            ui.label(format!("Active leases: {}", snapshot.active_leases));
-            for line in &snapshot.lease_lines {
-                ui.monospace(line);
-            }
-            ui.label(format!(
-                "Selected system: {}",
-                snapshot.selected_system_id.0
-            ));
-            for line in &snapshot.lease_market_lines {
-                ui.monospace(line);
-            }
-
-            ui.separator();
             ui.heading("Controls");
             ui.label("Space: pause/resume");
             ui.label("1/2/4: sim speed");
             ui.label("Mouse wheel / +/-: zoom");
             ui.label("Double-click system: enter System view");
             ui.label("Esc: back to Galaxy view");
+            ui.label("F1..F5: toggle panels");
+            ui.label("[ / ]: switch selected player ship");
             ui.label("Z/X/C/V: lease Dock/Storage/Factory/Market");
             ui.label("R: release one lease of last selected slot type");
             ui.label("G / D / F: trigger Stage A risk events");
@@ -283,7 +332,267 @@ pub fn draw_hud_panel(
                 }
             }
         });
+
+    if panels.contracts {
+        let mut open = panels.contracts;
+        egui::Window::new("Contracts Board")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Min margin");
+                    ui.add(egui::DragValue::new(&mut filters.min_margin).speed(0.5));
+                    ui.label("Max risk");
+                    ui.add(egui::DragValue::new(&mut filters.max_risk).speed(0.05));
+                    ui.label("Max ETA");
+                    ui.add(egui::DragValue::new(&mut filters.max_eta).speed(1.0));
+                });
+                egui::ComboBox::from_label("Sort")
+                    .selected_text(sort_mode_label(filters.sort_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut filters.sort_mode,
+                            OfferSortMode::MarginDesc,
+                            sort_mode_label(OfferSortMode::MarginDesc),
+                        );
+                        ui.selectable_value(
+                            &mut filters.sort_mode,
+                            OfferSortMode::RiskAsc,
+                            sort_mode_label(OfferSortMode::RiskAsc),
+                        );
+                        ui.selectable_value(
+                            &mut filters.sort_mode,
+                            OfferSortMode::EtaAsc,
+                            sort_mode_label(OfferSortMode::EtaAsc),
+                        );
+                    });
+
+                ui.separator();
+                ui.label(format!("Offers: {}", snapshot.offers.len()));
+                for offer in snapshot.offers.iter().take(16) {
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!(
+                            "#{:03} {:?} {}->{} qty={:.1} eta={} risk={:.2} margin={:.1}",
+                            offer.id,
+                            offer.kind,
+                            offer.origin.0,
+                            offer.destination.0,
+                            offer.quantity,
+                            offer.eta_ticks,
+                            offer.risk_score,
+                            offer.margin_estimate
+                        ));
+                        if let Some(ship_id) = selected_ship.ship_id {
+                            if ui.button("Accept").clicked() {
+                                match sim.simulation.accept_contract_offer(offer.id, ship_id) {
+                                    Ok(contract_id) => messages.push(format!(
+                                        "Accepted offer {} as contract {} for ship {}",
+                                        offer.id, contract_id.0, ship_id.0
+                                    )),
+                                    Err(err) => messages.push(format!(
+                                        "Accept offer {} failed: {}",
+                                        offer.id,
+                                        offer_error_label(err)
+                                    )),
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        panels.contracts = open;
+    }
+
+    if panels.fleet {
+        let mut open = panels.fleet;
+        egui::Window::new("Fleet Manager")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Ships: {}", snapshot.fleet_rows.len()));
+                for row in &snapshot.fleet_rows {
+                    ui.horizontal(|ui| {
+                        let selected = selected_ship.ship_id == Some(row.ship_id);
+                        if ui
+                            .selectable_label(selected, format!("#{}", row.ship_id.0))
+                            .clicked()
+                        {
+                            selected_ship.ship_id = Some(row.ship_id);
+                        }
+                        ui.monospace(format!(
+                            "c={} sys={} -> {} eta={} route={} reroutes={}",
+                            row.company_id.0,
+                            row.location.0,
+                            row.target
+                                .map(|system_id| system_id.0.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            row.eta,
+                            row.route_len,
+                            row.reroutes
+                        ));
+                        if let Some(warning) = row.warning {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                format!("warn={}", warning_label(warning)),
+                            );
+                        }
+                    });
+                }
+            });
+        panels.fleet = open;
+    }
+
+    if panels.markets {
+        let mut open = panels.markets;
+        egui::Window::new("Markets")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("System: {}", snapshot.selected_system_id.0));
+                ui.label(format!(
+                    "Intel: staleness={} ticks, confidence={:.2}",
+                    snapshot.intel_staleness_ticks, snapshot.intel_confidence
+                ));
+                ui.separator();
+                for row in &snapshot.market_rows {
+                    ui.monospace(format!(
+                        "{:<11} price={:>6.2} stock={:>6.1} in={:>5.1} out={:>5.1}",
+                        commodity_label(row.commodity),
+                        row.price,
+                        row.stock,
+                        row.inflow,
+                        row.outflow
+                    ));
+                }
+                ui.separator();
+                ui.heading("Throughput");
+                for row in snapshot.throughput_rows.iter().take(6) {
+                    ui.monospace(format!(
+                        "gate={} player_share={:.2} flow={}",
+                        row.gate_id.0, row.player_share, row.total_flow
+                    ));
+                }
+            });
+        panels.markets = open;
+    }
+
+    if panels.assets {
+        let mut open = panels.assets;
+        egui::Window::new("Assets / Real Estate")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.heading("Economy Pressure");
+                ui.label(format!("Debt: {:.1}", snapshot.debt));
+                ui.label(format!("Rate: {:.2}%", snapshot.interest_rate * 100.0));
+                ui.label(format!("Reputation: {:.2}", snapshot.reputation));
+                ui.label(format!("Recovery events: {}", snapshot.recovery_events));
+                ui.separator();
+                ui.heading("Leases");
+                ui.label(format!("Active leases: {}", snapshot.active_leases));
+                for line in &snapshot.lease_lines {
+                    ui.monospace(line);
+                }
+                ui.separator();
+                ui.label(format!(
+                    "Selected system: {}",
+                    snapshot.selected_system_id.0
+                ));
+                for line in &snapshot.lease_market_lines {
+                    ui.monospace(line);
+                }
+            });
+        panels.assets = open;
+    }
+
+    if panels.policies {
+        let mut open = panels.policies;
+        egui::Window::new("Autopilot Policies")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if selected_ship.ship_id.is_none() {
+                    selected_ship.ship_id = sim
+                        .simulation
+                        .ships
+                        .values()
+                        .filter(|ship| ship.company_id.0 == 0)
+                        .map(|ship| ship.id)
+                        .min_by_key(|ship_id| ship_id.0);
+                }
+                let Some(ship_id) = selected_ship.ship_id else {
+                    ui.label("No player ship available");
+                    return;
+                };
+                ui.label(format!("Selected ship: #{}", ship_id.0));
+                if let Some(ship) = sim.simulation.ships.get_mut(&ship_id) {
+                    ui.horizontal(|ui| {
+                        ui.label("min_margin");
+                        ui.add(egui::DragValue::new(&mut ship.policy.min_margin).speed(0.1));
+                        ui.label("max_risk");
+                        ui.add(egui::DragValue::new(&mut ship.policy.max_risk_score).speed(0.1));
+                        ui.label("max_hops");
+                        ui.add(egui::DragValue::new(&mut ship.policy.max_hops).speed(1.0));
+                    });
+                    egui::ComboBox::from_label("priority_mode")
+                        .selected_text(priority_mode_label(ship.policy.priority_mode))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut ship.policy.priority_mode,
+                                PriorityMode::Profit,
+                                priority_mode_label(PriorityMode::Profit),
+                            );
+                            ui.selectable_value(
+                                &mut ship.policy.priority_mode,
+                                PriorityMode::Stability,
+                                priority_mode_label(PriorityMode::Stability),
+                            );
+                            ui.selectable_value(
+                                &mut ship.policy.priority_mode,
+                                PriorityMode::Hybrid,
+                                priority_mode_label(PriorityMode::Hybrid),
+                            );
+                        });
+                    ui.label(format!(
+                        "waypoints={}",
+                        ship.policy
+                            .waypoints
+                            .iter()
+                            .map(|system_id| system_id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" -> ")
+                    ));
+                } else {
+                    ui.label("Selected ship not found");
+                }
+
+                ui.separator();
+                ui.heading("Milestones");
+                for milestone in &snapshot.milestones {
+                    ui.monospace(format!(
+                        "{} current={:.2} target={:.2} completed={} cycle={}",
+                        milestone_label(milestone),
+                        milestone.current,
+                        milestone.target,
+                        milestone.completed,
+                        milestone
+                            .completed_cycle
+                            .map(|cycle| cycle.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    ));
+                }
+            });
+        panels.policies = open;
+    }
+
     Ok(())
+}
+
+fn commodity_label(commodity: Commodity) -> &'static str {
+    match commodity {
+        Commodity::Ore => "Ore",
+        Commodity::Ice => "Ice",
+        Commodity::Gas => "Gas",
+        Commodity::Metal => "Metal",
+        Commodity::Fuel => "Fuel",
+        Commodity::Parts => "Parts",
+        Commodity::Electronics => "Electronics",
+    }
 }
 
 fn slot_type_label(slot_type: SlotType) -> &'static str {
@@ -292,5 +601,47 @@ fn slot_type_label(slot_type: SlotType) -> &'static str {
         SlotType::Storage => "Storage",
         SlotType::Factory => "Factory",
         SlotType::Market => "Market",
+    }
+}
+
+fn warning_label(warning: FleetWarning) -> &'static str {
+    match warning {
+        FleetWarning::HighRisk => "HighRisk",
+        FleetWarning::HighQueueDelay => "HighQueueDelay",
+        FleetWarning::NoRoute => "NoRoute",
+        FleetWarning::ShipIdle => "ShipIdle",
+    }
+}
+
+fn milestone_label(milestone: &MilestoneStatus) -> &'static str {
+    match milestone.id {
+        gatebound_core::MilestoneId::Capital => "Capital",
+        gatebound_core::MilestoneId::ThroughputControl => "ThroughputControl",
+        gatebound_core::MilestoneId::Reputation => "Reputation",
+    }
+}
+
+fn sort_mode_label(mode: OfferSortMode) -> &'static str {
+    match mode {
+        OfferSortMode::MarginDesc => "Margin desc",
+        OfferSortMode::RiskAsc => "Risk asc",
+        OfferSortMode::EtaAsc => "ETA asc",
+    }
+}
+
+fn priority_mode_label(mode: PriorityMode) -> &'static str {
+    match mode {
+        PriorityMode::Profit => "profit",
+        PriorityMode::Stability => "stability",
+        PriorityMode::Hybrid => "hybrid",
+    }
+}
+
+fn offer_error_label(err: OfferError) -> &'static str {
+    match err {
+        OfferError::UnknownOffer => "unknown_offer",
+        OfferError::ExpiredOffer => "expired_offer",
+        OfferError::ShipBusy => "ship_busy",
+        OfferError::InvalidAssignment => "invalid_assignment",
     }
 }

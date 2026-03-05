@@ -14,8 +14,9 @@ pub mod view_mode;
 use hud::{draw_hud_panel, HudMessages};
 use render_world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
 use sim_runtime::{
-    apply_time_controls, drive_simulation, handle_lease_hotkeys, handle_risk_hotkeys,
-    LeaseSelection, SimClock, SimResource,
+    apply_time_controls, drive_simulation, handle_lease_hotkeys, handle_panel_hotkeys,
+    handle_risk_hotkeys, sync_selected_system, ContractsFilterState, LeaseSelection, SelectedShip,
+    SelectedSystem, SimClock, SimResource, UiPanelState,
 };
 use view_mode::{
     apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system, sync_camera_transform,
@@ -34,6 +35,10 @@ pub fn run() {
         .insert_resource(CameraUiState::default())
         .insert_resource(ShipMotionCache::default())
         .insert_resource(LeaseSelection::default())
+        .insert_resource(UiPanelState::default())
+        .insert_resource(ContractsFilterState::default())
+        .insert_resource(SelectedShip::default())
+        .insert_resource(SelectedSystem::default())
         .insert_resource(HudMessages::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -52,6 +57,8 @@ pub fn run() {
                 escape_to_galaxy_system,
                 camera_mode_input_system,
                 apply_zoom_controls,
+                sync_selected_system,
+                handle_panel_hotkeys,
                 handle_risk_hotkeys,
                 handle_lease_hotkeys,
                 drive_simulation,
