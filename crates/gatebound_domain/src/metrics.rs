@@ -33,14 +33,6 @@ pub struct GateThroughputSnapshot {
     pub total_flow: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct RecoveryAction {
-    pub cycle: u64,
-    pub released_leases: u32,
-    pub capital_after: f64,
-    pub debt_after: f64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TickReport {
     pub tick: u64,

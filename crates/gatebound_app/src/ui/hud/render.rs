@@ -1,19 +1,17 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{
-    CargoSource, Commodity, OfferProblemTag, PriorityMode,
-};
+use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode};
 
 use crate::runtime::sim::{
-    ContractsFilterState, OfferSortMode, SelectedShip, SelectedStation, SelectedSystem,
-    SimClock, SimResource, StationUiState, UiKpiTracker, UiPanelState,
+    ContractsFilterState, FinanceUiState, OfferSortMode, SelectedShip, SelectedStation,
+    SelectedSystem, SimClock, SimResource, StationUiState, UiKpiTracker, UiPanelState,
 };
 
 use super::labels::{
     cargo_source_label, command_error_label, commodity_label, contract_action_error_label,
-    contract_progress_label, job_kind_label, milestone_label, offer_error_label, problem_label,
-    priority_mode_label, ship_role_label, sort_mode_label, station_profile_label,
-    trade_error_label, warning_label,
+    contract_progress_label, credit_error_label, job_kind_label, milestone_label,
+    offer_error_label, priority_mode_label, problem_label, ship_role_label, sort_mode_label,
+    station_profile_label, trade_error_label, warning_label,
 };
 use super::messages::HudMessages;
 use super::snapshot::build_hud_snapshot;
@@ -31,6 +29,7 @@ pub fn draw_hud_panel(
     mut kpi: ResMut<UiKpiTracker>,
     mut messages: ResMut<HudMessages>,
     mut station_ui: ResMut<StationUiState>,
+    mut finance_ui: ResMut<FinanceUiState>,
 ) -> Result {
     let selected_system_id = selected_system.system_id;
     let snapshot = build_hud_snapshot(
@@ -104,8 +103,7 @@ pub fn draw_hud_panel(
             ui.label("F1..F6: toggle panels");
             ui.label("[ / ]: switch selected player ship");
             ui.label("Right-click station: context menu (Fly / Open station UI)");
-            ui.label("Z/X/C/V: lease Dock/Storage/Factory/Market");
-            ui.label("R: release one lease of last selected slot type");
+            ui.label("Finance panel (F4): take credit, repay partially or fully");
             ui.label("G / D / F: trigger Stage A risk events");
             ui.separator();
             ui.heading("Map Legend");
@@ -708,42 +706,108 @@ pub fn draw_hud_panel(
 
     if panels.assets {
         let mut open = panels.assets;
-        egui::Window::new("Assets / Real Estate")
+        egui::Window::new("Finance")
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.heading("Economy Pressure");
+                ui.heading("Player Finance");
+                ui.label(format!("Capital: {:.1}", snapshot.capital));
                 ui.label(format!("Debt: {:.1}", snapshot.debt));
                 ui.label(format!("Rate: {:.2}%", snapshot.interest_rate * 100.0));
                 ui.label(format!("Reputation: {:.2}", snapshot.reputation));
-                ui.label(format!("Recovery events: {}", snapshot.recovery_events));
                 ui.separator();
-                ui.heading("Leases");
-                ui.label(format!("Active leases: {}", snapshot.active_leases));
-                ui.label(format!(
-                    "Lease burden/cycle: {:.1} | ROI proxy: {:.1}",
-                    snapshot.lease_burden, snapshot.roi_proxy
-                ));
-                for line in &snapshot.lease_lines {
-                    ui.monospace(line);
-                }
-                ui.separator();
-                ui.label(format!(
-                    "Selected system: {}",
-                    snapshot.selected_system_id.0
-                ));
-                for line in &snapshot.lease_market_lines {
-                    ui.monospace(line);
-                }
-                ui.separator();
-                ui.heading("Recovery log");
-                for action in snapshot.recovery_actions.iter().rev().take(6) {
-                    ui.monospace(format!(
-                        "cycle={} released={} capital={:.1} debt={:.1}",
-                        action.cycle,
-                        action.released_leases,
-                        action.capital_after,
-                        action.debt_after
+
+                if let Some(active_loan) = snapshot.active_loan {
+                    finance_ui.pending_offer = None;
+                    ui.heading("Active Loan");
+                    ui.label(format!("Offer: {}", active_loan.offer_id.label()));
+                    ui.label(format!("Principal: {:.1}", active_loan.principal_remaining));
+                    ui.label(format!(
+                        "Months remaining: {}",
+                        active_loan.remaining_months
                     ));
+                    ui.label(format!(
+                        "Next monthly payment: {:.1}",
+                        active_loan.next_payment
+                    ));
+                    ui.horizontal(|ui| {
+                        ui.label("Repay amount");
+                        ui.add(
+                            egui::DragValue::new(&mut finance_ui.repayment_amount)
+                                .speed(1.0)
+                                .range(0.1..=10_000.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Repay Part").clicked() {
+                            kpi.record_manual_action(sim.simulation.tick());
+                            match sim.simulation.repay_credit(finance_ui.repayment_amount) {
+                                Ok(()) => messages.push(format!(
+                                    "Repaid {:.1} toward active loan",
+                                    finance_ui
+                                        .repayment_amount
+                                        .min(active_loan.principal_remaining)
+                                )),
+                                Err(err) => messages
+                                    .push(format!("Repay failed: {}", credit_error_label(err))),
+                            }
+                        }
+                        if ui.button("Repay Full").clicked() {
+                            kpi.record_manual_action(sim.simulation.tick());
+                            match sim.simulation.repay_credit(active_loan.principal_remaining) {
+                                Ok(()) => messages.push("Loan fully repaid".to_string()),
+                                Err(err) => messages
+                                    .push(format!("Repay failed: {}", credit_error_label(err))),
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.label("Credit offers unlock again after the current loan is closed.");
+                } else {
+                    ui.heading("Credit Offers");
+                    for offer in &snapshot.loan_offers {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.heading(offer.label);
+                                ui.separator();
+                                ui.label(format!("Amount: {:.1}", offer.principal));
+                                ui.separator();
+                                ui.label(format!(
+                                    "Rate: {:.2}%/month",
+                                    offer.monthly_interest_rate * 100.0
+                                ));
+                                ui.separator();
+                                ui.label(format!("Term: {} mo", offer.term_months));
+                                ui.separator();
+                                ui.label(format!("Payment: {:.1}", offer.monthly_payment));
+                            });
+                            if finance_ui.pending_offer == Some(offer.id) {
+                                ui.horizontal(|ui| {
+                                    ui.label("Confirm taking this credit?");
+                                    if ui.button("Confirm").clicked() {
+                                        kpi.record_manual_action(sim.simulation.tick());
+                                        match sim.simulation.take_credit(offer.id) {
+                                            Ok(()) => {
+                                                finance_ui.pending_offer = None;
+                                                messages.push(format!(
+                                                    "Credit approved: {} +{:.1}",
+                                                    offer.label, offer.principal
+                                                ));
+                                            }
+                                            Err(err) => messages.push(format!(
+                                                "Credit failed: {}",
+                                                credit_error_label(err)
+                                            )),
+                                        }
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        finance_ui.pending_offer = None;
+                                    }
+                                });
+                            } else if ui.button(format!("Take {}", offer.label)).clicked() {
+                                finance_ui.pending_offer = Some(offer.id);
+                            }
+                        });
+                    }
                 }
             });
         panels.assets = open;

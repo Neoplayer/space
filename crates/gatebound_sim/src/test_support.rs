@@ -3,10 +3,8 @@ use gatebound_domain::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FinanceStateFixture {
-    pub outstanding_debt: f64,
+    pub active_loan: Option<ActiveLoan>,
     pub reputation: f64,
-    pub interest_rate: f64,
-    pub recovery_events: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -323,19 +321,16 @@ impl SimulationScenarioBuilder {
     }
 
     pub fn with_finance_state(&mut self, fixture: FinanceStateFixture) -> &mut Self {
-        self.simulation
-            .test_support_set_outstanding_debt(fixture.outstanding_debt);
-        self.simulation
-            .test_support_set_reputation(fixture.reputation);
-        self.simulation
-            .test_support_set_current_loan_interest_rate(fixture.interest_rate);
-        self.simulation
-            .test_support_set_recovery_events(fixture.recovery_events);
-        self
-    }
-
-    pub fn with_recovery_action(&mut self, action: RecoveryAction) -> &mut Self {
-        self.simulation.test_support_recovery_log_mut().push(action);
+        self.simulation.active_loan = fixture.active_loan;
+        self.simulation.outstanding_debt = fixture
+            .active_loan
+            .map(|loan| loan.principal_remaining)
+            .unwrap_or(0.0);
+        self.simulation.current_loan_interest_rate = fixture
+            .active_loan
+            .map(|loan| loan.monthly_interest_rate)
+            .unwrap_or(0.0);
+        self.simulation.reputation = fixture.reputation;
         self
     }
 

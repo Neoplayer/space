@@ -1,3 +1,5 @@
 tick_seconds = 1
 cycle_ticks = 60
 rolling_window_cycles = 20
+day_ticks = 200
+days_per_month = 30

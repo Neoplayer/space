@@ -5,6 +5,8 @@ pub struct TimeSettingsView {
     pub tick_seconds: u32,
     pub cycle_ticks: u32,
     pub rolling_window_cycles: u32,
+    pub day_ticks: u32,
+    pub days_per_month: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,16 +139,31 @@ pub struct MarketPanelView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AssetsPanelView {
+pub struct LoanOfferView {
+    pub id: LoanOfferId,
+    pub label: &'static str,
+    pub principal: f64,
+    pub monthly_interest_rate: f64,
+    pub term_months: u32,
+    pub monthly_payment: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveLoanView {
+    pub offer_id: LoanOfferId,
+    pub principal_remaining: f64,
+    pub monthly_interest_rate: f64,
+    pub remaining_months: u32,
+    pub next_payment: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinancePanelView {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub recovery_events: u32,
-    pub lease_positions: Vec<LeasePosition>,
-    pub lease_market: Vec<LeaseMarketView>,
-    pub lease_burden: f64,
-    pub roi_proxy: f64,
-    pub recovery_actions: Vec<RecoveryAction>,
+    pub active_loan: Option<ActiveLoanView>,
+    pub loan_offers: Vec<LoanOfferView>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,10 +191,8 @@ pub struct HudOverviewView {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub recovery_events: u32,
     pub active_contracts: usize,
     pub active_ships: usize,
-    pub active_leases: usize,
     pub sla_success_rate: f64,
     pub reroutes: u64,
     pub avg_price_index: f64,

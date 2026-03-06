@@ -6,6 +6,8 @@ impl Simulation {
             tick_seconds: self.config.time.tick_seconds,
             cycle_ticks: self.config.time.cycle_ticks,
             rolling_window_cycles: self.config.time.rolling_window_cycles,
+            day_ticks: self.config.time.day_ticks,
+            days_per_month: self.config.time.days_per_month,
         }
     }
 
@@ -234,32 +236,34 @@ impl Simulation {
         }
     }
 
-    pub fn assets_panel_view(&self, selected_system_id: SystemId) -> AssetsPanelView {
-        let lease_positions = self.active_leases.clone();
-        let lease_burden = lease_positions
-            .iter()
-            .map(|lease| lease.price_per_cycle)
-            .sum::<f64>();
-        let offers_avg = if self.contract_offers.is_empty() {
-            0.0
-        } else {
-            self.contract_offers
-                .values()
-                .map(|offer| offer.payout)
-                .sum::<f64>()
-                / self.contract_offers.len() as f64
-        };
-
-        AssetsPanelView {
-            debt: self.outstanding_debt,
-            interest_rate: self.current_loan_interest_rate,
+    pub fn finance_panel_view(&self) -> FinancePanelView {
+        FinancePanelView {
+            debt: self.outstanding_debt(),
+            interest_rate: self.current_loan_interest_rate(),
             reputation: self.reputation,
-            recovery_events: self.recovery_events,
-            lease_positions,
-            lease_market: self.lease_market_for_system(selected_system_id),
-            lease_burden,
-            roi_proxy: offers_avg - lease_burden,
-            recovery_actions: self.recent_recovery_actions().to_vec(),
+            active_loan: self.active_loan.map(|loan| ActiveLoanView {
+                offer_id: loan.offer_id,
+                principal_remaining: loan.principal_remaining,
+                monthly_interest_rate: loan.monthly_interest_rate,
+                remaining_months: loan.remaining_months,
+                next_payment: loan.next_payment,
+            }),
+            loan_offers: self
+                .loan_offers()
+                .into_iter()
+                .map(|offer| LoanOfferView {
+                    id: offer.id,
+                    label: offer.id.label(),
+                    principal: offer.principal,
+                    monthly_interest_rate: offer.monthly_interest_rate,
+                    term_months: offer.term_months,
+                    monthly_payment: super::finance::annuity_payment(
+                        offer.principal,
+                        offer.monthly_interest_rate,
+                        offer.term_months,
+                    ),
+                })
+                .collect(),
         }
     }
 
@@ -294,17 +298,15 @@ impl Simulation {
             tick: self.tick,
             cycle: self.cycle,
             capital: self.capital,
-            debt: self.outstanding_debt,
-            interest_rate: self.current_loan_interest_rate,
+            debt: self.outstanding_debt(),
+            interest_rate: self.current_loan_interest_rate(),
             reputation: self.reputation,
-            recovery_events: self.recovery_events,
             active_contracts: self
                 .contracts
                 .values()
                 .filter(|contract| !contract.completed && !contract.failed)
                 .count(),
             active_ships: self.ships.len(),
-            active_leases: self.active_leases.len(),
             sla_success_rate: cycle_report.sla_success_rate,
             reroutes: self.reroute_count,
             avg_price_index: self.average_price_index(),
@@ -360,7 +362,12 @@ impl Simulation {
     }
 
     pub fn fleet_status(&self) -> Vec<FleetShipStatus> {
-        let high_queue = self.gate_queue_load.values().copied().fold(0.0_f64, f64::max) > 1.0;
+        let high_queue = self
+            .gate_queue_load
+            .values()
+            .copied()
+            .fold(0.0_f64, f64::max)
+            > 1.0;
         let mut status = self
             .ships
             .values()
@@ -395,19 +402,38 @@ impl Simulation {
                     reroutes: ship.reroutes,
                     warning,
                     job_queue: self.project_ship_job_queue(ship),
-                    idle_ticks_cycle: self.ship_idle_ticks_cycle.get(&ship.id).copied().unwrap_or(0),
+                    idle_ticks_cycle: self
+                        .ship_idle_ticks_cycle
+                        .get(&ship.id)
+                        .copied()
+                        .unwrap_or(0),
                     avg_delay_ticks_cycle: {
-                        let delay = self.ship_delay_ticks_cycle.get(&ship.id).copied().unwrap_or(0)
-                            as f64;
-                        let runs = self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0)
-                            as f64;
-                        if runs > 0.0 { delay / runs } else { delay }
+                        let delay = self
+                            .ship_delay_ticks_cycle
+                            .get(&ship.id)
+                            .copied()
+                            .unwrap_or(0) as f64;
+                        let runs =
+                            self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0) as f64;
+                        if runs > 0.0 {
+                            delay / runs
+                        } else {
+                            delay
+                        }
                     },
                     profit_per_run: {
-                        let profit = self.ship_profit_earned.get(&ship.id).copied().unwrap_or(0.0);
-                        let runs = self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0)
-                            as f64;
-                        if runs > 0.0 { profit / runs } else { 0.0 }
+                        let profit = self
+                            .ship_profit_earned
+                            .get(&ship.id)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let runs =
+                            self.ship_runs_completed.get(&ship.id).copied().unwrap_or(0) as f64;
+                        if runs > 0.0 {
+                            profit / runs
+                        } else {
+                            0.0
+                        }
                     },
                 }
             })
@@ -433,7 +459,11 @@ impl Simulation {
                         }
                     }
                 }
-                let player_share = if total == 0 { 0.0 } else { player as f64 / total as f64 };
+                let player_share = if total == 0 {
+                    0.0
+                } else {
+                    player as f64 / total as f64
+                };
                 GateThroughputSnapshot {
                     gate_id: edge.id,
                     player_share,
@@ -499,9 +529,10 @@ impl Simulation {
             let imbalance = (state.target_stock - state.stock) / state.target_stock.max(1.0);
             let flow_pressure =
                 (state.cycle_outflow - state.cycle_inflow) / state.target_stock.max(1.0);
-            let raw_delta = self.config.market.k_stock * imbalance
-                + self.config.market.k_flow * flow_pressure;
-            let delta = raw_delta.clamp(-self.config.market.delta_cap, self.config.market.delta_cap);
+            let raw_delta =
+                self.config.market.k_stock * imbalance + self.config.market.k_flow * flow_pressure;
+            let delta =
+                raw_delta.clamp(-self.config.market.delta_cap, self.config.market.delta_cap);
             let floor = state.base_price * self.config.market.floor_mult;
             let ceil = state.base_price * self.config.market.ceiling_mult;
             let forecast_next = (state.price * (1.0 + delta)).clamp(floor, ceil);
@@ -517,8 +548,29 @@ impl Simulation {
         rows
     }
 
-    pub fn recent_recovery_actions(&self) -> &[RecoveryAction] {
-        &self.recovery_log
+    fn system_congestion_signal(&self, system_id: SystemId) -> f64 {
+        let Some(edges) = self.world.adjacency.get(&system_id) else {
+            return 0.0;
+        };
+        if edges.is_empty() {
+            return 0.0;
+        }
+
+        edges
+            .iter()
+            .map(|(_, gate_id)| {
+                let load = self.gate_queue_load.get(gate_id).copied().unwrap_or(0.0);
+                let effective_capacity = self
+                    .world
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *gate_id)
+                    .map(|edge| (edge.base_capacity * edge.capacity_factor).max(1.0))
+                    .unwrap_or(1.0);
+                load / effective_capacity
+            })
+            .sum::<f64>()
+            / edges.len() as f64
     }
 
     fn default_player_ship_id(&self) -> Option<ShipId> {

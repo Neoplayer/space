@@ -170,10 +170,7 @@ pub fn station_select_input_system(
     }
 }
 
-pub fn apply_station_context_open(
-    state: &mut StationUiState,
-    station_id: StationId,
-) {
+pub fn apply_station_context_open(state: &mut StationUiState, station_id: StationId) {
     state.context_station_id = Some(station_id);
     state.context_menu_open = true;
 }

@@ -18,11 +18,10 @@ pub struct Simulation {
     pub(crate) ships: BTreeMap<ShipId, Ship>,
     pub(crate) milestones: Vec<MilestoneStatus>,
     pub(crate) capital: f64,
-    pub(crate) active_leases: Vec<LeasePosition>,
+    pub(crate) active_loan: Option<ActiveLoan>,
     pub(crate) outstanding_debt: f64,
     pub(crate) reputation: f64,
     pub(crate) current_loan_interest_rate: f64,
-    pub(crate) recovery_events: u32,
     pub(crate) gate_traversals_cycle: BTreeMap<GateId, BTreeMap<CompanyId, u32>>,
     pub(crate) gate_traversals_window: VecDeque<BTreeMap<GateId, BTreeMap<CompanyId, u32>>>,
     pub(crate) queue_delay_accumulator: u64,
@@ -35,7 +34,6 @@ pub struct Simulation {
     pub(crate) ship_runs_completed: BTreeMap<ShipId, u32>,
     pub(crate) ship_profit_earned: BTreeMap<ShipId, f64>,
     pub(crate) previous_cycle_prices: BTreeMap<(StationId, Commodity), f64>,
-    pub(crate) recovery_log: Vec<RecoveryAction>,
     pub(crate) modifiers: Vec<ActiveModifier>,
 }
 

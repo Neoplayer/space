@@ -258,7 +258,9 @@ impl Simulation {
                         .get(&ship_id)
                         .map(|ship| ship.company_id)
                         .unwrap_or(CompanyId(0));
-                    self.capital -= self.config.pressure.gate_fee_per_jump;
+                    if company_id == CompanyId(0) {
+                        self.capital -= self.config.pressure.gate_fee_per_jump;
+                    }
                     self.record_gate_traversal(edge, company_id);
                 }
             }

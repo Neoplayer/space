@@ -11,11 +11,7 @@ impl Simulation {
         }
     }
 
-    pub fn route_for_ship(
-        &self,
-        ship_id: ShipId,
-        destination: SystemId,
-    ) -> Option<RoutePlan> {
+    pub fn route_for_ship(&self, ship_id: ShipId, destination: SystemId) -> Option<RoutePlan> {
         let ship = self.ships.get(&ship_id)?;
         let origin_station = ship
             .current_station
@@ -40,7 +36,12 @@ impl Simulation {
         if ship_snapshot.company_id != CompanyId(0) {
             return Err(CommandError::InvalidAssignment);
         }
-        if !self.world.stations.iter().any(|station| station.id == station_id) {
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
             return Err(CommandError::UnknownStation);
         }
         if ship_snapshot.segment_eta_remaining > 0

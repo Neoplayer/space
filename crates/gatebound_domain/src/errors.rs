@@ -18,10 +18,11 @@ impl Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseError {
-    NoCapacity,
-    InvalidCycles,
-    UnknownSystem,
+pub enum CreditError {
+    LoanAlreadyActive,
+    InvalidAmount,
+    NoActiveLoan,
+    InsufficientCapital,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

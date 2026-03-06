@@ -6,16 +6,16 @@ use crate::render::world::{
     update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
-    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_lease, hotkey_to_risk,
-    panel_hotkey_to_index, ContractsFilterState, LeaseHotkey, OfferSortMode, RiskHotkey,
-    SimResource, StationUiState, UiKpiTracker,
+    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, panel_hotkey_to_index,
+    ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey, SimResource, StationUiState,
+    UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
 use gatebound_domain::{
-    CargoLoad, CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId,
-    OfferProblemTag, PriorityMode, RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind,
-    ShipId, ShipRole, SlotType, StationId, SystemId,
+    ActiveLoan, CargoLoad, CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId,
+    LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig, SegmentKind, ShipId,
+    ShipRole, StationId, SystemId,
 };
 use gatebound_sim::{
     test_support::{
@@ -202,13 +202,10 @@ fn hotkey_mapping_matches_stage_a_risk_events() {
 }
 
 #[test]
-fn lease_hotkey_mapping_matches_expected_actions() {
-    assert!(matches!(hotkey_to_lease('z'), Some(LeaseHotkey::Dock)));
-    assert!(matches!(hotkey_to_lease('x'), Some(LeaseHotkey::Storage)));
-    assert!(matches!(hotkey_to_lease('c'), Some(LeaseHotkey::Factory)));
-    assert!(matches!(hotkey_to_lease('v'), Some(LeaseHotkey::Market)));
-    assert!(matches!(hotkey_to_lease('r'), Some(LeaseHotkey::Release)));
-    assert!(hotkey_to_lease('q').is_none());
+fn finance_ui_state_defaults_are_sensible() {
+    let state = FinanceUiState::default();
+    assert!(state.pending_offer.is_none());
+    assert!(state.repayment_amount > 0.0);
 }
 
 #[test]
@@ -829,17 +826,19 @@ fn manual_vs_policy_kpi_updates_from_user_actions() {
 }
 
 #[test]
-fn hud_snapshot_includes_debt_reputation_and_recovery() {
+fn hud_snapshot_includes_debt_reputation_and_active_loan() {
     let mut builder = SimulationScenarioBuilder::stage_a(7);
     builder.with_finance_state(FinanceStateFixture {
-        outstanding_debt: 123.0,
+        active_loan: Some(ActiveLoan {
+            offer_id: LoanOfferId::Growth,
+            principal_remaining: 123.0,
+            monthly_interest_rate: 0.07,
+            remaining_months: 5,
+            next_payment: 31.5,
+        }),
         reputation: 0.55,
-        interest_rate: 0.07,
-        recovery_events: 3,
     });
-    let mut sim = builder.build();
-    sim.lease_slot(SystemId(0), SlotType::Dock, 2)
-        .expect("lease should succeed");
+    let sim = builder.build();
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -854,20 +853,15 @@ fn hud_snapshot_includes_debt_reputation_and_recovery() {
     assert!((snapshot.debt - 123.0).abs() < 1e-9);
     assert!((snapshot.reputation - 0.55).abs() < 1e-9);
     assert!((snapshot.interest_rate - 0.07).abs() < 1e-9);
-    assert_eq!(snapshot.recovery_events, 3);
-    assert!(snapshot.active_leases >= 1);
+    assert_eq!(
+        snapshot.active_loan.expect("active loan").remaining_months,
+        5
+    );
 }
 
 #[test]
-fn assets_snapshot_shows_recovery_actions() {
-    let mut builder = SimulationScenarioBuilder::stage_a(42);
-    builder.with_recovery_action(RecoveryAction {
-        cycle: 4,
-        released_leases: 2,
-        capital_after: 40.0,
-        debt_after: 180.0,
-    });
-    let sim = builder.build();
+fn finance_snapshot_exposes_fixed_credit_offers_without_active_loan() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -879,12 +873,24 @@ fn assets_snapshot_shows_recovery_actions() {
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
-    assert_eq!(snapshot.recovery_actions.len(), 1);
-    assert_eq!(snapshot.recovery_actions[0].released_leases, 2);
+    assert_eq!(snapshot.loan_offers.len(), 3);
+    assert!(snapshot.active_loan.is_none());
+    assert!(snapshot
+        .loan_offers
+        .iter()
+        .any(|offer| offer.id == LoanOfferId::Starter));
+    assert!(snapshot
+        .loan_offers
+        .iter()
+        .any(|offer| offer.id == LoanOfferId::Growth));
+    assert!(snapshot
+        .loan_offers
+        .iter()
+        .any(|offer| offer.id == LoanOfferId::Expansion));
 }
 
 #[test]
-fn hud_selected_system_lease_prices_rendered() {
+fn finance_snapshot_preserves_selected_system_context() {
     let cfg = RuntimeConfig::default();
     let sim = Simulation::new(cfg, 42);
 
@@ -899,15 +905,7 @@ fn hud_selected_system_lease_prices_rendered() {
         &UiKpiTracker::default(),
     );
     assert_eq!(snapshot.selected_system_id, SystemId(0));
-    assert_eq!(snapshot.lease_market_lines.len(), 4);
-    assert!(snapshot
-        .lease_market_lines
-        .iter()
-        .any(|line| line.starts_with("Dock")));
-    assert!(snapshot
-        .lease_market_lines
-        .iter()
-        .any(|line| line.starts_with("Storage")));
+    assert_eq!(snapshot.loan_offers.len(), 3);
 }
 
 #[test]

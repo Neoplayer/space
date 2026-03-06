@@ -1,16 +1,16 @@
 use gatebound_domain::{
-    ContractTypeStageA, FleetShipStatus, GateId, GateThroughputSnapshot,
-    MarketInsightRow, MilestoneStatus, RecoveryAction, ShipId, StationId, StationProfile,
-    SystemId,
+    ContractTypeStageA, FleetShipStatus, GateId, GateThroughputSnapshot, MarketInsightRow,
+    MilestoneStatus, ShipId, StationId, StationProfile, SystemId,
 };
-use gatebound_sim::{ContractOfferView, MarketRowView, Simulation};
+use gatebound_sim::{ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation};
 
 use crate::input::camera::CameraMode;
 use crate::runtime::sim::{
     apply_offer_filters, derive_cycle_report, ContractsFilterState, UiKpiTracker,
 };
 
-use super::labels::{commodity_label, slot_type_label};
+use super::labels::commodity_label;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HudSnapshot {
     pub tick: u64,
@@ -19,10 +19,8 @@ pub struct HudSnapshot {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub recovery_events: u32,
     pub active_contracts: usize,
     pub active_ships: usize,
-    pub active_leases: usize,
     pub selected_system_id: SystemId,
     pub selected_station_id: Option<StationId>,
     pub selected_station_profile: Option<StationProfile>,
@@ -39,10 +37,8 @@ pub struct HudSnapshot {
     pub route_gate_options: Vec<GateId>,
     pub contract_lines: Vec<String>,
     pub ship_lines: Vec<String>,
-    pub lease_lines: Vec<String>,
-    pub lease_market_lines: Vec<String>,
-    pub lease_burden: f64,
-    pub roi_proxy: f64,
+    pub active_loan: Option<ActiveLoanView>,
+    pub loan_offers: Vec<LoanOfferView>,
     pub offers: Vec<ContractOfferView>,
     pub fleet_rows: Vec<FleetShipStatus>,
     pub market_rows: Vec<MarketRowView>,
@@ -51,7 +47,6 @@ pub struct HudSnapshot {
     pub throughput_rows: Vec<GateThroughputSnapshot>,
     pub market_share: f64,
     pub market_insights: Vec<MarketInsightRow>,
-    pub recovery_actions: Vec<RecoveryAction>,
     pub manual_actions_per_min: f64,
     pub policy_edits_per_min: f64,
     pub avg_route_hops_player: f64,
@@ -79,7 +74,7 @@ pub fn build_hud_snapshot(
         selected_station_id,
         matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
     );
-    let assets_panel = simulation.assets_panel_view(selected_system_id);
+    let finance_panel = simulation.finance_panel_view();
 
     let contract_lines = contracts_board
         .active_contracts
@@ -134,33 +129,6 @@ pub fn build_hud_snapshot(
         })
         .collect::<Vec<_>>();
 
-    let mut leases: Vec<_> = assets_panel.lease_positions.iter().collect();
-    leases.sort_by_key(|lease| (lease.system_id.0, lease.slot_type, lease.cycles_remaining));
-    let lease_lines = leases
-        .into_iter()
-        .take(10)
-        .map(|lease| {
-            format!(
-                "sys={} {:?} cycles={} price/cycle={:.1}",
-                lease.system_id.0, lease.slot_type, lease.cycles_remaining, lease.price_per_cycle
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let lease_market_lines = assets_panel
-        .lease_market
-        .iter()
-        .map(|entry| {
-            format!(
-                "{} {}/{} @ {:.1}/cycle",
-                slot_type_label(entry.slot_type),
-                entry.available,
-                entry.total,
-                entry.price_per_cycle
-            )
-        })
-        .collect::<Vec<_>>();
-
     let offers = apply_offer_filters(
         contracts_board
             .offers
@@ -186,10 +154,8 @@ pub fn build_hud_snapshot(
         debt: overview.debt,
         interest_rate: overview.interest_rate,
         reputation: overview.reputation,
-        recovery_events: overview.recovery_events,
         active_contracts: overview.active_contracts,
         active_ships: overview.active_ships,
-        active_leases: overview.active_leases,
         selected_system_id,
         selected_station_id: market_panel.selected_station_id,
         selected_station_profile: market_panel.selected_station_profile,
@@ -209,10 +175,8 @@ pub fn build_hud_snapshot(
         route_gate_options: contracts_board.route_gates,
         contract_lines,
         ship_lines,
-        lease_lines,
-        lease_market_lines,
-        lease_burden: assets_panel.lease_burden,
-        roi_proxy: assets_panel.roi_proxy,
+        active_loan: finance_panel.active_loan,
+        loan_offers: finance_panel.loan_offers,
         offers,
         fleet_rows: fleet_panel.rows,
         market_rows: market_panel.station_market_rows,
@@ -221,7 +185,6 @@ pub fn build_hud_snapshot(
         throughput_rows: market_panel.throughput_rows,
         market_share: market_panel.market_share,
         market_insights: market_panel.market_insights,
-        recovery_actions: assets_panel.recovery_actions,
         manual_actions_per_min: kpi.manual_actions_per_min,
         policy_edits_per_min: kpi.policy_edits_per_min,
         avg_route_hops_player: kpi.avg_route_hops_player,

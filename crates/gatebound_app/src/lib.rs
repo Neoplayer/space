@@ -18,10 +18,10 @@ use input::camera::{
 };
 use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
 use runtime::sim::{
-    apply_time_controls, drive_simulation, handle_lease_hotkeys, handle_panel_hotkeys,
-    handle_risk_hotkeys, sync_selected_station, sync_selected_system, ContractsFilterState,
-    LeaseSelection, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource,
-    StationUiState, UiKpiTracker, UiPanelState,
+    apply_time_controls, drive_simulation, handle_panel_hotkeys, handle_risk_hotkeys,
+    sync_selected_station, sync_selected_system, ContractsFilterState, FinanceUiState,
+    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, StationUiState,
+    UiKpiTracker, UiPanelState,
 };
 use ui::hud::{draw_hud_panel, HudMessages};
 
@@ -36,7 +36,7 @@ pub fn run() {
         .insert_resource(SimResource::new(simulation))
         .insert_resource(CameraUiState::default())
         .insert_resource(ShipMotionCache::default())
-        .insert_resource(LeaseSelection::default())
+        .insert_resource(FinanceUiState::default())
         .insert_resource(UiPanelState::default())
         .insert_resource(ContractsFilterState::default())
         .insert_resource(SelectedShip::default())
@@ -67,7 +67,6 @@ pub fn run() {
                 sync_selected_station,
                 handle_panel_hotkeys,
                 handle_risk_hotkeys,
-                handle_lease_hotkeys,
                 drive_simulation,
                 update_ship_motion_cache,
                 sync_camera_transform,

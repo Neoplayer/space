@@ -7,6 +7,8 @@ pub struct TimeUnitsConfig {
     pub tick_seconds: u32,
     pub cycle_ticks: u32,
     pub rolling_window_cycles: u32,
+    pub day_ticks: u32,
+    pub days_per_month: u32,
 }
 
 impl Default for TimeUnitsConfig {
@@ -15,6 +17,8 @@ impl Default for TimeUnitsConfig {
             tick_seconds: 1,
             cycle_ticks: 60,
             rolling_window_cycles: 20,
+            day_ticks: 200,
+            days_per_month: 30,
         }
     }
 }
@@ -149,6 +153,14 @@ impl RuntimeConfig {
         if self.time.rolling_window_cycles == 0 {
             return Err(ConfigError::Validation(
                 "rolling_window_cycles must be > 0".to_string(),
+            ));
+        }
+        if self.time.day_ticks == 0 {
+            return Err(ConfigError::Validation("day_ticks must be > 0".to_string()));
+        }
+        if self.time.days_per_month == 0 {
+            return Err(ConfigError::Validation(
+                "days_per_month must be > 0".to_string(),
             ));
         }
         if self.galaxy.cluster_system_min == 0 || self.galaxy.cluster_system_max == 0 {

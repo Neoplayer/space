@@ -3,7 +3,6 @@ use super::*;
 impl Simulation {
     pub fn new(mut config: RuntimeConfig, seed: u64) -> Self {
         config.galaxy.seed = seed;
-        let initial_loan_interest_rate = config.pressure.loan_interest_rate;
         let world = World::generate(&config.galaxy, seed);
         let mut markets = BTreeMap::new();
         for station in &world.stations {
@@ -86,11 +85,10 @@ impl Simulation {
             ships,
             milestones: Vec::new(),
             capital: 500.0,
-            active_leases: Vec::new(),
+            active_loan: None,
             outstanding_debt: 0.0,
             reputation: 1.0,
-            current_loan_interest_rate: initial_loan_interest_rate,
-            recovery_events: 0,
+            current_loan_interest_rate: 0.0,
             gate_traversals_cycle: BTreeMap::new(),
             gate_traversals_window: VecDeque::new(),
             queue_delay_accumulator: 0,
@@ -103,7 +101,6 @@ impl Simulation {
             ship_runs_completed: BTreeMap::new(),
             ship_profit_earned: BTreeMap::new(),
             previous_cycle_prices,
-            recovery_log: Vec::new(),
             modifiers: Vec::new(),
         };
         simulation.milestones = vec![
@@ -143,7 +140,6 @@ impl Simulation {
 
     pub fn step_tick(&mut self) -> TickReport {
         self.tick = self.tick.saturating_add(1);
-        self.apply_upkeep();
         self.run_economy_flow();
         if self.tick.is_multiple_of(10) {
             self.dispatch_npc_trade_orders();
@@ -157,6 +153,10 @@ impl Simulation {
             .is_multiple_of(u64::from(self.config.time.cycle_ticks))
         {
             self.step_cycle();
+        }
+
+        if self.tick.is_multiple_of(self.month_ticks()) {
+            self.step_month();
         }
 
         TickReport {
@@ -178,8 +178,6 @@ impl Simulation {
         self.capture_previous_cycle_prices();
         self.update_market_prices();
         self.evaluate_supply_contracts();
-        self.advance_lease_cycle();
-        self.apply_cycle_financial_pressure();
         self.roll_gate_traversal_window();
         self.expire_contract_offers();
         if self
@@ -239,7 +237,9 @@ impl Simulation {
     }
 
     pub fn outstanding_debt(&self) -> f64 {
-        self.outstanding_debt
+        self.active_loan
+            .map(|loan| loan.principal_remaining)
+            .unwrap_or(0.0)
     }
 
     pub fn reputation(&self) -> f64 {
@@ -247,11 +247,9 @@ impl Simulation {
     }
 
     pub fn current_loan_interest_rate(&self) -> f64 {
-        self.current_loan_interest_rate
-    }
-
-    pub fn recovery_events(&self) -> u32 {
-        self.recovery_events
+        self.active_loan
+            .map(|loan| loan.monthly_interest_rate)
+            .unwrap_or(0.0)
     }
 
     pub fn update_ship_policy(
@@ -311,10 +309,10 @@ impl Simulation {
             tick: self.tick,
             cycle: self.cycle,
             capital: self.capital,
+            active_loan: self.active_loan,
             outstanding_debt: self.outstanding_debt,
             reputation: self.reputation,
             current_loan_interest_rate: self.current_loan_interest_rate,
-            recovery_events: self.recovery_events,
             queue_delay_accumulator: self.queue_delay_accumulator,
             reroute_count: self.reroute_count,
             sla_successes: self.sla_successes,
@@ -352,7 +350,6 @@ impl Simulation {
             trade_orders: self.trade_orders.values().cloned().collect(),
             ships: self.ships.values().cloned().collect(),
             milestones: self.milestones.clone(),
-            active_leases: self.active_leases.clone(),
             gate_traversals_cycle: self
                 .gate_traversals_cycle
                 .iter()
@@ -437,7 +434,6 @@ impl Simulation {
                     },
                 )
                 .collect(),
-            recovery_log: self.recovery_log.clone(),
             modifiers: self
                 .modifiers
                 .iter()
@@ -460,10 +456,10 @@ impl Simulation {
             tick,
             cycle,
             capital,
+            active_loan,
             outstanding_debt,
             reputation,
             current_loan_interest_rate,
-            recovery_events,
             queue_delay_accumulator,
             reroute_count,
             sla_successes,
@@ -478,13 +474,11 @@ impl Simulation {
             trade_orders,
             ships,
             milestones,
-            active_leases,
             gate_traversals_cycle,
             gate_traversals_window,
             gate_queue_load,
             ship_kpis,
             previous_cycle_prices,
-            recovery_log,
             modifiers,
         } = state;
 
@@ -494,10 +488,10 @@ impl Simulation {
         simulation.tick = tick;
         simulation.cycle = cycle;
         simulation.capital = capital;
+        simulation.active_loan = active_loan;
         simulation.outstanding_debt = outstanding_debt;
         simulation.reputation = reputation;
         simulation.current_loan_interest_rate = current_loan_interest_rate;
-        simulation.recovery_events = recovery_events;
         simulation.queue_delay_accumulator = queue_delay_accumulator;
         simulation.reroute_count = reroute_count;
         simulation.sla_successes = sla_successes;
@@ -550,7 +544,6 @@ impl Simulation {
             .collect();
         simulation.ships = ships.into_iter().map(|ship| (ship.id, ship)).collect();
         simulation.milestones = milestones;
-        simulation.active_leases = active_leases;
         simulation.gate_traversals_cycle = gate_traversals_cycle
             .into_iter()
             .map(|entry| {
@@ -606,7 +599,6 @@ impl Simulation {
             .into_iter()
             .map(|entry| ((entry.station_id, entry.commodity), entry.price))
             .collect();
-        simulation.recovery_log = recovery_log;
         simulation.modifiers = modifiers
             .into_iter()
             .map(|modifier| ActiveModifier {

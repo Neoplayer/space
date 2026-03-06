@@ -19,7 +19,12 @@ impl Simulation {
         if ship_snapshot.company_id != CompanyId(0) {
             return Err(TradeError::InvalidAssignment);
         }
-        if !self.world.stations.iter().any(|station| station.id == station_id) {
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
             return Err(TradeError::UnknownStation);
         }
         if !self.is_ship_docked_at(ship_id, station_id) {
@@ -113,7 +118,12 @@ impl Simulation {
         if ship_snapshot.company_id != CompanyId(0) {
             return Err(TradeError::InvalidAssignment);
         }
-        if !self.world.stations.iter().any(|station| station.id == station_id) {
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
             return Err(TradeError::UnknownStation);
         }
         if !self.is_ship_docked_at(ship_id, station_id) {

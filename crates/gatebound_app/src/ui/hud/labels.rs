@@ -1,7 +1,7 @@
 use gatebound_domain::{
-    CargoSource, CommandError, Commodity, ContractActionError, ContractProgress,
+    CargoSource, CommandError, Commodity, ContractActionError, ContractProgress, CreditError,
     FleetJobKind, FleetWarning, MilestoneId, MilestoneStatus, OfferError, OfferProblemTag,
-    PriorityMode, ShipRole, SlotType, StationProfile, TradeError,
+    PriorityMode, ShipRole, StationProfile, TradeError,
 };
 
 use crate::runtime::sim::OfferSortMode;
@@ -14,15 +14,6 @@ pub(super) fn commodity_label(commodity: Commodity) -> &'static str {
         Commodity::Fuel => "Fuel",
         Commodity::Parts => "Parts",
         Commodity::Electronics => "Electronics",
-    }
-}
-
-pub(super) fn slot_type_label(slot_type: SlotType) -> &'static str {
-    match slot_type {
-        SlotType::Dock => "Dock",
-        SlotType::Storage => "Storage",
-        SlotType::Factory => "Factory",
-        SlotType::Market => "Market",
     }
 }
 
@@ -72,6 +63,15 @@ pub(super) fn priority_mode_label(mode: PriorityMode) -> &'static str {
         PriorityMode::Profit => "profit",
         PriorityMode::Stability => "stability",
         PriorityMode::Hybrid => "hybrid",
+    }
+}
+
+pub(super) fn credit_error_label(err: CreditError) -> &'static str {
+    match err {
+        CreditError::LoanAlreadyActive => "loan_already_active",
+        CreditError::InvalidAmount => "invalid_amount",
+        CreditError::NoActiveLoan => "no_active_loan",
+        CreditError::InsufficientCapital => "insufficient_capital",
     }
 }
 

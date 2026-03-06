@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use gatebound_domain::{
-    Commodity, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag, ShipId, SlotType,
-    StationId, SystemId, TickReport,
+    Commodity, ContractOffer, CycleReport, GateId, LoanOfferId, OfferProblemTag, ShipId, StationId,
+    SystemId, TickReport,
 };
 use gatebound_sim::Simulation;
 use std::collections::VecDeque;
@@ -240,36 +240,18 @@ pub fn hotkey_to_risk(ch: char) -> Option<RiskHotkey> {
     }
 }
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LeaseSelection {
-    pub slot_type: SlotType,
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct FinanceUiState {
+    pub pending_offer: Option<LoanOfferId>,
+    pub repayment_amount: f64,
 }
 
-impl Default for LeaseSelection {
+impl Default for FinanceUiState {
     fn default() -> Self {
         Self {
-            slot_type: SlotType::Dock,
+            pending_offer: None,
+            repayment_amount: 25.0,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseHotkey {
-    Dock,
-    Storage,
-    Factory,
-    Market,
-    Release,
-}
-
-pub fn hotkey_to_lease(ch: char) -> Option<LeaseHotkey> {
-    match ch.to_ascii_lowercase() {
-        'z' => Some(LeaseHotkey::Dock),
-        'x' => Some(LeaseHotkey::Storage),
-        'c' => Some(LeaseHotkey::Factory),
-        'v' => Some(LeaseHotkey::Market),
-        'r' => Some(LeaseHotkey::Release),
-        _ => None,
     }
 }
 
@@ -506,88 +488,6 @@ pub fn handle_risk_hotkeys(
     }
 }
 
-pub fn handle_lease_hotkeys(
-    keys: Res<ButtonInput<KeyCode>>,
-    selected_system: Res<SelectedSystem>,
-    mut selection: ResMut<LeaseSelection>,
-    mut sim: ResMut<SimResource>,
-    mut messages: ResMut<HudMessages>,
-    mut kpi: ResMut<UiKpiTracker>,
-) {
-    let action = if keys.just_pressed(KeyCode::KeyZ) {
-        hotkey_to_lease('z')
-    } else if keys.just_pressed(KeyCode::KeyX) {
-        hotkey_to_lease('x')
-    } else if keys.just_pressed(KeyCode::KeyC) {
-        hotkey_to_lease('c')
-    } else if keys.just_pressed(KeyCode::KeyV) {
-        hotkey_to_lease('v')
-    } else if keys.just_pressed(KeyCode::KeyR) {
-        hotkey_to_lease('r')
-    } else {
-        None
-    };
-
-    let Some(action) = action else {
-        return;
-    };
-    kpi.record_manual_action(sim.simulation.tick());
-
-    let selected_system = selected_system.system_id;
-    const DEFAULT_LEASE_CYCLES: u32 = 3;
-
-    match action {
-        LeaseHotkey::Dock => lease_slot(
-            &mut sim.simulation,
-            &mut selection,
-            &mut messages,
-            selected_system,
-            SlotType::Dock,
-            DEFAULT_LEASE_CYCLES,
-        ),
-        LeaseHotkey::Storage => lease_slot(
-            &mut sim.simulation,
-            &mut selection,
-            &mut messages,
-            selected_system,
-            SlotType::Storage,
-            DEFAULT_LEASE_CYCLES,
-        ),
-        LeaseHotkey::Factory => lease_slot(
-            &mut sim.simulation,
-            &mut selection,
-            &mut messages,
-            selected_system,
-            SlotType::Factory,
-            DEFAULT_LEASE_CYCLES,
-        ),
-        LeaseHotkey::Market => lease_slot(
-            &mut sim.simulation,
-            &mut selection,
-            &mut messages,
-            selected_system,
-            SlotType::Market,
-            DEFAULT_LEASE_CYCLES,
-        ),
-        LeaseHotkey::Release => {
-            let released = sim
-                .simulation
-                .release_one_slot(selected_system, selection.slot_type);
-            if released {
-                messages.push(format!(
-                    "Released {:?} slot lease in system {}",
-                    selection.slot_type, selected_system.0
-                ));
-            } else {
-                messages.push(format!(
-                    "No {:?} lease to release in system {}",
-                    selection.slot_type, selected_system.0
-                ));
-            }
-        }
-    }
-}
-
 pub fn drive_simulation(
     time: Res<Time>,
     mut clock: ResMut<SimClock>,
@@ -609,34 +509,4 @@ pub fn drive_simulation(
 
 pub fn derive_cycle_report(simulation: &Simulation) -> CycleReport {
     simulation.cycle_report()
-}
-
-fn lease_slot(
-    simulation: &mut Simulation,
-    selection: &mut LeaseSelection,
-    messages: &mut HudMessages,
-    system_id: SystemId,
-    slot_type: SlotType,
-    cycles: u32,
-) {
-    selection.slot_type = slot_type;
-    match simulation.lease_slot(system_id, slot_type, cycles) {
-        Ok(()) => {
-            messages.push(format!(
-                "Leased {:?} slot in system {} for {} cycles",
-                slot_type, system_id.0, cycles
-            ));
-        }
-        Err(err) => {
-            let reason = match err {
-                LeaseError::NoCapacity => "no capacity",
-                LeaseError::InvalidCycles => "invalid cycles",
-                LeaseError::UnknownSystem => "unknown system",
-            };
-            messages.push(format!(
-                "Lease {:?} in system {} failed: {}",
-                slot_type, system_id.0, reason
-            ));
-        }
-    }
 }

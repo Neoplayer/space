@@ -2,13 +2,12 @@
 
 mod contracts;
 mod economy;
-mod leases;
+mod finance;
 mod lifecycle;
 mod milestones;
 mod movement;
 mod npc;
 mod queries;
-mod recovery;
 mod risk;
 mod routing;
 mod state;
@@ -26,8 +25,8 @@ use crate::views::*;
 use gatebound_domain::*;
 
 pub use lifecycle::SnapshotError;
-pub use state::Simulation;
 use state::ActiveModifier;
+pub use state::Simulation;
 
 fn seed_stage_a_companies() -> BTreeMap<CompanyId, Company> {
     let mut companies = BTreeMap::new();

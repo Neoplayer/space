@@ -185,7 +185,11 @@ impl Simulation {
                 count += 1;
             }
         }
-        if count == 0 { 1.0 } else { sum / count as f64 }
+        if count == 0 {
+            1.0
+        } else {
+            sum / count as f64
+        }
     }
 }
 

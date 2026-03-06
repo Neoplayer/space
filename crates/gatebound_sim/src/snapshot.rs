@@ -1,15 +1,14 @@
 use crate::{simulation::SnapshotError, Simulation};
 use gatebound_domain::{
-    Commodity, Company, CompanyId, Contract, ContractOffer, GateId, LeasePosition, MarketState,
-    MilestoneStatus, RecoveryAction, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
-    TradeOrder,
+    ActiveLoan, Commodity, Company, CompanyId, Contract, ContractOffer, GateId, MarketState, MilestoneStatus, RiskStageA, RuntimeConfig, Ship, ShipId,
+    StationId, TradeOrder,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotEnvelope {
@@ -29,10 +28,10 @@ pub(crate) struct SnapshotState {
     pub tick: u64,
     pub cycle: u64,
     pub capital: f64,
+    pub active_loan: Option<ActiveLoan>,
     pub outstanding_debt: f64,
     pub reputation: f64,
     pub current_loan_interest_rate: f64,
-    pub recovery_events: u32,
     pub queue_delay_accumulator: u64,
     pub reroute_count: u64,
     pub sla_successes: u64,
@@ -47,13 +46,11 @@ pub(crate) struct SnapshotState {
     pub trade_orders: Vec<TradeOrder>,
     pub ships: Vec<Ship>,
     pub milestones: Vec<MilestoneStatus>,
-    pub active_leases: Vec<LeasePosition>,
     pub gate_traversals_cycle: Vec<GateTraversalSnapshot>,
     pub gate_traversals_window: Vec<Vec<GateTraversalSnapshot>>,
     pub gate_queue_load: Vec<GateLoadSnapshot>,
     pub ship_kpis: Vec<ShipKpiSnapshot>,
     pub previous_cycle_prices: Vec<PreviousPriceSnapshot>,
-    pub recovery_log: Vec<RecoveryAction>,
     pub modifiers: Vec<ActiveModifierSnapshot>,
 }
 
