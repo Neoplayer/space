@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{
-    CargoSource, Commodity, CompanyId, FleetShipStatus, OfferProblemTag, PriorityMode, ShipId,
-};
+use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
 use gatebound_sim::TradePriceTone;
 
 use crate::runtime::sim::{
@@ -15,10 +13,10 @@ use crate::runtime::sim::{
 
 use super::labels::{
     cargo_source_label, command_error_label, commodity_label, company_archetype_label,
-    contract_action_error_label, contract_progress_label, credit_error_label, job_kind_label,
-    milestone_label, offer_error_label, priority_mode_label, problem_label, ship_class_label,
+    contract_action_error_label, contract_progress_label, credit_error_label, milestone_label,
+    offer_error_label, priority_mode_label, problem_label, ship_class_label,
     ship_module_slot_label, ship_module_status_label, ship_role_label, sort_mode_label,
-    station_profile_label, trade_error_label, warning_label,
+    station_profile_label, trade_error_label,
 };
 use super::messages::HudMessages;
 use super::snapshot::{
@@ -26,9 +24,12 @@ use super::snapshot::{
     StationCardSnapshot, StationRefSnapshot, SystemRefSnapshot,
 };
 
-pub(crate) fn player_fleet_rows(rows: &[FleetShipStatus]) -> Vec<&FleetShipStatus> {
+#[cfg(test)]
+pub(crate) fn player_fleet_rows(
+    rows: &[gatebound_domain::FleetShipStatus],
+) -> Vec<&gatebound_domain::FleetShipStatus> {
     rows.iter()
-        .filter(|row| row.company_id == CompanyId(0))
+        .filter(|row| row.company_id == gatebound_domain::CompanyId(0))
         .collect()
 }
 
@@ -122,8 +123,7 @@ pub fn draw_hud_panel(
             ui.heading("Windows");
             for button in panel_button_specs() {
                 let open = panel_is_open(&panels, button.index);
-                let status = if open { "open" } else { "closed" };
-                let label = format!("{} ({}) [{}]", button.label, button.hotkey, status);
+                let label = format!("{} ({})", button.label, button.hotkey);
                 if ui.selectable_label(open, label).clicked() {
                     crate::runtime::sim::apply_panel_toggle(&mut panels, button.index);
                     if button.index == 6 {
@@ -420,67 +420,49 @@ pub fn draw_hud_panel(
 
     if panels.fleet {
         let mut open = panels.fleet;
-        let fleet_rows = player_fleet_rows(&snapshot.fleet_rows);
         egui::Window::new("Fleet Manager")
+            .default_width(560.0)
+            .default_height(420.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(format!("Ships: {}", fleet_rows.len()));
-                for row in fleet_rows {
-                    ui.collapsing(format!("Ship #{}", row.ship_id.0), |ui| {
-                        let active_segment = row
-                            .job_queue
-                            .first()
-                            .map(|step| job_kind_label(step.kind))
-                            .unwrap_or("-");
-                        ui.horizontal(|ui| {
-                            let selected = selected_ship.ship_id == Some(row.ship_id);
-                            if ui
-                                .selectable_label(selected, format!("select #{}", row.ship_id.0))
-                                .clicked()
-                            {
-                                selected_ship.ship_id = Some(row.ship_id);
-                            }
-                            ui.monospace(format!(
-                                "c={} role={} sys={} st={} -> {} eta={} segment={} route={} reroutes={} cargo={}",
-                                row.company_id.0,
-                                ship_role_label(row.role),
-                                row.location.0,
-                                row.current_station
-                                    .map(|station_id| station_id.0.to_string())
-                                    .unwrap_or_else(|| "-".to_string()),
-                                row.target
-                                    .map(|system_id| system_id.0.to_string())
-                                    .unwrap_or_else(|| "-".to_string()),
-                                row.eta,
-                                active_segment,
-                                row.route_len,
-                                row.reroutes,
-                                row.cargo_commodity
-                                    .map(|commodity| format!("{}:{:.1}", commodity_label(commodity), row.cargo_amount))
-                                    .unwrap_or_else(|| "-".to_string())
-                            ));
-                        });
-                        ui.monospace(format!(
-                            "idle={} delay_avg={:.2} profit/run={:.2}",
-                            row.idle_ticks_cycle, row.avg_delay_ticks_cycle, row.profit_per_run
-                        ));
-                        if let Some(warning) = row.warning {
-                            ui.colored_label(
-                                egui::Color32::YELLOW,
-                                format!("warn={}", warning_label(warning)),
-                            );
-                        }
-                        ui.monospace("job_queue:");
-                        for step in row.job_queue.iter().take(8) {
-                            ui.monospace(format!(
-                                " - {} @sys={} eta={}",
-                                job_kind_label(step.kind),
-                                step.system.0,
-                                step.eta_ticks
-                            ));
+                ui.label(format!("Ships: {}", snapshot.fleet_list_rows.len()));
+                ui.separator();
+
+                if snapshot.fleet_list_rows.is_empty() {
+                    ui.label("No player ships available");
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for row in &snapshot.fleet_list_rows {
+                            egui::Frame::group(ui.style())
+                                .fill(egui::Color32::from_rgb(16, 21, 28))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 72, 88)))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label(egui::RichText::new(&row.ship_name).strong());
+                                            ui.label(&row.location_text);
+                                            ui.label(
+                                                egui::RichText::new(&row.status_text)
+                                                    .color(egui::Color32::from_rgb(143, 185, 255)),
+                                            );
+                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.button("Open card").clicked() {
+                                                    open_ship_card(&mut ship_ui, row.ship_id);
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            ui.add_space(6.0);
                         }
                     });
-                }
             });
         panels.fleet = open;
     }

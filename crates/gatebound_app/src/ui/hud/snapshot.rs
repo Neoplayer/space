@@ -45,6 +45,7 @@ pub struct HudSnapshot {
     pub loan_offers: Vec<LoanOfferView>,
     pub offers: Vec<ContractOfferView>,
     pub fleet_rows: Vec<FleetShipStatus>,
+    pub fleet_list_rows: Vec<FleetListRowSnapshot>,
     pub corporation_rows: Vec<CorporationRowView>,
     pub markets: MarketsDashboardSnapshot,
     pub milestones: Vec<MilestoneStatus>,
@@ -254,6 +255,14 @@ pub struct ShipCardSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FleetListRowSnapshot {
+    pub ship_id: ShipId,
+    pub ship_name: String,
+    pub location_text: String,
+    pub status_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct StationCardSnapshot {
     pub station_id: StationId,
     pub system_id: SystemId,
@@ -319,6 +328,7 @@ pub fn build_hud_snapshot(
     let finance_panel = simulation.finance_panel_view();
     let corporation_panel = simulation.corporation_panel_view();
     let resolved_ship_id = selected_ship_id.or(fleet_panel.default_player_ship_id);
+    let fleet_list_rows = build_fleet_list_rows(simulation, &fleet_panel.player_ship_ids);
     let station_card = station_card_station_id
         .and_then(|station_id| resolved_ship_id.map(|ship_id| (ship_id, station_id)))
         .and_then(|(ship_id, station_id)| {
@@ -427,6 +437,7 @@ pub fn build_hud_snapshot(
         loan_offers: finance_panel.loan_offers,
         offers,
         fleet_rows: fleet_panel.rows,
+        fleet_list_rows,
         corporation_rows: corporation_panel.rows,
         markets: build_markets_snapshot(simulation, &market_panel),
         milestones: overview.milestones,
@@ -695,6 +706,59 @@ fn station_ref_snapshot(
                     profile: station.profile,
                 })
         })
+}
+
+fn build_fleet_list_rows(
+    simulation: &Simulation,
+    player_ship_ids: &[ShipId],
+) -> Vec<FleetListRowSnapshot> {
+    let topology = simulation.camera_topology_view();
+    let mut rows = player_ship_ids
+        .iter()
+        .filter_map(|ship_id| {
+            let view = simulation.ship_card_view(*ship_id)?;
+            let system_name = generated_system_name(view.location);
+            let current_station_name = view.current_station.and_then(|station_id| {
+                topology
+                    .systems
+                    .iter()
+                    .flat_map(|system| system.stations.iter())
+                    .find(|station| station.station_id == station_id)
+                    .map(|station| generated_station_name(station.station_id, station.profile))
+            });
+
+            let location_text = current_station_name
+                .as_ref()
+                .map(|station_name| format!("{station_name}, {system_name}"))
+                .unwrap_or_else(|| system_name.clone());
+            let status_text = if let Some(station_name) = current_station_name.as_ref() {
+                format!("Docked at {station_name}")
+            } else if let Some(target_system) = view.current_target {
+                format!(
+                    "In transit to {} • ETA {}",
+                    generated_system_name(target_system),
+                    view.eta_ticks_remaining
+                )
+            } else if view.eta_ticks_remaining > 0 || view.current_segment_kind.is_some() {
+                format!("In transit • ETA {}", view.eta_ticks_remaining)
+            } else {
+                format!("Idle in {system_name}")
+            };
+
+            Some(FleetListRowSnapshot {
+                ship_id: view.ship_id,
+                ship_name: view.ship_name,
+                location_text,
+                status_text,
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.ship_name
+            .cmp(&right.ship_name)
+            .then_with(|| left.ship_id.0.cmp(&right.ship_id.0))
+    });
+    rows
 }
 
 fn build_ship_card_snapshot(simulation: &Simulation, ship_id: ShipId) -> Option<ShipCardSnapshot> {

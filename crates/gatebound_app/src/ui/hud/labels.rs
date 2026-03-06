@@ -1,8 +1,7 @@
 use gatebound_domain::{
     CargoSource, CommandError, Commodity, CompanyArchetype, ContractActionError, ContractProgress,
-    CreditError, FleetJobKind, FleetWarning, MilestoneId, MilestoneStatus, OfferError,
-    OfferProblemTag, PriorityMode, ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole,
-    StationProfile, TradeError,
+    CreditError, MilestoneId, MilestoneStatus, OfferError, OfferProblemTag, PriorityMode,
+    ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, TradeError,
 };
 
 use crate::runtime::sim::OfferSortMode;
@@ -23,15 +22,6 @@ pub(super) fn station_profile_label(profile: StationProfile) -> &'static str {
         StationProfile::Civilian => "Civilian",
         StationProfile::Industrial => "Industrial",
         StationProfile::Research => "Research",
-    }
-}
-
-pub(super) fn warning_label(warning: FleetWarning) -> &'static str {
-    match warning {
-        FleetWarning::HighRisk => "HighRisk",
-        FleetWarning::HighQueueDelay => "HighQueueDelay",
-        FleetWarning::NoRoute => "NoRoute",
-        FleetWarning::ShipIdle => "ShipIdle",
     }
 }
 
@@ -185,16 +175,5 @@ pub(super) fn problem_label(problem: OfferProblemTag) -> &'static str {
         OfferProblemTag::CongestedRoute => "congested_route",
         OfferProblemTag::LowMargin => "low_margin",
         OfferProblemTag::FuelVolatility => "fuel_volatility",
-    }
-}
-
-pub(super) fn job_kind_label(kind: FleetJobKind) -> &'static str {
-    match kind {
-        FleetJobKind::Pickup => "pickup",
-        FleetJobKind::Transit => "transit",
-        FleetJobKind::GateQueue => "gate_queue",
-        FleetJobKind::Warp => "warp",
-        FleetJobKind::Unload => "unload",
-        FleetJobKind::LoopReturn => "loop_return",
     }
 }

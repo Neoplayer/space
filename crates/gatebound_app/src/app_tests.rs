@@ -1,5 +1,6 @@
 use crate::input::camera::{
-    apply_escape, apply_ship_context_open, apply_station_context_open, apply_system_click,
+    apply_escape, apply_galaxy_pan_drag, apply_ship_context_open, apply_station_context_open,
+    apply_system_click, clamp_galaxy_pan, clamp_zoom, galaxy_pan_bounds, should_start_galaxy_pan,
     CameraMode, CameraUiState, ClickTracker,
 };
 use crate::render::world::{
@@ -17,15 +18,15 @@ use crate::ui::hud::{build_hud_snapshot as build_hud_snapshot_v2, player_fleet_r
 use bevy::prelude::*;
 use gatebound_domain::{
     ActiveLoan, CargoLoad, CargoSource, Commodity, CompanyId, ContractOffer, ContractTypeStageA,
-    GateId, LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig, SegmentKind,
-    ShipId, ShipRole, StationId, SystemId,
+    FactionId, GateId, LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig,
+    SegmentKind, ShipClass, ShipDescriptor, ShipId, ShipRole, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
     test_support::{
         FinanceStateFixture, MarketStatePatch, ShipCycleMetricsFixture, ShipPatch,
         SimulationScenarioBuilder,
     },
-    Simulation,
+    CameraSystemView, CameraTopologyView, Simulation,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -66,6 +67,46 @@ fn ship_docked_at(simulation: &Simulation, ship_id: ShipId, station_id: StationI
     simulation
         .station_ops_view(ship_id, station_id)
         .is_some_and(|view| view.docked)
+}
+
+fn expected_system_name(system_id: SystemId) -> String {
+    const PREFIXES: [&str; 8] = [
+        "Aster", "Cinder", "Helios", "Kepler", "Lyra", "Nimbus", "Orion", "Vega",
+    ];
+    const SUFFIXES: [&str; 8] = [
+        "Reach", "Gate", "Haven", "Drift", "Span", "Crown", "Verge", "Anchor",
+    ];
+
+    let prefix = PREFIXES[system_id.0 % PREFIXES.len()];
+    let suffix = SUFFIXES[(system_id.0 / PREFIXES.len()) % SUFFIXES.len()];
+    format!("{prefix} {suffix}")
+}
+
+fn expected_station_name(station_id: StationId, profile: StationProfile) -> String {
+    let role = match profile {
+        StationProfile::Civilian => "Concourse",
+        StationProfile::Industrial => "Foundry",
+        StationProfile::Research => "Array",
+    };
+    format!("{role}-{:03}", station_id.0)
+}
+
+fn test_camera_topology(systems: &[(SystemId, f32, f32, f32)]) -> CameraTopologyView {
+    CameraTopologyView {
+        systems: systems
+            .iter()
+            .map(|(system_id, x, y, radius)| CameraSystemView {
+                system_id: *system_id,
+                owner_faction_id: FactionId(0),
+                faction_color_rgb: [255, 255, 255],
+                x: f64::from(*x),
+                y: f64::from(*y),
+                radius: f64::from(*radius),
+                stations: Vec::new(),
+            })
+            .collect(),
+        gate_ids: Vec::new(),
+    }
 }
 
 #[test]
@@ -126,6 +167,88 @@ fn double_click_enters_system_and_escape_returns_to_galaxy() {
 
     apply_escape(&mut mode, true);
     assert_eq!(mode, CameraMode::Galaxy);
+}
+
+#[test]
+fn galaxy_pan_drag_applies_world_space_delta() {
+    let topology = test_camera_topology(&[
+        (SystemId(0), -600.0, -450.0, 50.0),
+        (SystemId(1), 600.0, 450.0, 50.0),
+    ]);
+
+    let pan = apply_galaxy_pan_drag(
+        Vec2::ZERO,
+        Vec2::new(10.0, 20.0),
+        Vec2::new(35.0, -10.0),
+        &topology,
+        Vec2::new(200.0, 100.0),
+        1.0,
+    );
+
+    assert_eq!(pan, Vec2::new(-25.0, 30.0));
+}
+
+#[test]
+fn zoom_step_is_smoother_for_scroll_input() {
+    assert_eq!(clamp_zoom(1.0, 1.0, 0.3, 4.0), 0.92);
+    assert_eq!(clamp_zoom(1.0, -1.0, 0.3, 4.0), 1.08);
+}
+
+#[test]
+fn galaxy_pan_clamps_to_bounds_and_recenters_large_viewports() {
+    let topology = test_camera_topology(&[
+        (SystemId(0), -100.0, 0.0, 50.0),
+        (SystemId(1), 100.0, 0.0, 50.0),
+    ]);
+    let bounds = galaxy_pan_bounds(&topology).expect("topology should produce pan bounds");
+
+    assert_eq!(
+        clamp_galaxy_pan(Vec2::new(500.0, -500.0), bounds, Vec2::new(80.0, 60.0)),
+        Vec2::new(130.0, -50.0)
+    );
+    assert_eq!(
+        clamp_galaxy_pan(Vec2::new(90.0, 45.0), bounds, Vec2::new(400.0, 300.0)),
+        Vec2::ZERO
+    );
+}
+
+#[test]
+fn galaxy_pan_and_zoom_survive_galaxy_system_round_trip() {
+    let mut ui = CameraUiState {
+        zoom_level: 1.7,
+        galaxy_pan: Vec2::new(180.0, -75.0),
+        ..CameraUiState::default()
+    };
+    let mut tracker = ClickTracker::default();
+
+    assert!(!apply_system_click(
+        &mut ui.mode,
+        &mut tracker,
+        SystemId(2),
+        0.0
+    ));
+    assert!(apply_system_click(
+        &mut ui.mode,
+        &mut tracker,
+        SystemId(2),
+        0.2
+    ));
+
+    apply_escape(&mut ui.mode, true);
+
+    assert_eq!(ui.mode, CameraMode::Galaxy);
+    assert_eq!(ui.zoom_level, 1.7);
+    assert_eq!(ui.galaxy_pan, Vec2::new(180.0, -75.0));
+}
+
+#[test]
+fn galaxy_pan_only_starts_for_unblocked_galaxy_view() {
+    assert!(should_start_galaxy_pan(CameraMode::Galaxy, false));
+    assert!(!should_start_galaxy_pan(CameraMode::Galaxy, true));
+    assert!(!should_start_galaxy_pan(
+        CameraMode::System(SystemId(3)),
+        false
+    ));
 }
 
 #[test]
@@ -619,6 +742,178 @@ fn fleet_manager_rows_only_include_player_ships() {
         "stage_a fleet manager should show one player ship"
     );
     assert!(rows.iter().all(|row| row.company_id == CompanyId(0)));
+}
+
+#[test]
+fn fleet_list_rows_only_include_player_ships_and_sort_by_name() {
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let extra_player_ship_id = builder.first_npc_ship_id().expect("npc ship should exist");
+    builder.with_ship_patch(
+        extra_player_ship_id,
+        ShipPatch {
+            company_id: Some(CompanyId(0)),
+            role: Some(ShipRole::PlayerContract),
+            descriptor: Some(ShipDescriptor {
+                name: "Aquila Runner".to_string(),
+                class: ShipClass::Courier,
+                description: "Converted player courier".to_string(),
+            }),
+            ..ShipPatch::default()
+        },
+    );
+    builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            descriptor: Some(ShipDescriptor {
+                name: "Zephyr Mule".to_string(),
+                class: ShipClass::Hauler,
+                description: "Primary player hauler".to_string(),
+            }),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let ship_names = snapshot
+        .fleet_list_rows
+        .iter()
+        .map(|row| row.ship_name.as_str())
+        .collect::<Vec<_>>();
+    let ship_ids = snapshot
+        .fleet_list_rows
+        .iter()
+        .map(|row| row.ship_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(ship_names, vec!["Aquila Runner", "Zephyr Mule"]);
+    assert_eq!(ship_ids, vec![extra_player_ship_id, ShipId(0)]);
+}
+
+#[test]
+fn fleet_list_rows_render_human_readable_location_and_status() {
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let docked_ship_id = ShipId(0);
+    let transit_ship_id = builder.first_npc_ship_id().expect("npc ship should exist");
+    let idle_ship_id = ShipId(2);
+    let docked_station_id = builder
+        .first_station_in_system(SystemId(0))
+        .expect("system 0 should have a station");
+    builder.dock_ship_at(docked_ship_id, docked_station_id);
+    builder.with_ship_patch(
+        docked_ship_id,
+        ShipPatch {
+            descriptor: Some(ShipDescriptor {
+                name: "Atlas Docked".to_string(),
+                class: ShipClass::Hauler,
+                description: "Docked player ship".to_string(),
+            }),
+            ..ShipPatch::default()
+        },
+    );
+    builder.with_ship_patch(
+        transit_ship_id,
+        ShipPatch {
+            company_id: Some(CompanyId(0)),
+            role: Some(ShipRole::PlayerContract),
+            location: Some(SystemId(1)),
+            current_station: Some(None),
+            current_target: Some(Some(SystemId(2))),
+            eta_ticks_remaining: Some(17),
+            current_segment_kind: Some(Some(SegmentKind::InSystem)),
+            descriptor: Some(ShipDescriptor {
+                name: "Beacon Transit".to_string(),
+                class: ShipClass::Courier,
+                description: "Transit player ship".to_string(),
+            }),
+            ..ShipPatch::default()
+        },
+    );
+    builder.with_ship_patch(
+        idle_ship_id,
+        ShipPatch {
+            company_id: Some(CompanyId(0)),
+            role: Some(ShipRole::PlayerContract),
+            location: Some(SystemId(3)),
+            current_station: Some(None),
+            current_target: Some(None),
+            eta_ticks_remaining: Some(0),
+            current_segment_kind: Some(None),
+            descriptor: Some(ShipDescriptor {
+                name: "Comet Idle".to_string(),
+                class: ShipClass::Courier,
+                description: "Idle player ship".to_string(),
+            }),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
+    let docked_station = sim
+        .camera_topology_view()
+        .systems
+        .into_iter()
+        .flat_map(|system| system.stations.into_iter())
+        .find(|station| station.station_id == docked_station_id)
+        .expect("docked station should exist");
+    let docked_station_name = expected_station_name(docked_station_id, docked_station.profile);
+    let docked_system_name = expected_system_name(SystemId(0));
+    let transit_system_name = expected_system_name(SystemId(1));
+    let transit_target_name = expected_system_name(SystemId(2));
+    let idle_system_name = expected_system_name(SystemId(3));
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        Some(docked_ship_id),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let docked_row = snapshot
+        .fleet_list_rows
+        .iter()
+        .find(|row| row.ship_id == docked_ship_id)
+        .expect("docked row should exist");
+    assert_eq!(
+        docked_row.location_text,
+        format!("{docked_station_name}, {docked_system_name}")
+    );
+    assert_eq!(
+        docked_row.status_text,
+        format!("Docked at {docked_station_name}")
+    );
+
+    let transit_row = snapshot
+        .fleet_list_rows
+        .iter()
+        .find(|row| row.ship_id == transit_ship_id)
+        .expect("transit row should exist");
+    assert_eq!(transit_row.location_text, transit_system_name);
+    assert_eq!(
+        transit_row.status_text,
+        format!("In transit to {transit_target_name} • ETA 17")
+    );
+
+    let idle_row = snapshot
+        .fleet_list_rows
+        .iter()
+        .find(|row| row.ship_id == idle_ship_id)
+        .expect("idle row should exist");
+    assert_eq!(idle_row.location_text, idle_system_name);
+    assert_eq!(idle_row.status_text, format!("Idle in {idle_system_name}"));
 }
 
 #[test]

@@ -1,11 +1,15 @@
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy_egui::input::EguiWantsInput;
 use gatebound_domain::{ShipId, StationId, SystemId};
 use gatebound_sim::CameraTopologyView;
 
 use crate::render::world::{pick_visible_ship, ShipMotionCache};
 use crate::runtime::sim::{SelectedStation, ShipUiState, SimResource, StationUiState};
+
+const GALAXY_PAN_MARGIN_FACTOR: f32 = 1.2;
+const CAMERA_ZOOM_STEP: f32 = 0.08;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
@@ -31,6 +35,7 @@ impl Default for ClickTracker {
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct CameraUiState {
     pub mode: CameraMode,
+    pub galaxy_pan: Vec2,
     pub zoom_level: f32,
     pub zoom_min: f32,
     pub zoom_max: f32,
@@ -41,6 +46,7 @@ impl Default for CameraUiState {
     fn default() -> Self {
         Self {
             mode: CameraMode::Galaxy,
+            galaxy_pan: Vec2::ZERO,
             zoom_level: 1.0,
             zoom_min: 0.3,
             zoom_max: 4.0,
@@ -83,7 +89,137 @@ pub fn escape_to_galaxy_system(
 }
 
 pub fn clamp_zoom(current_zoom: f32, delta: f32, min_zoom: f32, max_zoom: f32) -> f32 {
-    (current_zoom - delta * 0.15).clamp(min_zoom, max_zoom)
+    (current_zoom - delta * CAMERA_ZOOM_STEP).clamp(min_zoom, max_zoom)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GalaxyPanDragState {
+    pub last_cursor_position: Option<Vec2>,
+}
+
+pub fn should_start_galaxy_pan(mode: CameraMode, pointer_blocked: bool) -> bool {
+    mode == CameraMode::Galaxy && !pointer_blocked
+}
+
+pub fn galaxy_pan_bounds(topology: &CameraTopologyView) -> Option<Rect> {
+    if topology.systems.is_empty() {
+        return None;
+    }
+
+    let max_radius = topology
+        .systems
+        .iter()
+        .map(|system| system.radius as f32)
+        .fold(0.0_f32, f32::max);
+    let margin = max_radius * GALAXY_PAN_MARGIN_FACTOR;
+
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for system in &topology.systems {
+        let radius = system.radius as f32 + margin;
+        let position = Vec2::new(system.x as f32, system.y as f32);
+        min.x = min.x.min(position.x - radius);
+        min.y = min.y.min(position.y - radius);
+        max.x = max.x.max(position.x + radius);
+        max.y = max.y.max(position.y + radius);
+    }
+
+    Some(Rect { min, max })
+}
+
+pub fn clamp_galaxy_pan(pan: Vec2, bounds: Rect, viewport_half_extents: Vec2) -> Vec2 {
+    Vec2::new(
+        clamp_galaxy_pan_axis(pan.x, bounds.min.x, bounds.max.x, viewport_half_extents.x),
+        clamp_galaxy_pan_axis(pan.y, bounds.min.y, bounds.max.y, viewport_half_extents.y),
+    )
+}
+
+pub fn apply_galaxy_pan_drag(
+    current_pan: Vec2,
+    previous_world_position: Vec2,
+    current_world_position: Vec2,
+    topology: &CameraTopologyView,
+    viewport_size: Vec2,
+    zoom_level: f32,
+) -> Vec2 {
+    let Some(bounds) = galaxy_pan_bounds(topology) else {
+        return current_pan;
+    };
+
+    let desired_pan = current_pan + (previous_world_position - current_world_position);
+    clamp_galaxy_pan(desired_pan, bounds, viewport_size * zoom_level * 0.5)
+}
+
+pub fn galaxy_pan_input_system(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    sim: Res<SimResource>,
+    egui_wants_input: Option<Res<EguiWantsInput>>,
+    mut ui_state: ResMut<CameraUiState>,
+    mut drag_state: Local<GalaxyPanDragState>,
+) {
+    if !buttons.pressed(MouseButton::Right) {
+        drag_state.last_cursor_position = None;
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        drag_state.last_cursor_position = None;
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        drag_state.last_cursor_position = None;
+        return;
+    };
+
+    if buttons.just_pressed(MouseButton::Right) {
+        let pointer_blocked = egui_wants_input
+            .as_ref()
+            .is_some_and(|input| input.wants_any_pointer_input());
+        if !should_start_galaxy_pan(ui_state.mode, pointer_blocked) {
+            drag_state.last_cursor_position = None;
+            return;
+        }
+        drag_state.last_cursor_position = Some(cursor_position);
+        return;
+    }
+
+    let CameraMode::Galaxy = ui_state.mode else {
+        drag_state.last_cursor_position = None;
+        return;
+    };
+    let Some(previous_cursor_position) = drag_state.last_cursor_position else {
+        drag_state.last_cursor_position = Some(cursor_position);
+        return;
+    };
+
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        drag_state.last_cursor_position = Some(cursor_position);
+        return;
+    };
+    let Ok(previous_world_position) =
+        camera.viewport_to_world_2d(camera_transform, previous_cursor_position)
+    else {
+        drag_state.last_cursor_position = Some(cursor_position);
+        return;
+    };
+    let Ok(current_world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position)
+    else {
+        drag_state.last_cursor_position = Some(cursor_position);
+        return;
+    };
+
+    let topology = sim.simulation.camera_topology_view();
+    ui_state.galaxy_pan = apply_galaxy_pan_drag(
+        ui_state.galaxy_pan,
+        previous_world_position,
+        current_world_position,
+        &topology,
+        camera_viewport_size(camera, window),
+        ui_state.zoom_level,
+    );
+    drag_state.last_cursor_position = Some(cursor_position);
 }
 
 pub fn camera_mode_input_system(
@@ -118,15 +254,12 @@ pub fn camera_mode_input_system(
 
     let topology = sim.simulation.camera_topology_view();
     if let Some(system_id) = pick_system(&topology, world_position) {
-        let double_clicked = apply_system_click(
+        let _ = apply_system_click(
             &mut ui_state.mode,
             &mut tracker,
             system_id,
             time.elapsed_secs_f64(),
         );
-        if double_clicked {
-            ui_state.zoom_level = 0.8;
-        }
     }
 }
 
@@ -248,10 +381,11 @@ pub fn apply_zoom_controls(
 
 pub fn sync_camera_transform(
     sim: Res<SimResource>,
-    ui_state: Res<CameraUiState>,
-    mut camera_query: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut ui_state: ResMut<CameraUiState>,
+    mut camera_query: Query<(&Camera, &mut Transform, &mut Projection), With<Camera2d>>,
 ) {
-    let Ok((mut transform, mut projection)) = camera_query.single_mut() else {
+    let Ok((camera, mut transform, mut projection)) = camera_query.single_mut() else {
         return;
     };
 
@@ -261,8 +395,18 @@ pub fn sync_camera_transform(
 
     match ui_state.mode {
         CameraMode::Galaxy => {
-            transform.translation.x = 0.0;
-            transform.translation.y = 0.0;
+            let topology = sim.simulation.camera_topology_view();
+            if let Some(bounds) = galaxy_pan_bounds(&topology) {
+                ui_state.galaxy_pan = clamp_galaxy_pan(
+                    ui_state.galaxy_pan,
+                    bounds,
+                    camera_viewport_size(camera, &windows) * ui_state.zoom_level * 0.5,
+                );
+            } else {
+                ui_state.galaxy_pan = Vec2::ZERO;
+            }
+            transform.translation.x = ui_state.galaxy_pan.x;
+            transform.translation.y = ui_state.galaxy_pan.y;
         }
         CameraMode::System(system_id) => {
             let topology = sim.simulation.camera_topology_view();
@@ -275,6 +419,40 @@ pub fn sync_camera_transform(
                 transform.translation.y = system.y as f32;
             }
         }
+    }
+}
+
+fn clamp_galaxy_pan_axis(pan: f32, min_bound: f32, max_bound: f32, half_extent: f32) -> f32 {
+    let min_center = min_bound + half_extent;
+    let max_center = max_bound - half_extent;
+    if min_center > max_center {
+        (min_bound + max_bound) * 0.5
+    } else {
+        pan.clamp(min_center, max_center)
+    }
+}
+
+fn camera_viewport_size(camera: &Camera, windows: &impl CameraViewportWindow) -> Vec2 {
+    camera
+        .logical_viewport_size()
+        .unwrap_or_else(|| windows.viewport_size())
+}
+
+trait CameraViewportWindow {
+    fn viewport_size(&self) -> Vec2;
+}
+
+impl CameraViewportWindow for Window {
+    fn viewport_size(&self) -> Vec2 {
+        Vec2::new(self.width(), self.height())
+    }
+}
+
+impl CameraViewportWindow for Query<'_, '_, &Window, With<PrimaryWindow>> {
+    fn viewport_size(&self) -> Vec2 {
+        self.single()
+            .map(|window| Vec2::new(window.width(), window.height()))
+            .unwrap_or(Vec2::ZERO)
     }
 }
 

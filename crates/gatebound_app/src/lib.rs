@@ -14,7 +14,8 @@ pub mod ui;
 
 use input::camera::{
     apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
-    ship_context_input_system, station_select_input_system, sync_camera_transform, CameraUiState,
+    galaxy_pan_input_system, ship_context_input_system, station_select_input_system,
+    sync_camera_transform, CameraUiState,
 };
 use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
 use runtime::sim::{
@@ -66,6 +67,7 @@ pub fn run() {
                 camera_mode_input_system,
                 station_select_input_system,
                 apply_zoom_controls,
+                galaxy_pan_input_system,
                 sync_selected_system,
                 sync_selected_station,
                 handle_panel_hotkeys,
