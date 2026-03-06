@@ -1664,6 +1664,178 @@ fn market_insights_produce_trend_forecast_and_factors() {
 }
 
 #[test]
+fn station_trade_view_reports_effective_prices_caps_and_market_tones() {
+    let mut cfg = stage_a_config();
+    cfg.pressure.market_fee_rate = 0.1;
+    let mut sim = Simulation::new(cfg, 239);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let comparison_station = sim
+        .world
+        .stations
+        .iter()
+        .find(|station| station.id != station_id)
+        .map(|station| station.id)
+        .expect("comparison station should exist");
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo_capacity = 18.0;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 4.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    if let Some(book) = sim.markets.get_mut(&station_id) {
+        if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+            fuel.price = 12.0;
+            fuel.stock = 30.0;
+            fuel.target_stock = 100.0;
+        }
+    }
+    if let Some(book) = sim.markets.get_mut(&comparison_station) {
+        if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+            fuel.price = 28.0;
+        }
+    }
+
+    let view = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("station trade view should exist");
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+
+    assert!((row.station_stock - 30.0).abs() < 1e-9);
+    assert!((row.player_cargo - 4.0).abs() < 1e-9);
+    assert!((row.effective_buy_price - 13.2).abs() < 1e-9);
+    assert!((row.effective_sell_price - 10.8).abs() < 1e-9);
+    assert!(row.market_avg_price > row.effective_buy_price);
+    assert_eq!(row.buy_tone, TradePriceTone::Favorable);
+    assert_eq!(row.sell_tone, TradePriceTone::Unfavorable);
+    assert!((row.buy_cap - 14.0).abs() < 1e-9);
+    assert!((row.sell_cap - 4.0).abs() < 1e-9);
+    assert!(row.can_buy);
+    assert!(row.can_sell);
+}
+
+#[test]
+fn station_trade_view_blocks_spot_sell_for_contract_cargo() {
+    let mut sim = Simulation::new(stage_a_config(), 241);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 6.0,
+            source: CargoSource::Contract {
+                contract_id: ContractId(0),
+            },
+        });
+    }
+
+    let view = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("station trade view should exist");
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+
+    assert!((row.player_cargo - 6.0).abs() < 1e-9);
+    assert!(!row.can_sell);
+    assert!((row.sell_cap - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn station_trade_view_disables_spot_actions_while_undocked() {
+    let mut sim = Simulation::new(stage_a_config(), 243);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.current_station = None;
+        ship.eta_ticks_remaining = 7;
+        ship.segment_eta_remaining = 3;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 5.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    let view = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("station trade view should exist");
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+
+    assert!(!view.docked);
+    assert!(!row.can_buy);
+    assert!(!row.can_sell);
+    assert!((row.buy_cap - 0.0).abs() < 1e-9);
+    assert!((row.sell_cap - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn station_trade_view_caps_buy_by_available_capital() {
+    let mut cfg = stage_a_config();
+    cfg.pressure.market_fee_rate = 0.1;
+    let mut sim = Simulation::new(cfg, 245);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    sim.capital = 1.0;
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo = None;
+    }
+    if let Some(book) = sim.markets.get_mut(&station_id) {
+        if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+            fuel.price = 12.0;
+            fuel.stock = 100.0;
+        }
+    }
+
+    let view = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("station trade view should exist");
+    let row = view
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+
+    assert!(!row.can_buy);
+    assert!((row.buy_cap - 0.0).abs() < 1e-9);
+}
+
+#[test]
 fn benchmark_cluster_tick_latency_reports_percentiles() {
     let cfg = stage_a_config();
     let mut sim = Simulation::new(cfg, 47);

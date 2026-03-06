@@ -179,6 +179,44 @@ pub struct StationOpsView {
     pub market_rows: Vec<MarketRowView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradePriceTone {
+    Favorable,
+    Neutral,
+    Unfavorable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationTradeRowView {
+    pub commodity: Commodity,
+    pub station_stock: f64,
+    pub station_target_stock: f64,
+    pub player_cargo: f64,
+    pub spot_price: f64,
+    pub effective_buy_price: f64,
+    pub effective_sell_price: f64,
+    pub market_avg_price: f64,
+    pub buy_tone: TradePriceTone,
+    pub sell_tone: TradePriceTone,
+    pub buy_cap: f64,
+    pub sell_cap: f64,
+    pub insufficient_capital: bool,
+    pub can_buy: bool,
+    pub can_sell: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationTradeView {
+    pub ship_id: ShipId,
+    pub station_id: StationId,
+    pub docked: bool,
+    pub cargo: Option<CargoLoad>,
+    pub cargo_capacity: f64,
+    pub active_contract: Option<Contract>,
+    pub market_fee_rate: f64,
+    pub rows: Vec<StationTradeRowView>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipPolicyView {
     pub ship_id: ShipId,

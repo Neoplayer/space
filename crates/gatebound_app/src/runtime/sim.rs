@@ -186,11 +186,19 @@ pub struct SelectedStation {
     pub station_id: Option<StationId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationCardTab {
+    Info,
+    Trade,
+}
+
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct StationUiState {
     pub context_station_id: Option<StationId>,
+    pub card_station_id: Option<StationId>,
     pub context_menu_open: bool,
     pub station_panel_open: bool,
+    pub card_tab: StationCardTab,
     pub trade_commodity: Commodity,
     pub trade_quantity: f64,
 }
@@ -199,8 +207,10 @@ impl Default for StationUiState {
     fn default() -> Self {
         Self {
             context_station_id: None,
+            card_station_id: None,
             context_menu_open: false,
             station_panel_open: false,
+            card_tab: StationCardTab::Info,
             trade_commodity: Commodity::Fuel,
             trade_quantity: 5.0,
         }
@@ -383,6 +393,32 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
     }
 }
 
+pub fn open_station_card(
+    state: &mut StationUiState,
+    station_id: StationId,
+    preferred_commodity: Option<Commodity>,
+) {
+    state.station_panel_open = true;
+    state.card_station_id = Some(station_id);
+    state.context_station_id = Some(station_id);
+    state.card_tab = StationCardTab::Info;
+    if let Some(commodity) = preferred_commodity {
+        state.trade_commodity = commodity;
+    }
+}
+
+pub fn preferred_trade_commodity(
+    simulation: &Simulation,
+    ship_id: Option<ShipId>,
+    station_id: StationId,
+    fallback: Commodity,
+) -> Commodity {
+    ship_id
+        .and_then(|selected_ship_id| simulation.station_trade_view(selected_ship_id, station_id))
+        .and_then(|view| view.cargo.map(|cargo| cargo.commodity))
+        .unwrap_or(fallback)
+}
+
 pub fn toggle_pause(clock: &mut SimClock) {
     clock.paused = !clock.paused;
 }
@@ -442,6 +478,7 @@ pub fn handle_panel_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut panels: ResMut<UiPanelState>,
     mut selected_ship: ResMut<SelectedShip>,
+    selected_station: Res<SelectedStation>,
     sim: Res<SimResource>,
     mut station_ui: ResMut<StationUiState>,
     mut kpi: ResMut<UiKpiTracker>,
@@ -470,6 +507,20 @@ pub fn handle_panel_hotkeys(
     if keys.just_pressed(KeyCode::F6) {
         apply_panel_toggle(&mut panels, 6);
         station_ui.station_panel_open = panels.station_ops;
+        if panels.station_ops {
+            if selected_ship.ship_id.is_none() {
+                selected_ship.ship_id = player_ship_ids(&sim.simulation).first().copied();
+            }
+            if let Some(station_id) = selected_station.station_id.or(station_ui.card_station_id) {
+                let preferred = preferred_trade_commodity(
+                    &sim.simulation,
+                    selected_ship.ship_id,
+                    station_id,
+                    station_ui.trade_commodity,
+                );
+                open_station_card(&mut station_ui, station_id, Some(preferred));
+            }
+        }
         manual_action = true;
     }
 

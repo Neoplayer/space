@@ -3,7 +3,8 @@ use gatebound_domain::{
     MilestoneStatus, ShipId, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
-    ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation, TimeSettingsView,
+    ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation, StationTradeView,
+    TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -53,6 +54,25 @@ pub struct HudSnapshot {
     pub manual_actions_per_min: f64,
     pub policy_edits_per_min: f64,
     pub avg_route_hops_player: f64,
+    pub station_card: Option<StationCardSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationCardSnapshot {
+    pub station_id: StationId,
+    pub system_id: SystemId,
+    pub profile: StationProfile,
+    pub station_name: String,
+    pub system_name: String,
+    pub host_body_name: String,
+    pub orbit_label: String,
+    pub profile_summary: String,
+    pub imports: Vec<String>,
+    pub exports: Vec<String>,
+    pub station_x: f64,
+    pub station_y: f64,
+    pub docked: bool,
+    pub trade: StationTradeView,
 }
 
 fn format_time_label(tick: u64, time: TimeSettingsView) -> String {
@@ -81,6 +101,7 @@ pub fn build_hud_snapshot(
     camera_mode: CameraMode,
     selected_system_id: SystemId,
     selected_station_id: Option<StationId>,
+    station_card_station_id: Option<StationId>,
     selected_ship_id: Option<ShipId>,
     filters: ContractsFilterState,
     kpi: &UiKpiTracker,
@@ -97,6 +118,13 @@ pub fn build_hud_snapshot(
         matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
     );
     let finance_panel = simulation.finance_panel_view();
+    let resolved_ship_id = selected_ship_id.or(fleet_panel.default_player_ship_id);
+    let station_card = station_card_station_id
+        .or(market_panel.selected_station_id)
+        .and_then(|station_id| resolved_ship_id.map(|ship_id| (ship_id, station_id)))
+        .and_then(|(ship_id, station_id)| {
+            build_station_card_snapshot(simulation, ship_id, station_id)
+        });
 
     let contract_lines = contracts_board
         .active_contracts
@@ -211,5 +239,178 @@ pub fn build_hud_snapshot(
         manual_actions_per_min: kpi.manual_actions_per_min,
         policy_edits_per_min: kpi.policy_edits_per_min,
         avg_route_hops_player: kpi.avg_route_hops_player,
+        station_card,
     }
+}
+
+fn build_station_card_snapshot(
+    simulation: &Simulation,
+    ship_id: ShipId,
+    station_id: StationId,
+) -> Option<StationCardSnapshot> {
+    let trade = simulation.station_trade_view(ship_id, station_id)?;
+    let topology = simulation.camera_topology_view();
+    let (system, station) = topology.systems.iter().find_map(|system| {
+        system
+            .stations
+            .iter()
+            .find(|station| station.station_id == station_id)
+            .map(|station| (system, station))
+    })?;
+
+    let system_name = generated_system_name(system.system_id);
+    let station_name = generated_station_name(station.station_id, station.profile);
+    let orbit_ratio = orbit_ratio(system.x, system.y, station.x, station.y, system.radius);
+    let orbit_label = orbit_label(orbit_ratio).to_string();
+    let host_body_name =
+        generated_host_body_name(system.system_id, station.station_id, orbit_ratio);
+    let profile_summary = profile_summary(station.profile).to_string();
+    let (imports, exports) = trade_flow_notes(&trade);
+
+    Some(StationCardSnapshot {
+        station_id,
+        system_id: system.system_id,
+        profile: station.profile,
+        station_name,
+        system_name,
+        host_body_name,
+        orbit_label,
+        profile_summary,
+        imports,
+        exports,
+        station_x: station.x,
+        station_y: station.y,
+        docked: trade.docked,
+        trade,
+    })
+}
+
+fn generated_system_name(system_id: SystemId) -> String {
+    const PREFIXES: [&str; 8] = [
+        "Aster", "Cinder", "Helios", "Kepler", "Lyra", "Nimbus", "Orion", "Vega",
+    ];
+    const SUFFIXES: [&str; 8] = [
+        "Reach", "Gate", "Haven", "Drift", "Span", "Crown", "Verge", "Anchor",
+    ];
+
+    let prefix = PREFIXES[system_id.0 % PREFIXES.len()];
+    let suffix = SUFFIXES[(system_id.0 / PREFIXES.len()) % SUFFIXES.len()];
+    format!("{prefix} {suffix}")
+}
+
+fn generated_station_name(station_id: StationId, profile: StationProfile) -> String {
+    let role = match profile {
+        StationProfile::Civilian => "Concourse",
+        StationProfile::Industrial => "Foundry",
+        StationProfile::Research => "Array",
+    };
+    format!("{role}-{:03}", station_id.0)
+}
+
+fn generated_host_body_name(
+    system_id: SystemId,
+    station_id: StationId,
+    orbit_ratio: f64,
+) -> String {
+    const INNER: [&str; 4] = ["Cinder", "Basalt", "Icarus", "Morrow"];
+    const MID: [&str; 4] = ["Pelago", "Nysa", "Tethys", "Ariel"];
+    const OUTER: [&str; 4] = ["Vesper", "Isolde", "Khepri", "Halo"];
+
+    let names = if orbit_ratio < 0.4 {
+        &INNER
+    } else if orbit_ratio < 0.65 {
+        &MID
+    } else {
+        &OUTER
+    };
+    let idx = (system_id.0 + station_id.0) % names.len();
+    format!("{} {}", names[idx], (system_id.0 % 7) + 1)
+}
+
+fn orbit_ratio(system_x: f64, system_y: f64, station_x: f64, station_y: f64, radius: f64) -> f64 {
+    let dx = station_x - system_x;
+    let dy = station_y - system_y;
+    let distance = (dx * dx + dy * dy).sqrt();
+    if radius <= 0.0 {
+        0.0
+    } else {
+        distance / radius
+    }
+}
+
+fn orbit_label(orbit_ratio: f64) -> &'static str {
+    if orbit_ratio < 0.4 {
+        "inner logistics orbit"
+    } else if orbit_ratio < 0.65 {
+        "mid transfer orbit"
+    } else {
+        "outer anchor orbit"
+    }
+}
+
+fn profile_summary(profile: StationProfile) -> &'static str {
+    match profile {
+        StationProfile::Civilian => {
+            "Habitat-and-market hub focused on life support, retail demand, and stable regional distribution."
+        }
+        StationProfile::Industrial => {
+            "Heavy fabrication yard turning raw mass into bulk metals, fuel, and serviceable ship parts."
+        }
+        StationProfile::Research => {
+            "Precision laboratory complex optimized for advanced parts, electronics, and volatile specialist demand."
+        }
+    }
+}
+
+fn trade_flow_notes(trade: &StationTradeView) -> (Vec<String>, Vec<String>) {
+    let mut imports = trade
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let target = row.station_target_stock.max(1.0);
+            let pressure = ((target - row.station_stock) / target).max(0.0);
+            (pressure > 0.0).then_some((row.commodity, pressure))
+        })
+        .collect::<Vec<_>>();
+    imports.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let mut exports = trade
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let target = row.station_target_stock.max(1.0);
+            let pressure = ((row.station_stock - target) / target).max(0.0);
+            (pressure > 0.0).then_some((row.commodity, pressure))
+        })
+        .collect::<Vec<_>>();
+    exports.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let imports = summarize_trade_pressures(imports, "short");
+    let exports = summarize_trade_pressures(exports, "surplus");
+
+    (imports, exports)
+}
+
+fn summarize_trade_pressures(
+    entries: Vec<(gatebound_domain::Commodity, f64)>,
+    label: &str,
+) -> Vec<String> {
+    let mut notes = entries
+        .into_iter()
+        .take(3)
+        .map(|(commodity, pressure)| {
+            format!(
+                "{} ({} {:.0}%)",
+                commodity_label(commodity),
+                label,
+                pressure * 100.0
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if notes.is_empty() {
+        notes.push("Balanced inventory profile".to_string());
+    }
+
+    notes
 }

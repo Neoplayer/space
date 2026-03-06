@@ -288,6 +288,99 @@ impl Simulation {
         })
     }
 
+    pub fn station_trade_view(
+        &self,
+        ship_id: ShipId,
+        station_id: StationId,
+    ) -> Option<StationTradeView> {
+        let ship = self.ships.get(&ship_id)?;
+        let docked = self.is_ship_docked_at(ship_id, station_id);
+        let market_fee_rate = self.config.pressure.market_fee_rate;
+
+        let rows = self
+            .markets
+            .get(&station_id)
+            .map(|market| {
+                Commodity::ALL
+                    .iter()
+                    .filter_map(|commodity| {
+                        market.goods.get(commodity).map(|state| {
+                            let player_cargo = ship
+                                .cargo
+                                .filter(|cargo| cargo.commodity == *commodity)
+                                .map(|cargo| cargo.amount)
+                                .unwrap_or(0.0);
+
+                            let effective_buy_price = state.price * (1.0 + market_fee_rate);
+                            let effective_sell_price = state.price * (1.0 - market_fee_rate);
+                            let market_avg_price = self.average_market_price_for(*commodity);
+                            let affordable_buy_cap =
+                                self.affordable_buy_capacity(effective_buy_price);
+                            let insufficient_capital =
+                                affordable_buy_cap + 1e-9 < minimum_trade_quantity();
+
+                            let buy_cap = if !docked {
+                                0.0
+                            } else {
+                                actionable_trade_cap(
+                                    state
+                                        .stock
+                                        .min(self.buy_capacity_for(ship, *commodity))
+                                        .min(affordable_buy_cap)
+                                        .max(0.0),
+                                )
+                            };
+                            let sell_cap = if !docked {
+                                0.0
+                            } else {
+                                actionable_trade_cap(self.sell_capacity_for(ship, *commodity))
+                            };
+
+                            StationTradeRowView {
+                                commodity: *commodity,
+                                station_stock: state.stock,
+                                station_target_stock: state.target_stock,
+                                player_cargo,
+                                spot_price: state.price,
+                                effective_buy_price,
+                                effective_sell_price,
+                                market_avg_price,
+                                buy_tone: trade_price_tone(
+                                    effective_buy_price,
+                                    market_avg_price,
+                                    PriceComparisonMode::LowerIsBetter,
+                                ),
+                                sell_tone: trade_price_tone(
+                                    effective_sell_price,
+                                    market_avg_price,
+                                    PriceComparisonMode::HigherIsBetter,
+                                ),
+                                buy_cap,
+                                sell_cap,
+                                insufficient_capital,
+                                can_buy: buy_cap > 0.0,
+                                can_sell: sell_cap > 0.0,
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Some(StationTradeView {
+            ship_id,
+            station_id,
+            docked,
+            cargo: ship.cargo,
+            cargo_capacity: ship.cargo_capacity,
+            active_contract: ship
+                .active_contract
+                .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
+            market_fee_rate,
+            rows,
+        })
+    }
+
     pub fn ship_policy_view(&self, ship_id: ShipId) -> Option<ShipPolicyView> {
         self.ship_policy(ship_id)
             .cloned()
@@ -628,6 +721,47 @@ impl Simulation {
             .unwrap_or_default()
     }
 
+    fn average_market_price_for(&self, commodity: Commodity) -> f64 {
+        let mut total = 0.0;
+        let mut count = 0.0;
+        for market in self.markets.values() {
+            if let Some(state) = market.goods.get(&commodity) {
+                total += state.price;
+                count += 1.0;
+            }
+        }
+        if count <= 0.0 {
+            0.0
+        } else {
+            total / count
+        }
+    }
+
+    fn buy_capacity_for(&self, ship: &Ship, commodity: Commodity) -> f64 {
+        match ship.cargo {
+            None => ship.cargo_capacity,
+            Some(cargo) if cargo.source == CargoSource::Spot && cargo.commodity == commodity => {
+                (ship.cargo_capacity - cargo.amount).max(0.0)
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn sell_capacity_for(&self, ship: &Ship, commodity: Commodity) -> f64 {
+        ship.cargo
+            .filter(|cargo| cargo.source == CargoSource::Spot && cargo.commodity == commodity)
+            .map(|cargo| cargo.amount.max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    fn affordable_buy_capacity(&self, effective_buy_price: f64) -> f64 {
+        if effective_buy_price <= 0.0 {
+            0.0
+        } else {
+            (self.capital / effective_buy_price).max(0.0)
+        }
+    }
+
     fn dock_congestion_index(&self, system_id: SystemId) -> f32 {
         let inbound = self
             .ships
@@ -658,5 +792,55 @@ impl Simulation {
         }
         let ratio = (stock / target).clamp(0.0, 1.0);
         (1.0 - ratio as f32).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PriceComparisonMode {
+    LowerIsBetter,
+    HigherIsBetter,
+}
+
+fn trade_price_tone(
+    compared_price: f64,
+    market_avg_price: f64,
+    mode: PriceComparisonMode,
+) -> TradePriceTone {
+    if market_avg_price <= 0.0 {
+        return TradePriceTone::Neutral;
+    }
+
+    let parity = compared_price / market_avg_price;
+    if (parity - 1.0).abs() <= 0.02 {
+        return TradePriceTone::Neutral;
+    }
+
+    match mode {
+        PriceComparisonMode::LowerIsBetter => {
+            if parity < 1.0 {
+                TradePriceTone::Favorable
+            } else {
+                TradePriceTone::Unfavorable
+            }
+        }
+        PriceComparisonMode::HigherIsBetter => {
+            if parity > 1.0 {
+                TradePriceTone::Favorable
+            } else {
+                TradePriceTone::Unfavorable
+            }
+        }
+    }
+}
+
+fn minimum_trade_quantity() -> f64 {
+    0.1
+}
+
+fn actionable_trade_cap(cap: f64) -> f64 {
+    if cap + 1e-9 < minimum_trade_quantity() {
+        0.0
+    } else {
+        cap
     }
 }

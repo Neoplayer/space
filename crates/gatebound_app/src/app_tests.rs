@@ -6,9 +6,10 @@ use crate::render::world::{
     update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
-    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, panel_button_specs,
-    panel_hotkey_to_index, set_time_speed, toggle_pause, ContractsFilterState, FinanceUiState,
-    OfferSortMode, RiskHotkey, SimResource, StationUiState, UiKpiTracker,
+    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_station_card,
+    panel_button_specs, panel_hotkey_to_index, set_time_speed, toggle_pause, ContractsFilterState,
+    FinanceUiState, OfferSortMode, RiskHotkey, SimResource, StationCardTab, StationUiState,
+    UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
@@ -48,6 +49,7 @@ fn build_hud_snapshot(
         speed_multiplier,
         camera_mode,
         selected_system_id,
+        selected_station,
         selected_station,
         selected_ship_id,
         filters,
@@ -225,6 +227,15 @@ fn finance_ui_state_defaults_are_sensible() {
     let state = FinanceUiState::default();
     assert!(state.pending_offer.is_none());
     assert!(state.repayment_amount > 0.0);
+}
+
+#[test]
+fn station_ui_state_defaults_include_info_tab() {
+    let state = StationUiState::default();
+    assert_eq!(state.card_tab, StationCardTab::Info);
+    assert_eq!(state.card_station_id, None);
+    assert_eq!(state.trade_commodity, Commodity::Fuel);
+    assert!(state.trade_quantity > 0.0);
 }
 
 #[test]
@@ -823,6 +834,7 @@ fn markets_panel_uses_selected_station_market() {
         system_id,
         Some(selected_station),
         None,
+        None,
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
@@ -1029,6 +1041,113 @@ fn right_click_station_opens_context_menu_state() {
     apply_station_context_open(&mut ui, StationId(7));
     assert!(ui.context_menu_open);
     assert_eq!(ui.context_station_id, Some(StationId(7)));
+}
+
+#[test]
+fn opening_station_card_resets_tab_and_prefers_supplied_commodity() {
+    let mut ui = StationUiState {
+        card_tab: StationCardTab::Trade,
+        trade_commodity: Commodity::Ore,
+        ..StationUiState::default()
+    };
+
+    open_station_card(&mut ui, StationId(3), Some(Commodity::Electronics));
+
+    assert!(ui.station_panel_open);
+    assert_eq!(ui.card_station_id, Some(StationId(3)));
+    assert_eq!(ui.card_tab, StationCardTab::Info);
+    assert_eq!(ui.trade_commodity, Commodity::Electronics);
+
+    ui.card_tab = StationCardTab::Trade;
+    open_station_card(&mut ui, StationId(7), Some(Commodity::Fuel));
+    assert_eq!(ui.card_station_id, Some(StationId(7)));
+    assert_eq!(ui.card_tab, StationCardTab::Info);
+    assert_eq!(ui.trade_commodity, Commodity::Fuel);
+}
+
+#[test]
+fn station_card_snapshot_builds_generated_info_metadata() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let card = snapshot
+        .station_card
+        .as_ref()
+        .expect("station card snapshot should be present");
+
+    assert_eq!(card.station_id, StationId(0));
+    assert!(!card.station_name.is_empty());
+    assert!(!card.system_name.is_empty());
+    assert!(!card.host_body_name.is_empty());
+    assert!(card.orbit_label.contains("orbit"));
+    assert!(card.profile_summary.len() > 20);
+    assert!(!card.imports.is_empty());
+    assert!(!card.exports.is_empty());
+}
+
+#[test]
+fn station_card_snapshot_does_not_override_markets_station_selection() {
+    let mut builder = SimulationScenarioBuilder::stage_a(44);
+    let stations = builder.stations_in_system(SystemId(0));
+    if stations.len() < 2 {
+        return;
+    }
+    let market_station = stations[1];
+    let card_station = stations[0];
+
+    builder.with_market_state_patch(
+        market_station,
+        Commodity::Fuel,
+        MarketStatePatch {
+            price: Some(31.0),
+            stock: Some(75.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    builder.with_market_state_patch(
+        card_station,
+        Commodity::Fuel,
+        MarketStatePatch {
+            price: Some(9.0),
+            stock: Some(18.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    let sim = builder.build();
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        false,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        Some(market_station),
+        Some(card_station),
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let market_row = snapshot
+        .market_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel market row should exist");
+    assert_eq!(snapshot.selected_station_id, Some(market_station));
+    assert!((market_row.price - 31.0).abs() < 1e-9);
+    assert_eq!(
+        snapshot.station_card.as_ref().map(|card| card.station_id),
+        Some(card_station)
+    );
 }
 
 #[test]
