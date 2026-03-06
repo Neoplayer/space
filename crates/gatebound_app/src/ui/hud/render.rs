@@ -111,7 +111,6 @@ pub fn draw_hud_panel(
         .resizable(true)
         .show(ctx, |ui| {
             ui.heading("Windows");
-            ui.label("All HUD windows start closed.");
             for button in panel_button_specs() {
                 let open = panel_is_open(&panels, button.index);
                 let status = if open { "open" } else { "closed" };
@@ -137,26 +136,6 @@ pub fn draw_hud_panel(
                     kpi.record_manual_action(sim.simulation.tick());
                 }
             }
-
-            ui.separator();
-            ui.heading("Controls");
-            ui.label("Space: pause/resume");
-            ui.label("1/2/4: sim speed");
-            ui.label("Mouse wheel / +/-: zoom");
-            ui.label("Double-click system: enter System view");
-            ui.label("Esc: back to Galaxy view");
-            ui.label("F1..F7: toggle window buttons");
-            ui.label("[ / ]: switch selected player ship");
-            ui.label("Right-click station: context menu (Fly / Open station card)");
-            ui.label("Right-click ship: context menu (Track / Open ship card)");
-            ui.label("Finance panel (F4): take credit, repay partially or fully");
-            ui.label("G / D / F: trigger Stage A risk events");
-            ui.separator();
-            ui.heading("Map Legend");
-            ui.label("Edge glow: gate load intensity");
-            ui.label("Orange ring: dock congestion");
-            ui.label("Red ring: fuel stress");
-            ui.label("Sun/orbits/stations shown in System view");
 
             if !messages.entries.is_empty() {
                 ui.separator();
