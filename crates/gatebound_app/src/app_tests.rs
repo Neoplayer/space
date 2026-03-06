@@ -16,7 +16,10 @@ use crate::runtime::sim::{
     ShipCardTab, ShipUiState, SimResource, StationCardTab, StationUiState, TrackedShip,
     UiKpiTracker, UiPanelState,
 };
-use crate::ui::hud::{build_hud_snapshot as build_hud_snapshot_v2, player_fleet_rows};
+use crate::ui::hud::{
+    build_hud_snapshot as build_hud_snapshot_v2, build_ship_card_snapshot_for_ui,
+    build_station_card_snapshot_for_ui, player_fleet_rows,
+};
 use bevy::prelude::*;
 use gatebound_domain::{
     ActiveLoan, CargoLoad, CargoSource, Commodity, CompanyId, ContractOffer, ContractTypeStageA,
@@ -1576,15 +1579,54 @@ fn system_inspector_station_selection_opens_station_card_window() {
 
 #[test]
 fn system_inspector_ship_selection_opens_ship_card_window() {
-    let mut selected_ship = SelectedShip::default();
+    let mut selected_ship = SelectedShip {
+        ship_id: Some(ShipId(0)),
+    };
     let mut ship_ui = ShipUiState::default();
 
     open_system_ship_inspector_selection(&mut selected_ship, &mut ship_ui, ShipId(9));
 
-    assert_eq!(selected_ship.ship_id, Some(ShipId(9)));
+    assert_eq!(selected_ship.ship_id, Some(ShipId(0)));
     assert!(ship_ui.card_open);
     assert_eq!(ship_ui.card_ship_id, Some(ShipId(9)));
     assert_eq!(ship_ui.card_tab, ShipCardTab::Overview);
+}
+
+#[test]
+fn inspector_selections_support_live_ship_and_station_cards_without_rebuilding_hud_snapshot() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let mut selected_ship = SelectedShip {
+        ship_id: Some(ShipId(0)),
+    };
+    let mut ship_ui = ShipUiState::default();
+    open_system_ship_inspector_selection(&mut selected_ship, &mut ship_ui, ShipId(1));
+    let ship_card = build_ship_card_snapshot_for_ui(
+        &sim,
+        ship_ui.card_ship_id.expect("ship card should be targeted"),
+    )
+    .expect("live ship card should resolve");
+    assert_eq!(ship_card.ship_id, ShipId(1));
+    assert_eq!(selected_ship.ship_id, Some(ShipId(0)));
+
+    let station_id = sim
+        .camera_topology_view()
+        .systems
+        .iter()
+        .find_map(|system| system.stations.first().map(|station| station.station_id))
+        .expect("fixture should include a station");
+    let mut selected_station = SelectedStation::default();
+    let mut panels = UiPanelState::default();
+    let mut station_ui = StationUiState::default();
+    open_system_station_inspector_selection(
+        &mut selected_station,
+        &mut panels,
+        &mut station_ui,
+        station_id,
+        Some(Commodity::Fuel),
+    );
+    let station_card = build_station_card_snapshot_for_ui(&sim, ShipId(0), station_id)
+        .expect("live station card should resolve");
+    assert_eq!(station_card.station_id, station_id);
 }
 
 #[test]

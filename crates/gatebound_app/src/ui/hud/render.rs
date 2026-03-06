@@ -21,9 +21,10 @@ use super::labels::{
 };
 use super::messages::HudMessages;
 use super::snapshot::{
-    build_hud_snapshot, MarketsDashboardSnapshot, MarketsStationDetailSnapshot, ShipCardSnapshot,
-    StationCardSnapshot, StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot,
-    SystemShipSnapshot, SystemStationSnapshot,
+    build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
+    MarketsDashboardSnapshot, MarketsStationDetailSnapshot, ShipCardSnapshot, StationCardSnapshot,
+    StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot, SystemShipSnapshot,
+    SystemStationSnapshot,
 };
 
 #[cfg(test)]
@@ -197,6 +198,24 @@ pub fn draw_hud_panel(
                     });
             });
     }
+
+    let live_ship_card = ship_ui
+        .card_ship_id
+        .filter(|_| ship_ui.card_open)
+        .and_then(|ship_id| build_ship_card_snapshot_for_ui(&sim.simulation, ship_id));
+    let live_station_card = station_ui
+        .card_station_id
+        .filter(|_| panels.station_ops && station_ui.station_panel_open)
+        .or(selected_station.station_id)
+        .and_then(|station_id| {
+            selected_ship
+                .ship_id
+                .or(snapshot.default_player_ship_id)
+                .map(|ship_id| (ship_id, station_id))
+        })
+        .and_then(|(ship_id, station_id)| {
+            build_station_card_snapshot_for_ui(&sim.simulation, ship_id, station_id)
+        });
 
     if ship_ui.context_menu_open {
         let mut open = ship_ui.context_menu_open;
@@ -535,7 +554,7 @@ pub fn draw_hud_panel(
             .default_width(720.0)
             .default_height(560.0)
             .show(ctx, |ui| {
-                let Some(card) = snapshot.ship_card.as_ref() else {
+                let Some(card) = live_ship_card.as_ref() else {
                     ui.label("No ship selected");
                     return;
                 };
@@ -601,7 +620,7 @@ pub fn draw_hud_panel(
                 if selected_ship.ship_id.is_none() {
                     selected_ship.ship_id = snapshot.default_player_ship_id;
                 }
-                let Some(card) = snapshot.station_card.as_ref() else {
+                let Some(card) = live_station_card.as_ref() else {
                     ui.label("No station selected");
                     return;
                 };
@@ -1482,13 +1501,25 @@ fn system_station_button_text(station: &SystemStationSnapshot) -> String {
             .map(commodity_label)
             .unwrap_or("-"),
     );
+    let imbalances = format!(
+        "Short {}  Surplus {}",
+        station
+            .strongest_shortage_commodity
+            .map(commodity_label)
+            .unwrap_or("-"),
+        station
+            .strongest_surplus_commodity
+            .map(commodity_label)
+            .unwrap_or("-"),
+    );
     format!(
-        "{} ({})\n{} • {} • {} • {}",
+        "{} ({})\n{} • {} • {} • {} • {}",
         station.station_name,
         station_profile_label(station.profile),
         station.host_body_name,
         station.orbit_label,
         trading,
+        imbalances,
         commodity_pair
     )
 }

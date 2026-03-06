@@ -510,11 +510,10 @@ pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
 }
 
 pub fn open_system_ship_inspector_selection(
-    selected_ship: &mut SelectedShip,
+    _selected_ship: &mut SelectedShip,
     ship_ui: &mut ShipUiState,
     ship_id: ShipId,
 ) {
-    selected_ship.ship_id = Some(ship_id);
     open_ship_card(ship_ui, ship_id);
 }
 

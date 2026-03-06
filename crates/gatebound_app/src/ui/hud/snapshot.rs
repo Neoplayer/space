@@ -386,7 +386,7 @@ pub fn build_hud_snapshot(
     let station_card = station_card_station_id
         .and_then(|station_id| resolved_ship_id.map(|ship_id| (ship_id, station_id)))
         .and_then(|(ship_id, station_id)| {
-            build_station_card_snapshot(simulation, ship_id, station_id)
+            build_station_card_snapshot_for_ui(simulation, ship_id, station_id)
         });
     let system_panel = match camera_mode {
         CameraMode::Galaxy => None,
@@ -395,7 +395,7 @@ pub fn build_hud_snapshot(
             .and_then(|view| build_system_panel_snapshot(simulation, view)),
     };
     let ship_card =
-        ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot(simulation, ship_id));
+        ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot_for_ui(simulation, ship_id));
 
     let contract_lines = contracts_board
         .active_contracts
@@ -925,7 +925,10 @@ fn build_fleet_list_rows(
     rows
 }
 
-fn build_ship_card_snapshot(simulation: &Simulation, ship_id: ShipId) -> Option<ShipCardSnapshot> {
+pub(crate) fn build_ship_card_snapshot_for_ui(
+    simulation: &Simulation,
+    ship_id: ShipId,
+) -> Option<ShipCardSnapshot> {
     let view = simulation.ship_card_view(ship_id)?;
     let topology = simulation.camera_topology_view();
     let current_station_name = view.current_station.and_then(|station_id| {
@@ -966,7 +969,7 @@ fn build_ship_card_snapshot(simulation: &Simulation, ship_id: ShipId) -> Option<
     })
 }
 
-fn build_station_card_snapshot(
+pub(crate) fn build_station_card_snapshot_for_ui(
     simulation: &Simulation,
     ship_id: ShipId,
     station_id: StationId,
