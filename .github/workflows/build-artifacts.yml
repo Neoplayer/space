@@ -1,0 +1,64 @@
+name: Build Portable Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            runner: windows-latest
+            artifact_name: gatebound-windows
+            binary_name: gatebound_app.exe
+          - label: macos
+            runner: macos-latest
+            artifact_name: gatebound-macos
+            binary_name: gatebound_app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked -p gatebound_app
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = "dist\${{ matrix.artifact_name }}"
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+          Copy-Item "target\release\${{ matrix.binary_name }}" -Destination $artifactDir -Force
+          Copy-Item "assets" -Destination "$artifactDir\assets" -Recurse -Force
+
+      - name: Package artifact (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="dist/${{ matrix.artifact_name }}"
+          mkdir -p "$artifact_dir"
+          cp "target/release/${{ matrix.binary_name }}" "$artifact_dir/"
+          cp -R assets "$artifact_dir/assets"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
