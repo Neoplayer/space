@@ -1,10 +1,11 @@
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use gatebound_domain::{StationId, SystemId};
+use gatebound_domain::{ShipId, StationId, SystemId};
 use gatebound_sim::CameraTopologyView;
 
-use crate::runtime::sim::{SelectedStation, SimResource, StationUiState};
+use crate::render::world::{pick_visible_ship, ShipMotionCache};
+use crate::runtime::sim::{SelectedStation, ShipUiState, SimResource, StationUiState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
@@ -172,6 +173,48 @@ pub fn station_select_input_system(
 
 pub fn apply_station_context_open(state: &mut StationUiState, station_id: StationId) {
     state.context_station_id = Some(station_id);
+    state.context_menu_open = true;
+}
+
+pub fn ship_context_input_system(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    sim: Res<SimResource>,
+    cache: Res<ShipMotionCache>,
+    ui_state: Res<CameraUiState>,
+    mut ship_ui: ResMut<ShipUiState>,
+) {
+    if !buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+    let CameraMode::System(_) = ui_state.mode else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+
+    let snapshot = sim.simulation.world_render_snapshot();
+    if let Some(ship_id) = pick_visible_ship(&snapshot, ui_state.mode, world_position, &cache) {
+        apply_ship_context_open(&mut ship_ui, ship_id);
+    } else {
+        ship_ui.context_menu_open = false;
+        ship_ui.context_ship_id = None;
+    }
+}
+
+pub fn apply_ship_context_open(state: &mut ShipUiState, ship_id: ShipId) {
+    state.context_ship_id = Some(ship_id);
     state.context_menu_open = true;
 }
 

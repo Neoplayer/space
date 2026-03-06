@@ -1,6 +1,7 @@
 use gatebound_domain::{
-    ContractTypeStageA, FleetShipStatus, GateId, GateThroughputSnapshot, MarketInsightRow,
-    MilestoneStatus, ShipId, StationId, StationProfile, SystemId,
+    AutopilotPolicy, CargoLoad, CompanyArchetype, Contract, ContractTypeStageA, FleetShipStatus,
+    GateId, GateThroughputSnapshot, MarketInsightRow, MilestoneStatus, SegmentKind, ShipClass,
+    ShipId, ShipModule, ShipRole, ShipTechnicalState, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
     ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation, StationTradeView,
@@ -54,7 +55,37 @@ pub struct HudSnapshot {
     pub manual_actions_per_min: f64,
     pub policy_edits_per_min: f64,
     pub avg_route_hops_player: f64,
+    pub ship_card: Option<ShipCardSnapshot>,
     pub station_card: Option<StationCardSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShipCardSnapshot {
+    pub ship_id: ShipId,
+    pub company_id: gatebound_domain::CompanyId,
+    pub owner_name: String,
+    pub owner_archetype: CompanyArchetype,
+    pub role: ShipRole,
+    pub ship_name: String,
+    pub ship_class: ShipClass,
+    pub description: String,
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub current_station: Option<StationId>,
+    pub current_station_name: Option<String>,
+    pub current_target: Option<SystemId>,
+    pub target_system_name: Option<String>,
+    pub eta_ticks_remaining: u32,
+    pub current_segment_kind: Option<SegmentKind>,
+    pub cargo_capacity: f64,
+    pub cargo: Option<CargoLoad>,
+    pub active_contract: Option<Contract>,
+    pub policy: AutopilotPolicy,
+    pub route_len: usize,
+    pub reroutes: u64,
+    pub last_risk_score: f64,
+    pub modules: Vec<ShipModule>,
+    pub technical_state: ShipTechnicalState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +133,7 @@ pub fn build_hud_snapshot(
     selected_system_id: SystemId,
     selected_station_id: Option<StationId>,
     station_card_station_id: Option<StationId>,
+    ship_card_ship_id: Option<ShipId>,
     selected_ship_id: Option<ShipId>,
     filters: ContractsFilterState,
     kpi: &UiKpiTracker,
@@ -125,6 +157,8 @@ pub fn build_hud_snapshot(
         .and_then(|(ship_id, station_id)| {
             build_station_card_snapshot(simulation, ship_id, station_id)
         });
+    let ship_card =
+        ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot(simulation, ship_id));
 
     let contract_lines = contracts_board
         .active_contracts
@@ -239,8 +273,50 @@ pub fn build_hud_snapshot(
         manual_actions_per_min: kpi.manual_actions_per_min,
         policy_edits_per_min: kpi.policy_edits_per_min,
         avg_route_hops_player: kpi.avg_route_hops_player,
+        ship_card,
         station_card,
     }
+}
+
+fn build_ship_card_snapshot(simulation: &Simulation, ship_id: ShipId) -> Option<ShipCardSnapshot> {
+    let view = simulation.ship_card_view(ship_id)?;
+    let topology = simulation.camera_topology_view();
+    let current_station_name = view.current_station.and_then(|station_id| {
+        topology
+            .systems
+            .iter()
+            .flat_map(|system| system.stations.iter())
+            .find(|station| station.station_id == station_id)
+            .map(|station| generated_station_name(station.station_id, station.profile))
+    });
+
+    Some(ShipCardSnapshot {
+        ship_id: view.ship_id,
+        company_id: view.company_id,
+        owner_name: view.owner_name,
+        owner_archetype: view.owner_archetype,
+        role: view.role,
+        ship_name: view.ship_name,
+        ship_class: view.ship_class,
+        description: view.description,
+        system_id: view.location,
+        system_name: generated_system_name(view.location),
+        current_station: view.current_station,
+        current_station_name,
+        current_target: view.current_target,
+        target_system_name: view.current_target.map(generated_system_name),
+        eta_ticks_remaining: view.eta_ticks_remaining,
+        current_segment_kind: view.current_segment_kind,
+        cargo_capacity: view.cargo_capacity,
+        cargo: view.cargo,
+        active_contract: view.active_contract,
+        policy: view.policy,
+        route_len: view.route_len,
+        reroutes: view.reroutes,
+        last_risk_score: view.last_risk_score,
+        modules: view.modules,
+        technical_state: view.technical_state,
+    })
 }
 
 fn build_station_card_snapshot(

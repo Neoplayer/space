@@ -1,15 +1,16 @@
 use crate::input::camera::{
-    apply_escape, apply_station_context_open, apply_system_click, CameraMode, ClickTracker,
+    apply_escape, apply_ship_context_open, apply_station_context_open, apply_system_click,
+    CameraMode, CameraUiState, ClickTracker,
 };
 use crate::render::world::{
     segment_from_point, ship_is_visible_in_current_view, system_objects_visible_in_current_view,
     update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
-    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_station_card,
-    panel_button_specs, panel_hotkey_to_index, set_time_speed, toggle_pause, ContractsFilterState,
-    FinanceUiState, OfferSortMode, RiskHotkey, SimResource, StationCardTab, StationUiState,
-    UiKpiTracker,
+    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
+    open_station_card, panel_button_specs, panel_hotkey_to_index, set_time_speed, toggle_pause,
+    track_ship, ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey, ShipCardTab,
+    ShipUiState, SimResource, StationCardTab, StationUiState, TrackedShip, UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
@@ -51,6 +52,7 @@ fn build_hud_snapshot(
         selected_system_id,
         selected_station,
         selected_station,
+        None,
         selected_ship_id,
         filters,
         kpi,
@@ -835,6 +837,7 @@ fn markets_panel_uses_selected_station_market() {
         Some(selected_station),
         None,
         None,
+        None,
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
@@ -1044,6 +1047,15 @@ fn right_click_station_opens_context_menu_state() {
 }
 
 #[test]
+fn right_click_ship_opens_context_menu_state() {
+    let mut ui = ShipUiState::default();
+    assert!(!ui.context_menu_open);
+    apply_ship_context_open(&mut ui, ShipId(9));
+    assert!(ui.context_menu_open);
+    assert_eq!(ui.context_ship_id, Some(ShipId(9)));
+}
+
+#[test]
 fn opening_station_card_resets_tab_and_prefers_supplied_commodity() {
     let mut ui = StationUiState {
         card_tab: StationCardTab::Trade,
@@ -1063,6 +1075,86 @@ fn opening_station_card_resets_tab_and_prefers_supplied_commodity() {
     assert_eq!(ui.card_station_id, Some(StationId(7)));
     assert_eq!(ui.card_tab, StationCardTab::Info);
     assert_eq!(ui.trade_commodity, Commodity::Fuel);
+}
+
+#[test]
+fn opening_ship_card_resets_tab_and_binds_requested_ship() {
+    let mut ui = ShipUiState {
+        card_tab: ShipCardTab::Modules,
+        ..ShipUiState::default()
+    };
+
+    open_ship_card(&mut ui, ShipId(3));
+
+    assert!(ui.card_open);
+    assert_eq!(ui.card_ship_id, Some(ShipId(3)));
+    assert_eq!(ui.card_tab, ShipCardTab::Overview);
+
+    ui.card_tab = ShipCardTab::Technical;
+    open_ship_card(&mut ui, ShipId(7));
+    assert_eq!(ui.card_ship_id, Some(ShipId(7)));
+    assert_eq!(ui.card_tab, ShipCardTab::Overview);
+}
+
+#[test]
+fn tracking_npc_ship_updates_focus_without_changing_selected_player_ship() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let tracked_id = ShipId(1);
+    let expected_system = sim
+        .ship_card_view(tracked_id)
+        .expect("tracked ship card should exist")
+        .location;
+    let mut tracked = TrackedShip::default();
+    let mut camera = CameraUiState::default();
+    let selected_player_ship = ShipId(0);
+
+    track_ship(&mut tracked, &mut camera, &sim, tracked_id)
+        .expect("tracking seeded ship should succeed");
+
+    assert_eq!(tracked.ship_id, Some(tracked_id));
+    assert_eq!(camera.mode, CameraMode::System(expected_system));
+    assert_eq!(selected_player_ship, ShipId(0));
+}
+
+#[test]
+fn ship_card_snapshot_includes_owner_and_module_metadata() {
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let npc_id = builder.first_npc_ship_id().expect("npc ship should exist");
+    builder.with_ship_patch(
+        npc_id,
+        ShipPatch {
+            cargo: Some(Some(CargoLoad {
+                commodity: Commodity::Parts,
+                amount: 4.0,
+                source: CargoSource::Spot,
+            })),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        true,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        None,
+        None,
+        Some(npc_id),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    let card = snapshot
+        .ship_card
+        .as_ref()
+        .expect("ship card snapshot should be present");
+
+    assert_eq!(card.ship_id, npc_id);
+    assert!(!card.owner_name.is_empty());
+    assert!(!card.modules.is_empty());
+    assert!(card.technical_state.hull > 0.0);
 }
 
 #[test]
@@ -1132,6 +1224,7 @@ fn station_card_snapshot_does_not_override_markets_station_selection() {
         SystemId(0),
         Some(market_station),
         Some(card_station),
+        None,
         Some(ShipId(0)),
         ContractsFilterState::default(),
         &UiKpiTracker::default(),

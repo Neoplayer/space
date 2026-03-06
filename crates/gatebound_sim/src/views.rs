@@ -224,6 +224,32 @@ pub struct ShipPolicyView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ShipCardView {
+    pub ship_id: ShipId,
+    pub company_id: CompanyId,
+    pub owner_name: String,
+    pub owner_archetype: CompanyArchetype,
+    pub role: ShipRole,
+    pub ship_name: String,
+    pub ship_class: ShipClass,
+    pub description: String,
+    pub location: SystemId,
+    pub current_station: Option<StationId>,
+    pub current_target: Option<SystemId>,
+    pub eta_ticks_remaining: u32,
+    pub current_segment_kind: Option<SegmentKind>,
+    pub cargo_capacity: f64,
+    pub cargo: Option<CargoLoad>,
+    pub active_contract: Option<Contract>,
+    pub policy: AutopilotPolicy,
+    pub route_len: usize,
+    pub reroutes: u64,
+    pub last_risk_score: f64,
+    pub modules: Vec<ShipModule>,
+    pub technical_state: ShipTechnicalState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HudOverviewView {
     pub tick: u64,
     pub cycle: u64,

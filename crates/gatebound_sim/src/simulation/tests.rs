@@ -1514,6 +1514,114 @@ fn npc_stage_a_baseline_roster_is_created() {
 }
 
 #[test]
+fn stage_a_ships_seed_descriptor_modules_and_technical_state() {
+    let sim = Simulation::new(stage_a_config(), 151);
+
+    let player_ship = sim.ships.get(&ShipId(0)).expect("player ship should exist");
+    assert!(!player_ship.descriptor.name.is_empty());
+    assert!(!player_ship.descriptor.description.is_empty());
+    assert!(!player_ship.modules.is_empty());
+    assert!(player_ship
+        .modules
+        .iter()
+        .all(|module| !module.name.is_empty() && !module.details.is_empty()));
+    assert!(player_ship.technical_state.hull > 0.0);
+    assert!(player_ship.technical_state.drive > 0.0);
+    assert!(!player_ship.technical_state.maintenance_note.is_empty());
+
+    let npc_ship = sim
+        .ships
+        .values()
+        .find(|ship| ship.role == ShipRole::NpcTrade)
+        .expect("npc ship should exist");
+    assert!(!npc_ship.descriptor.name.is_empty());
+    assert!(!npc_ship.modules.is_empty());
+    assert!(npc_ship.technical_state.reactor > 0.0);
+    assert!(npc_ship.technical_state.sensors > 0.0);
+}
+
+#[test]
+fn ship_card_view_exposes_owner_route_and_display_metadata() {
+    let mut sim = Simulation::new(stage_a_config(), 157);
+    let ship_id = ShipId(1);
+    let destination_station = station_for_system(&sim, SystemId(1));
+    let cargo = CargoLoad {
+        commodity: Commodity::Parts,
+        amount: 7.5,
+        source: CargoSource::Spot,
+    };
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.current_station = Some(destination_station);
+        ship.current_target = Some(SystemId(2));
+        ship.eta_ticks_remaining = 17;
+        ship.current_segment_kind = Some(SegmentKind::InSystem);
+        ship.active_contract = Some(ContractId(0));
+        ship.cargo = Some(cargo);
+    }
+
+    let view = sim
+        .ship_card_view(ship_id)
+        .expect("ship card view should exist for seeded ship");
+
+    assert_eq!(view.ship_id, ship_id);
+    assert_eq!(view.company_id, CompanyId(1));
+    assert_eq!(view.owner_name, "Haulers Alpha");
+    assert_eq!(view.owner_archetype, CompanyArchetype::Hauler);
+    assert_eq!(view.current_station, Some(destination_station));
+    assert_eq!(view.current_target, Some(SystemId(2)));
+    assert_eq!(view.eta_ticks_remaining, 17);
+    assert_eq!(view.current_segment_kind, Some(SegmentKind::InSystem));
+    assert_eq!(view.cargo, Some(cargo));
+    assert_eq!(
+        view.active_contract.map(|contract| contract.id),
+        Some(ContractId(0))
+    );
+    assert!(!view.description.is_empty());
+    assert!(!view.modules.is_empty());
+    assert!(view.technical_state.cargo_bay > 0.0);
+}
+
+#[test]
+fn legacy_snapshot_without_ship_card_fields_loads_and_backfills_metadata() {
+    let cfg = stage_a_config();
+    let sim = Simulation::new(cfg.clone(), 163);
+    let mut state =
+        serde_json::to_value(sim.snapshot_state()).expect("snapshot state should serialize");
+    let ships = state["ships"]
+        .as_array_mut()
+        .expect("snapshot ships should serialize as an array");
+    for ship in ships {
+        let object = ship
+            .as_object_mut()
+            .expect("ship snapshot should serialize as an object");
+        object.remove("descriptor");
+        object.remove("modules");
+        object.remove("technical_state");
+    }
+
+    let payload = serde_json::json!({
+        "version": 2,
+        "state": state,
+    });
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_ship_card_legacy.json");
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&payload).expect("legacy payload should serialize"),
+    )
+    .expect("legacy payload write should pass");
+
+    let loaded = Simulation::load_snapshot(&tmp, cfg).expect("legacy snapshot should load");
+    let ship = loaded
+        .ships
+        .get(&ShipId(0))
+        .expect("loaded player ship should exist");
+
+    assert!(!ship.descriptor.name.is_empty());
+    assert!(!ship.modules.is_empty());
+    assert!(ship.technical_state.hull > 0.0);
+}
+
+#[test]
 fn throughput_window_computes_player_share() {
     let mut sim = Simulation::new(stage_a_config(), 137);
     let gate = sim.world.edges.first().expect("edge exists").id;

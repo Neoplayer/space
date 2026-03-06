@@ -14,14 +14,14 @@ pub mod ui;
 
 use input::camera::{
     apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
-    station_select_input_system, sync_camera_transform, CameraUiState,
+    ship_context_input_system, station_select_input_system, sync_camera_transform, CameraUiState,
 };
 use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
 use runtime::sim::{
     apply_time_controls, drive_simulation, handle_panel_hotkeys, handle_risk_hotkeys,
     sync_selected_station, sync_selected_system, ContractsFilterState, FinanceUiState,
-    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, StationUiState,
-    UiKpiTracker, UiPanelState,
+    SelectedShip, SelectedStation, SelectedSystem, ShipUiState, SimClock, SimResource,
+    StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
 };
 use ui::hud::{draw_hud_panel, HudMessages};
 
@@ -42,6 +42,8 @@ pub fn run() {
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedStation::default())
+        .insert_resource(TrackedShip::default())
+        .insert_resource(ShipUiState::default())
         .insert_resource(StationUiState::default())
         .insert_resource(UiKpiTracker::default())
         .insert_resource(HudMessages::default())
@@ -69,6 +71,7 @@ pub fn run() {
                 handle_risk_hotkeys,
                 drive_simulation,
                 update_ship_motion_cache,
+                ship_context_input_system,
                 sync_camera_transform,
                 draw_world_gizmos,
             )

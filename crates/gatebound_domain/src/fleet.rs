@@ -110,6 +110,104 @@ pub struct TradeOrder {
     pub stage: TradeOrderStage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ShipClass {
+    #[default]
+    Courier,
+    Hauler,
+    Miner,
+    Industrial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShipModuleSlot {
+    Command,
+    Drive,
+    Cargo,
+    Utility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShipModuleStatus {
+    Optimal,
+    Serviceable,
+    Worn,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipDescriptor {
+    pub name: String,
+    pub class: ShipClass,
+    pub description: String,
+}
+
+impl Default for ShipDescriptor {
+    fn default() -> Self {
+        Self {
+            name: "Registry Ghost".to_string(),
+            class: ShipClass::Courier,
+            description: "Recovered hull awaiting refreshed registry metadata.".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipModule {
+    pub slot: ShipModuleSlot,
+    pub name: String,
+    pub status: ShipModuleStatus,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipTechnicalState {
+    pub hull: f64,
+    pub drive: f64,
+    pub reactor: f64,
+    pub sensors: f64,
+    pub cargo_bay: f64,
+    pub maintenance_note: String,
+}
+
+impl Default for ShipTechnicalState {
+    fn default() -> Self {
+        Self {
+            hull: 82.0,
+            drive: 78.0,
+            reactor: 84.0,
+            sensors: 76.0,
+            cargo_bay: 81.0,
+            maintenance_note: "Legacy registry restored without shipyard service history."
+                .to_string(),
+        }
+    }
+}
+
+fn default_ship_modules() -> Vec<ShipModule> {
+    vec![
+        ShipModule {
+            slot: ShipModuleSlot::Command,
+            name: "Registry Bridge".to_string(),
+            status: ShipModuleStatus::Serviceable,
+            details: "Flight control and traffic handshake suite recovered from baseline hull."
+                .to_string(),
+        },
+        ShipModule {
+            slot: ShipModuleSlot::Drive,
+            name: "Baseline Torch Drive".to_string(),
+            status: ShipModuleStatus::Serviceable,
+            details: "Sub-light propulsion tuned for standard intra-system hauling.".to_string(),
+        },
+        ShipModule {
+            slot: ShipModuleSlot::Cargo,
+            name: "Modular Cargo Lattice".to_string(),
+            status: ShipModuleStatus::Serviceable,
+            details: "General-purpose hold frame backfilled for legacy snapshot compatibility."
+                .to_string(),
+        },
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ship {
     pub id: ShipId,
@@ -134,4 +232,10 @@ pub struct Ship {
     pub last_gate_arrival: Option<GateId>,
     pub last_risk_score: f64,
     pub reroutes: u64,
+    #[serde(default)]
+    pub descriptor: ShipDescriptor,
+    #[serde(default = "default_ship_modules")]
+    pub modules: Vec<ShipModule>,
+    #[serde(default)]
+    pub technical_state: ShipTechnicalState,
 }

@@ -381,6 +381,38 @@ impl Simulation {
         })
     }
 
+    pub fn ship_card_view(&self, ship_id: ShipId) -> Option<ShipCardView> {
+        let ship = self.ships.get(&ship_id)?;
+        let owner = self.companies.get(&ship.company_id)?;
+
+        Some(ShipCardView {
+            ship_id,
+            company_id: ship.company_id,
+            owner_name: owner.name.clone(),
+            owner_archetype: owner.archetype,
+            role: ship.role,
+            ship_name: ship.descriptor.name.clone(),
+            ship_class: ship.descriptor.class,
+            description: ship.descriptor.description.clone(),
+            location: ship.location,
+            current_station: ship.current_station,
+            current_target: ship.current_target,
+            eta_ticks_remaining: ship.eta_ticks_remaining,
+            current_segment_kind: ship.current_segment_kind,
+            cargo_capacity: ship.cargo_capacity,
+            cargo: ship.cargo,
+            active_contract: ship
+                .active_contract
+                .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
+            policy: ship.policy.clone(),
+            route_len: ship.planned_path.len(),
+            reroutes: ship.reroutes,
+            last_risk_score: ship.last_risk_score,
+            modules: ship.modules.clone(),
+            technical_state: ship.technical_state.clone(),
+        })
+    }
+
     pub fn ship_policy_view(&self, ship_id: ShipId) -> Option<ShipPolicyView> {
         self.ship_policy(ship_id)
             .cloned()

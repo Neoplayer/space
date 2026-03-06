@@ -1,7 +1,8 @@
 use gatebound_domain::{
-    CargoSource, CommandError, Commodity, ContractActionError, ContractProgress, CreditError,
-    FleetJobKind, FleetWarning, MilestoneId, MilestoneStatus, OfferError, OfferProblemTag,
-    PriorityMode, ShipRole, StationProfile, TradeError,
+    CargoSource, CommandError, Commodity, CompanyArchetype, ContractActionError, ContractProgress,
+    CreditError, FleetJobKind, FleetWarning, MilestoneId, MilestoneStatus, OfferError,
+    OfferProblemTag, PriorityMode, ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole,
+    StationProfile, TradeError,
 };
 
 use crate::runtime::sim::OfferSortMode;
@@ -38,6 +39,41 @@ pub(super) fn ship_role_label(role: ShipRole) -> &'static str {
     match role {
         ShipRole::PlayerContract => "player_contract",
         ShipRole::NpcTrade => "npc_trade",
+    }
+}
+
+pub(super) fn company_archetype_label(archetype: CompanyArchetype) -> &'static str {
+    match archetype {
+        CompanyArchetype::Player => "player",
+        CompanyArchetype::Hauler => "hauler",
+        CompanyArchetype::Miner => "miner",
+        CompanyArchetype::Industrial => "industrial",
+    }
+}
+
+pub(super) fn ship_class_label(class: ShipClass) -> &'static str {
+    match class {
+        ShipClass::Courier => "Courier",
+        ShipClass::Hauler => "Hauler",
+        ShipClass::Miner => "Miner",
+        ShipClass::Industrial => "Industrial",
+    }
+}
+
+pub(super) fn ship_module_slot_label(slot: ShipModuleSlot) -> &'static str {
+    match slot {
+        ShipModuleSlot::Command => "Command",
+        ShipModuleSlot::Drive => "Drive",
+        ShipModuleSlot::Cargo => "Cargo",
+        ShipModuleSlot::Utility => "Utility",
+    }
+}
+
+pub(super) fn ship_module_status_label(status: ShipModuleStatus) -> &'static str {
+    match status {
+        ShipModuleStatus::Optimal => "optimal",
+        ShipModuleStatus::Serviceable => "serviceable",
+        ShipModuleStatus::Worn => "worn",
     }
 }
 

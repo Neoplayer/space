@@ -5,7 +5,7 @@ use gatebound_sim::{RenderShipView, WorldRenderSnapshot};
 use std::collections::BTreeMap;
 
 use crate::input::camera::{CameraMode, CameraUiState};
-use crate::runtime::sim::{SelectedShip, SelectedStation, SimResource};
+use crate::runtime::sim::{SelectedShip, SelectedStation, SimResource, TrackedShip};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShipMotionState {
@@ -98,6 +98,7 @@ pub fn draw_world_gizmos(
     cache: Res<ShipMotionCache>,
     selected_station: Res<SelectedStation>,
     selected_ship: Res<SelectedShip>,
+    tracked_ship: Res<TrackedShip>,
 ) {
     let snapshot = sim.simulation.world_render_snapshot();
     let player_destination_station = selected_ship
@@ -218,6 +219,9 @@ pub fn draw_world_gizmos(
             &cache,
         );
         gizmos.circle_2d(position, 4.0, company_color(ship.company_id.0));
+        if tracked_ship.ship_id == Some(ship.ship_id) {
+            gizmos.circle_2d(position, 7.2, Color::srgba(0.95, 0.95, 0.35, 0.95));
+        }
         if let Some(cargo) = ship.cargo {
             gizmos.circle_2d(
                 position + Vec2::new(3.0, -3.0),
@@ -242,7 +246,7 @@ pub(crate) fn system_objects_visible_in_current_view(
     matches!(mode, CameraMode::System(selected_system) if selected_system == system_id)
 }
 
-fn ship_position(
+pub(crate) fn ship_position(
     snapshot: &WorldRenderSnapshot,
     ship_id: ShipId,
     fallback_system: SystemId,
@@ -254,6 +258,33 @@ fn ship_position(
         return segment.from.lerp(segment.to, t);
     }
     system_position(snapshot, fallback_system)
+}
+
+pub(crate) fn pick_visible_ship(
+    snapshot: &WorldRenderSnapshot,
+    mode: CameraMode,
+    world_position: Vec2,
+    cache: &ShipMotionCache,
+) -> Option<ShipId> {
+    snapshot
+        .ships
+        .iter()
+        .filter(|ship| ship_is_visible_in_current_view(mode, ship.location))
+        .filter_map(|ship| {
+            let position = ship_position(
+                snapshot,
+                ship.ship_id,
+                ship.location,
+                ship.segment_eta_remaining,
+                cache,
+            );
+            let dx = world_position.x - position.x;
+            let dy = world_position.y - position.y;
+            let distance_sq = dx * dx + dy * dy;
+            (distance_sq <= 8.0_f32.powi(2)).then_some((distance_sq, ship.ship_id))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, ship_id)| ship_id)
 }
 
 pub(crate) fn segment_from_point(

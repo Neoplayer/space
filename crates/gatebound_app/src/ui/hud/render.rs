@@ -4,26 +4,28 @@ use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, Sh
 use gatebound_sim::TradePriceTone;
 
 use crate::runtime::sim::{
-    open_station_card, panel_button_specs, panel_is_open, preferred_trade_commodity,
-    set_time_speed, toggle_pause, ContractsFilterState, FinanceUiState, OfferSortMode,
-    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, StationCardTab,
-    StationUiState, UiKpiTracker, UiPanelState,
+    open_ship_card, open_station_card, panel_button_specs, panel_is_open,
+    preferred_trade_commodity, set_time_speed, toggle_pause, track_ship, ContractsFilterState,
+    FinanceUiState, OfferSortMode, SelectedShip, SelectedStation, SelectedSystem, ShipCardTab,
+    ShipUiState, SimClock, SimResource, StationCardTab, StationUiState, TrackedShip, UiKpiTracker,
+    UiPanelState,
 };
 
 use super::labels::{
-    cargo_source_label, command_error_label, commodity_label, contract_action_error_label,
-    contract_progress_label, credit_error_label, job_kind_label, milestone_label,
-    offer_error_label, priority_mode_label, problem_label, ship_role_label, sort_mode_label,
+    cargo_source_label, command_error_label, commodity_label, company_archetype_label,
+    contract_action_error_label, contract_progress_label, credit_error_label, job_kind_label,
+    milestone_label, offer_error_label, priority_mode_label, problem_label, ship_class_label,
+    ship_module_slot_label, ship_module_status_label, ship_role_label, sort_mode_label,
     station_profile_label, trade_error_label, warning_label,
 };
 use super::messages::HudMessages;
-use super::snapshot::{build_hud_snapshot, StationCardSnapshot};
+use super::snapshot::{build_hud_snapshot, ShipCardSnapshot, StationCardSnapshot};
 #[allow(clippy::too_many_arguments)]
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
     mut sim: ResMut<SimResource>,
     mut clock: ResMut<SimClock>,
-    camera: Res<crate::input::camera::CameraUiState>,
+    mut camera: ResMut<crate::input::camera::CameraUiState>,
     selected_system: Res<SelectedSystem>,
     selected_station: Res<SelectedStation>,
     mut selected_ship: ResMut<SelectedShip>,
@@ -31,6 +33,8 @@ pub fn draw_hud_panel(
     mut panels: ResMut<UiPanelState>,
     mut kpi: ResMut<UiKpiTracker>,
     mut messages: ResMut<HudMessages>,
+    mut tracked_ship: ResMut<TrackedShip>,
+    mut ship_ui: ResMut<ShipUiState>,
     mut station_ui: ResMut<StationUiState>,
     mut finance_ui: ResMut<FinanceUiState>,
 ) -> Result {
@@ -46,6 +50,7 @@ pub fn draw_hud_panel(
             .card_station_id
             .filter(|_| station_ui.station_panel_open)
             .or(selected_station.station_id),
+        ship_ui.card_ship_id.filter(|_| ship_ui.card_open),
         selected_ship.ship_id,
         *filters,
         &kpi,
@@ -129,6 +134,7 @@ pub fn draw_hud_panel(
             ui.label("F1..F6: toggle window buttons");
             ui.label("[ / ]: switch selected player ship");
             ui.label("Right-click station: context menu (Fly / Open station card)");
+            ui.label("Right-click ship: context menu (Track / Open ship card)");
             ui.label("Finance panel (F4): take credit, repay partially or fully");
             ui.label("G / D / F: trigger Stage A risk events");
             ui.separator();
@@ -146,6 +152,51 @@ pub fn draw_hud_panel(
                 }
             }
         });
+
+    if ship_ui.context_menu_open {
+        let mut open = ship_ui.context_menu_open;
+        egui::Window::new("Ship Context")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                let Some(ship_id) = ship_ui.context_ship_id else {
+                    ui.label("No ship selected");
+                    return;
+                };
+                let Some(ship) = sim.simulation.ship_card_view(ship_id) else {
+                    ui.label("Ship details unavailable");
+                    return;
+                };
+
+                ui.label(format!("Ship: {}", ship.ship_name));
+                ui.label(format!("Class: {}", ship_class_label(ship.ship_class)));
+                ui.label(format!(
+                    "Owner: {} ({})",
+                    ship.owner_name,
+                    company_archetype_label(ship.owner_archetype)
+                ));
+                ui.label(format!("Role: {}", ship_role_label(ship.role)));
+                ui.label(format!("System: {}", ship.location.0));
+                if ui.button("Track ship").clicked() {
+                    kpi.record_manual_action(sim.simulation.tick());
+                    if let Some(system_id) =
+                        track_ship(&mut tracked_ship, &mut camera, &sim.simulation, ship_id)
+                    {
+                        messages.push(format!(
+                            "Tracking ship {} in system {}",
+                            ship_id.0, system_id.0
+                        ));
+                        ship_ui.context_menu_open = false;
+                    }
+                }
+                if ui.button("Open ship card").clicked() {
+                    open_ship_card(&mut ship_ui, ship_id);
+                    ship_ui.context_menu_open = false;
+                }
+            });
+        ship_ui.context_menu_open = open && ship_ui.context_menu_open;
+    }
 
     if station_ui.context_menu_open {
         let mut open = station_ui.context_menu_open;
@@ -500,6 +551,69 @@ pub fn draw_hud_panel(
                 }
             });
         panels.markets = open;
+    }
+
+    if ship_ui.card_open {
+        let mut open = ship_ui.card_open;
+        egui::Window::new("Ship Card")
+            .open(&mut open)
+            .default_width(720.0)
+            .default_height(560.0)
+            .show(ctx, |ui| {
+                let Some(card) = snapshot.ship_card.as_ref() else {
+                    ui.label("No ship selected");
+                    return;
+                };
+                ship_ui.card_ship_id = Some(card.ship_id);
+                ship_ui.context_ship_id = Some(card.ship_id);
+
+                render_ship_card_header(ui, card);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(tab_button(
+                            "Overview",
+                            ship_ui.card_tab == ShipCardTab::Overview,
+                        ))
+                        .clicked()
+                    {
+                        ship_ui.card_tab = ShipCardTab::Overview;
+                    }
+                    if ui
+                        .add(tab_button("Cargo", ship_ui.card_tab == ShipCardTab::Cargo))
+                        .clicked()
+                    {
+                        ship_ui.card_tab = ShipCardTab::Cargo;
+                    }
+                    if ui
+                        .add(tab_button(
+                            "Modules",
+                            ship_ui.card_tab == ShipCardTab::Modules,
+                        ))
+                        .clicked()
+                    {
+                        ship_ui.card_tab = ShipCardTab::Modules;
+                    }
+                    if ui
+                        .add(tab_button(
+                            "Technical",
+                            ship_ui.card_tab == ShipCardTab::Technical,
+                        ))
+                        .clicked()
+                    {
+                        ship_ui.card_tab = ShipCardTab::Technical;
+                    }
+                });
+                ui.separator();
+
+                match ship_ui.card_tab {
+                    ShipCardTab::Overview => render_ship_overview_tab(ui, card),
+                    ShipCardTab::Cargo => render_ship_cargo_tab(ui, card),
+                    ShipCardTab::Modules => render_ship_modules_tab(ui, card),
+                    ShipCardTab::Technical => render_ship_technical_tab(ui, card),
+                }
+            });
+        ship_ui.card_open = open;
     }
 
     if panels.station_ops && station_ui.station_panel_open {
@@ -1139,6 +1253,204 @@ fn render_station_trade_tab(
                 ui.small("Contract actions unlock once the selected ship is docked with an active contract.");
             }
         });
+}
+
+fn render_ship_card_header(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(15, 22, 28))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(66, 90, 108)))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.heading(&card.ship_name);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} ship in {}",
+                            ship_class_label(card.ship_class),
+                            card.system_name
+                        ))
+                        .color(egui::Color32::from_rgb(143, 185, 255)),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.monospace(format!("Ship #{}", card.ship_id.0));
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} ({})",
+                            card.owner_name,
+                            company_archetype_label(card.owner_archetype)
+                        ))
+                        .strong(),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(format!("Role {}", ship_role_label(card.role)));
+                ui.separator();
+                ui.monospace(format!("System {}", card.system_id.0));
+                if let Some(station_name) = &card.current_station_name {
+                    ui.separator();
+                    ui.monospace(format!("Station {station_name}"));
+                }
+                if let Some(target_name) = &card.target_system_name {
+                    ui.separator();
+                    ui.monospace(format!("Target {target_name}"));
+                }
+                ui.separator();
+                ui.monospace(format!("ETA {}", card.eta_ticks_remaining));
+                ui.separator();
+                ui.monospace(format!("Risk {:.2}", card.last_risk_score));
+            });
+        });
+}
+
+fn render_ship_overview_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
+    ui.columns(2, |columns| {
+        columns[0].vertical(|ui| {
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(18, 26, 34))
+                .show(ui, |ui| {
+                    ui.heading("Ship Brief");
+                    ui.label(&card.description);
+                    ui.add_space(6.0);
+                    ui.monospace(format!("Owner: {}", card.owner_name));
+                    ui.monospace(format!(
+                        "Owner type: {}",
+                        company_archetype_label(card.owner_archetype)
+                    ));
+                    ui.monospace(format!("Role: {}", ship_role_label(card.role)));
+                    ui.monospace(
+                        card.current_station_name
+                            .as_ref()
+                            .map(|name| format!("Dock: {name}"))
+                            .unwrap_or_else(|| "Dock: in transit".to_string()),
+                    );
+                    ui.monospace(
+                        card.target_system_name
+                            .as_ref()
+                            .map(|name| format!("Target: {name}"))
+                            .unwrap_or_else(|| "Target: -".to_string()),
+                    );
+                    ui.monospace(
+                        card.current_segment_kind
+                            .map(|kind| format!("Segment: {kind:?}"))
+                            .unwrap_or_else(|| "Segment: idle".to_string()),
+                    );
+                });
+        });
+        columns[1].vertical(|ui| {
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(24, 24, 29))
+                .show(ui, |ui| {
+                    ui.heading("Autopilot Policy");
+                    ui.monospace(format!("min_margin={:.1}", card.policy.min_margin));
+                    ui.monospace(format!("max_risk={:.1}", card.policy.max_risk_score));
+                    ui.monospace(format!("max_hops={}", card.policy.max_hops));
+                    ui.monospace(format!(
+                        "priority={}",
+                        priority_mode_label(card.policy.priority_mode)
+                    ));
+                    ui.monospace(format!("route_len={}", card.route_len));
+                    ui.monospace(format!("reroutes={}", card.reroutes));
+                });
+        });
+    });
+}
+
+fn render_ship_cargo_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(14, 19, 24))
+        .show(ui, |ui| {
+            let cargo_amount = card.cargo.map(|cargo| cargo.amount).unwrap_or(0.0);
+            ui.heading("Cargo Hold");
+            ui.monospace(format!(
+                "Usage: {:.1} / {:.1}",
+                cargo_amount, card.cargo_capacity
+            ));
+            if let Some(cargo) = card.cargo {
+                ui.monospace(format!(
+                    "Load: {} {:.1} ({})",
+                    commodity_label(cargo.commodity),
+                    cargo.amount,
+                    cargo_source_label(cargo.source)
+                ));
+            } else {
+                ui.monospace("Load: empty");
+            }
+            ui.add_space(8.0);
+            if let Some(contract) = &card.active_contract {
+                ui.heading("Active Contract");
+                ui.monospace(format!("Contract #{}", contract.id.0));
+                ui.monospace(format!(
+                    "Flow: S{} -> S{}",
+                    contract.origin_station.0, contract.destination_station.0
+                ));
+                ui.monospace(format!(
+                    "Commodity: {} {:.1}",
+                    commodity_label(contract.commodity),
+                    contract.quantity
+                ));
+            } else {
+                ui.heading("Active Contract");
+                ui.monospace("No active contract assigned");
+            }
+        });
+}
+
+fn render_ship_modules_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(18, 23, 28))
+        .show(ui, |ui| {
+            ui.heading("Installed Modules");
+            egui::Grid::new("ship_modules_grid")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Slot");
+                    ui.strong("Module");
+                    ui.strong("Status");
+                    ui.end_row();
+                    for module in &card.modules {
+                        ui.monospace(ship_module_slot_label(module.slot));
+                        ui.label(&module.name);
+                        ui.monospace(ship_module_status_label(module.status));
+                        ui.end_row();
+                        ui.label("");
+                        ui.small(&module.details);
+                        ui.label("");
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn render_ship_technical_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(20, 20, 24))
+        .show(ui, |ui| {
+            ui.heading("Technical State");
+            render_ship_condition_bar(ui, "Hull", card.technical_state.hull);
+            render_ship_condition_bar(ui, "Drive", card.technical_state.drive);
+            render_ship_condition_bar(ui, "Reactor", card.technical_state.reactor);
+            render_ship_condition_bar(ui, "Sensors", card.technical_state.sensors);
+            render_ship_condition_bar(ui, "Cargo bay", card.technical_state.cargo_bay);
+            ui.add_space(8.0);
+            ui.heading("Maintenance");
+            ui.label(&card.technical_state.maintenance_note);
+        });
+}
+
+fn render_ship_condition_bar(ui: &mut egui::Ui, label: &str, value: f64) {
+    ui.horizontal(|ui| {
+        ui.monospace(format!("{label:<9}"));
+        ui.add(
+            egui::ProgressBar::new((value / 100.0).clamp(0.0, 1.0) as f32)
+                .desired_width(220.0)
+                .text(format!("{value:.0}%")),
+        );
+    });
 }
 
 fn tab_button(label: &'static str, selected: bool) -> egui::Button<'static> {

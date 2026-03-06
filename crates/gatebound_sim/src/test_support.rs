@@ -48,6 +48,9 @@ pub struct ShipPatch {
     pub last_gate_arrival: Option<Option<GateId>>,
     pub last_risk_score: Option<f64>,
     pub reroutes: Option<u64>,
+    pub descriptor: Option<ShipDescriptor>,
+    pub modules: Option<Vec<ShipModule>>,
+    pub technical_state: Option<ShipTechnicalState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +235,15 @@ impl SimulationScenarioBuilder {
             }
             if let Some(reroutes) = patch.reroutes {
                 ship.reroutes = reroutes;
+            }
+            if let Some(descriptor) = patch.descriptor {
+                ship.descriptor = descriptor;
+            }
+            if let Some(modules) = patch.modules {
+                ship.modules = modules;
+            }
+            if let Some(technical_state) = patch.technical_state {
+                ship.technical_state = technical_state;
             }
         }
         self

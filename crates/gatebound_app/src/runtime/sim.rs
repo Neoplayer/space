@@ -186,6 +186,40 @@ pub struct SelectedStation {
     pub station_id: Option<StationId>,
 }
 
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrackedShip {
+    pub ship_id: Option<ShipId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShipCardTab {
+    Overview,
+    Cargo,
+    Modules,
+    Technical,
+}
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShipUiState {
+    pub context_ship_id: Option<ShipId>,
+    pub card_ship_id: Option<ShipId>,
+    pub context_menu_open: bool,
+    pub card_open: bool,
+    pub card_tab: ShipCardTab,
+}
+
+impl Default for ShipUiState {
+    fn default() -> Self {
+        Self {
+            context_ship_id: None,
+            card_ship_id: None,
+            context_menu_open: false,
+            card_open: false,
+            card_tab: ShipCardTab::Overview,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StationCardTab {
     Info,
@@ -407,6 +441,13 @@ pub fn open_station_card(
     }
 }
 
+pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
+    state.card_open = true;
+    state.card_ship_id = Some(ship_id);
+    state.context_ship_id = Some(ship_id);
+    state.card_tab = ShipCardTab::Overview;
+}
+
 pub fn preferred_trade_commodity(
     simulation: &Simulation,
     ship_id: Option<ShipId>,
@@ -417,6 +458,18 @@ pub fn preferred_trade_commodity(
         .and_then(|selected_ship_id| simulation.station_trade_view(selected_ship_id, station_id))
         .and_then(|view| view.cargo.map(|cargo| cargo.commodity))
         .unwrap_or(fallback)
+}
+
+pub fn track_ship(
+    tracked_ship: &mut TrackedShip,
+    camera: &mut CameraUiState,
+    simulation: &Simulation,
+    ship_id: ShipId,
+) -> Option<SystemId> {
+    let system_id = simulation.ship_card_view(ship_id)?.location;
+    tracked_ship.ship_id = Some(ship_id);
+    camera.mode = CameraMode::System(system_id);
+    Some(system_id)
 }
 
 pub fn toggle_pause(clock: &mut SimClock) {

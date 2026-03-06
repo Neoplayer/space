@@ -73,6 +73,189 @@ fn seed_stage_a_companies() -> BTreeMap<CompanyId, Company> {
     companies
 }
 
+fn stage_a_ship_metadata(
+    ship_id: ShipId,
+    company_id: CompanyId,
+    role: ShipRole,
+) -> (ShipDescriptor, Vec<ShipModule>, ShipTechnicalState) {
+    let class = match (role, company_id.0) {
+        (ShipRole::PlayerContract, _) => ShipClass::Courier,
+        (_, 1 | 2) => ShipClass::Hauler,
+        (_, 3) => ShipClass::Miner,
+        _ => ShipClass::Industrial,
+    };
+
+    let registry_prefix = match class {
+        ShipClass::Courier => "Swift",
+        ShipClass::Hauler => "Bulk",
+        ShipClass::Miner => "Drill",
+        ShipClass::Industrial => "Forge",
+    };
+    let descriptor = ShipDescriptor {
+        name: format!("{registry_prefix}-{:03}", ship_id.0),
+        class,
+        description: match class {
+            ShipClass::Courier => {
+                "Fast-response contract hull configured for dispatch runs, inspections, and operator oversight."
+            }
+            ShipClass::Hauler => {
+                "General freight workhorse balancing cargo throughput, dock cadence, and dependable route turnover."
+            }
+            ShipClass::Miner => {
+                "Ore-biased industrial tug optimized for dense bulk loads, extraction support, and rugged handling."
+            }
+            ShipClass::Industrial => {
+                "Heavy utility platform tuned for refined parts, maintenance cargo, and infrastructure supply chains."
+            }
+        }
+        .to_string(),
+    };
+
+    let wear_seed = (ship_id.0 % 5) as f64;
+    let status_for = |offset: usize| match (ship_id.0 + offset) % 3 {
+        0 => ShipModuleStatus::Optimal,
+        1 => ShipModuleStatus::Serviceable,
+        _ => ShipModuleStatus::Worn,
+    };
+    let modules = match class {
+        ShipClass::Courier => vec![
+            ShipModule {
+                slot: ShipModuleSlot::Command,
+                name: "Courier Flight Deck".to_string(),
+                status: status_for(0),
+                details:
+                    "Dispatch bridge with rapid traffic clearances and contract telemetry uplinks."
+                        .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Drive,
+                name: "Sprint Torch Drive".to_string(),
+                status: status_for(1),
+                details: "High-response sub-light package tuned for quick orbital transfers."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Cargo,
+                name: "Priority Cargo Spine".to_string(),
+                status: status_for(2),
+                details: "Compact sealed hold for high-value lots and time-sensitive consignments."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Utility,
+                name: "Traffic Sensor Mast".to_string(),
+                status: status_for(3),
+                details: "Dock approach optics and route beacon sync package.".to_string(),
+            },
+        ],
+        ShipClass::Hauler => vec![
+            ShipModule {
+                slot: ShipModuleSlot::Command,
+                name: "Freight Bridge".to_string(),
+                status: status_for(0),
+                details: "Long-shift command deck optimized for recurring station loops."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Drive,
+                name: "Load-Line Drive".to_string(),
+                status: status_for(1),
+                details:
+                    "Stable thrust package that favors loaded acceleration and predictable docking."
+                        .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Cargo,
+                name: "Expandable Cargo Lattice".to_string(),
+                status: status_for(2),
+                details: "Bulk pallet frame with reinforced tie-downs for repeated freight turns."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Utility,
+                name: "Docking Collar Array".to_string(),
+                status: status_for(3),
+                details: "Multi-ring docking interface for high-frequency berth changes."
+                    .to_string(),
+            },
+        ],
+        ShipClass::Miner => vec![
+            ShipModule {
+                slot: ShipModuleSlot::Command,
+                name: "Extraction Control Pod".to_string(),
+                status: status_for(0),
+                details: "Hazard-aware command suite for rough industrial routing.".to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Drive,
+                name: "Torque Tug Drive".to_string(),
+                status: status_for(1),
+                details: "Heavy vectoring assembly built to push dense ore loads through orbit."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Cargo,
+                name: "Ore Clamp Hold".to_string(),
+                status: status_for(2),
+                details: "Armored bay with dust shielding and raw-mass anchor points.".to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Utility,
+                name: "Survey Lidar Rack".to_string(),
+                status: status_for(3),
+                details: "Industrial-grade scan head for debris and extraction support."
+                    .to_string(),
+            },
+        ],
+        ShipClass::Industrial => vec![
+            ShipModule {
+                slot: ShipModuleSlot::Command,
+                name: "Yard Operations Core".to_string(),
+                status: status_for(0),
+                details: "Command stack tuned for maintenance runs and structured logistics."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Drive,
+                name: "Service Vector Drive".to_string(),
+                status: status_for(1),
+                details: "Balanced propulsion package prioritizing safe approach windows."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Cargo,
+                name: "Parts Gantry Hold".to_string(),
+                status: status_for(2),
+                details: "Segmented bay for refined parts, tooling pallets, and repair kits."
+                    .to_string(),
+            },
+            ShipModule {
+                slot: ShipModuleSlot::Utility,
+                name: "Maintenance Drone Rail".to_string(),
+                status: status_for(3),
+                details: "Automated service carriage for quick turnaround support.".to_string(),
+            },
+        ],
+    };
+
+    let technical_state = ShipTechnicalState {
+        hull: (92.0 - wear_seed * 2.5).max(58.0),
+        drive: (89.0 - wear_seed * 2.0).max(55.0),
+        reactor: (90.0 - wear_seed * 1.8).max(57.0),
+        sensors: (87.0 - wear_seed * 2.2).max(52.0),
+        cargo_bay: (91.0 - wear_seed * 1.7).max(60.0),
+        maintenance_note: match class {
+            ShipClass::Courier => "Flight systems remain sharp; next service window reserved after current dispatch cycle.",
+            ShipClass::Hauler => "Cargo rails show routine wear from constant dock turns; service crew marked it for standard inspection.",
+            ShipClass::Miner => "Dust load is within tolerance, but extraction seals need periodic recalibration.",
+            ShipClass::Industrial => "Utility frame is stable; maintenance log notes deferred gantry polishing after the next yard call.",
+        }
+        .to_string(),
+    };
+
+    (descriptor, modules, technical_state)
+}
+
 fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
     let mut ships = BTreeMap::new();
     if world.system_count() == 0 {
@@ -80,6 +263,8 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
     }
     let sid = |idx: usize| SystemId(idx % world.system_count());
     let player_location = sid(0);
+    let (descriptor, modules, technical_state) =
+        stage_a_ship_metadata(ShipId(0), CompanyId(0), ShipRole::PlayerContract);
     ships.insert(
         ShipId(0),
         Ship {
@@ -108,6 +293,9 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
             last_gate_arrival: None,
             last_risk_score: 0.0,
             reroutes: 0,
+            descriptor,
+            modules,
+            technical_state,
         },
     );
 
@@ -116,6 +304,8 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
         let ship_id = ShipId(idx + 1);
         let company_id = npc_companies[idx % npc_companies.len()];
         let location = sid(idx);
+        let (descriptor, modules, technical_state) =
+            stage_a_ship_metadata(ship_id, company_id, ShipRole::NpcTrade);
         ships.insert(
             ship_id,
             Ship {
@@ -145,6 +335,9 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 last_gate_arrival: None,
                 last_risk_score: 0.0,
                 reroutes: 0,
+                descriptor,
+                modules,
+                technical_state,
             },
         );
     }

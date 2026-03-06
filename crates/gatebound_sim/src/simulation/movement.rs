@@ -31,6 +31,8 @@ impl Simulation {
                     .unwrap_or(0)
                     .saturating_add(1),
             );
+            let (descriptor, modules, technical_state) =
+                super::stage_a_ship_metadata(ship_id, CompanyId(0), ShipRole::PlayerContract);
             self.ships.insert(
                 ship_id,
                 Ship {
@@ -59,6 +61,9 @@ impl Simulation {
                     last_gate_arrival: None,
                     last_risk_score: 0.0,
                     reroutes: 0,
+                    descriptor,
+                    modules,
+                    technical_state,
                 },
             );
             player_candidates.push(ship_id);
