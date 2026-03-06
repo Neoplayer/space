@@ -49,9 +49,9 @@ impl Default for CameraUiState {
         Self {
             mode: CameraMode::Galaxy,
             galaxy_pan: Vec2::ZERO,
-            zoom_level: 1.0,
+            zoom_level: 5.0,
             zoom_min: 0.3,
-            zoom_max: 4.0,
+            zoom_max: 5.0,
             double_click_window_seconds: 0.35,
         }
     }
