@@ -9,6 +9,7 @@ pub struct Simulation {
     pub(crate) tick: u64,
     pub(crate) cycle: u64,
     pub(crate) companies: BTreeMap<CompanyId, Company>,
+    pub(crate) npc_company_runtimes: BTreeMap<CompanyId, NpcCompanyRuntime>,
     pub(crate) markets: BTreeMap<StationId, MarketBook>,
     pub(crate) contracts: BTreeMap<ContractId, Contract>,
     pub(crate) contract_offers: BTreeMap<u64, ContractOffer>,

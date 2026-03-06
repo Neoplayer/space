@@ -3,6 +3,9 @@ market_fee_rate = 0.05
 market_depth_per_cycle = 16.0
 offer_refresh_cycles = 2
 offer_ttl_cycles = 6
+# company_id 1..=6:
+# Haulers Alpha, Haulers Beta, Miner Guild, Industrial Combine, Frontier Exchange, Orbital Freight
+npc_company_starting_balances = [1400.0, 1100.0, 1800.0, 2600.0, 3200.0, 2200.0]
 milestone_capital_target = 900.0
 milestone_market_share_target = 0.25
 milestone_throughput_target_share = 0.35

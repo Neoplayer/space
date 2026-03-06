@@ -1,14 +1,15 @@
 use crate::{simulation::SnapshotError, Simulation};
 use gatebound_domain::{
     ActiveLoan, Commodity, Company, CompanyId, Contract, ContractOffer, GateId, MarketState,
-    MilestoneStatus, RiskStageA, RuntimeConfig, Ship, ShipId, StationId, TradeOrder,
+    MilestoneStatus, NpcCompanyRuntime, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
+    TradeOrder,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotEnvelope {
@@ -40,6 +41,7 @@ pub(crate) struct SnapshotState {
     pub next_trade_order_id: u64,
     pub edges: Vec<EdgeSnapshot>,
     pub companies: Vec<Company>,
+    pub company_runtimes: Vec<NpcCompanyRuntime>,
     pub markets: Vec<MarketBookSnapshot>,
     pub contracts: Vec<Contract>,
     pub contract_offers: Vec<ContractOffer>,

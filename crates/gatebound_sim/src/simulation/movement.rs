@@ -258,13 +258,23 @@ impl Simulation {
 
             if segment.kind == SegmentKind::Warp {
                 if let Some(edge) = segment.edge {
-                    let company_id = self
+                    let (company_id, trade_order_id) = self
                         .ships
                         .get(&ship_id)
-                        .map(|ship| ship.company_id)
-                        .unwrap_or(CompanyId(0));
+                        .map(|ship| (ship.company_id, ship.trade_order_id))
+                        .unwrap_or((CompanyId(0), None));
                     if company_id == CompanyId(0) {
                         self.capital -= self.config.pressure.gate_fee_per_jump;
+                    } else {
+                        self.apply_company_balance_delta(
+                            company_id,
+                            -self.config.pressure.gate_fee_per_jump,
+                        );
+                        if let Some(order_id) = trade_order_id {
+                            if let Some(order) = self.trade_orders.get_mut(&order_id) {
+                                order.gate_fees_accrued += self.config.pressure.gate_fee_per_jump;
+                            }
+                        }
                     }
                     self.record_gate_traversal(edge, company_id);
                 }

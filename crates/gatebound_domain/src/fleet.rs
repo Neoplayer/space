@@ -102,9 +102,16 @@ pub enum TradeOrderStage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeOrder {
     pub id: TradeOrderId,
+    pub company_id: CompanyId,
     pub ship_id: ShipId,
     pub commodity: Commodity,
     pub amount: f64,
+    #[serde(default)]
+    pub purchased_amount: f64,
+    #[serde(default)]
+    pub cost_basis_total: f64,
+    #[serde(default)]
+    pub gate_fees_accrued: f64,
     pub source_station: StationId,
     pub destination_station: StationId,
     pub stage: TradeOrderStage,

@@ -82,6 +82,7 @@ pub struct EconomyPressureConfig {
     pub market_depth_per_cycle: f64,
     pub offer_refresh_cycles: u32,
     pub offer_ttl_cycles: u32,
+    pub npc_company_starting_balances: Vec<f64>,
     pub milestone_capital_target: f64,
     pub milestone_market_share_target: f64,
     pub milestone_throughput_target_share: f64,
@@ -98,6 +99,7 @@ impl Default for EconomyPressureConfig {
             market_depth_per_cycle: 16.0,
             offer_refresh_cycles: 2,
             offer_ttl_cycles: 6,
+            npc_company_starting_balances: vec![1400.0, 1100.0, 1800.0, 2600.0, 3200.0, 2200.0],
             milestone_capital_target: 900.0,
             milestone_market_share_target: 0.25,
             milestone_throughput_target_share: 0.35,
@@ -187,6 +189,21 @@ impl RuntimeConfig {
         if self.pressure.offer_refresh_cycles == 0 || self.pressure.offer_ttl_cycles == 0 {
             return Err(ConfigError::Validation(
                 "offer cycles must be > 0".to_string(),
+            ));
+        }
+        if self.pressure.npc_company_starting_balances.len() != 6 {
+            return Err(ConfigError::Validation(
+                "npc_company_starting_balances must contain exactly 6 entries".to_string(),
+            ));
+        }
+        if self
+            .pressure
+            .npc_company_starting_balances
+            .iter()
+            .any(|balance| *balance < 0.0)
+        {
+            return Err(ConfigError::Validation(
+                "npc_company_starting_balances must be >= 0".to_string(),
             ));
         }
         if self.pressure.milestone_throughput_target_share < 0.0

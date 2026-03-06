@@ -4,8 +4,8 @@ use gatebound_domain::{
     ShipId, ShipModule, ShipRole, ShipTechnicalState, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
-    ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation, StationTradeView,
-    TimeSettingsView,
+    ActiveLoanView, ContractOfferView, CorporationRowView, LoanOfferView, MarketRowView,
+    Simulation, StationTradeView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -46,6 +46,7 @@ pub struct HudSnapshot {
     pub loan_offers: Vec<LoanOfferView>,
     pub offers: Vec<ContractOfferView>,
     pub fleet_rows: Vec<FleetShipStatus>,
+    pub corporation_rows: Vec<CorporationRowView>,
     pub market_rows: Vec<MarketRowView>,
     pub system_market_rows: Vec<MarketRowView>,
     pub milestones: Vec<MilestoneStatus>,
@@ -150,6 +151,7 @@ pub fn build_hud_snapshot(
         matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
     );
     let finance_panel = simulation.finance_panel_view();
+    let corporation_panel = simulation.corporation_panel_view();
     let resolved_ship_id = selected_ship_id.or(fleet_panel.default_player_ship_id);
     let station_card = station_card_station_id
         .or(market_panel.selected_station_id)
@@ -264,6 +266,7 @@ pub fn build_hud_snapshot(
         loan_offers: finance_panel.loan_offers,
         offers,
         fleet_rows: fleet_panel.rows,
+        corporation_rows: corporation_panel.rows,
         market_rows: market_panel.station_market_rows,
         system_market_rows: market_panel.system_market_rows,
         milestones: overview.milestones,

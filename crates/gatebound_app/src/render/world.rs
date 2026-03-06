@@ -360,14 +360,18 @@ fn gate_position(
         })
 }
 
-fn company_color(company_id: usize) -> Color {
-    match company_id % 5 {
-        0 => Color::srgb(0.94, 0.94, 0.32),
-        1 => Color::srgb(0.35, 0.84, 1.0),
-        2 => Color::srgb(0.96, 0.55, 0.22),
-        3 => Color::srgb(0.52, 0.95, 0.52),
-        _ => Color::srgb(0.92, 0.48, 0.78),
-    }
+pub(crate) fn company_color(company_id: usize) -> Color {
+    const COMPANY_PALETTE: [(f32, f32, f32); 7] = [
+        (0.94, 0.94, 0.32),
+        (0.35, 0.84, 1.0),
+        (0.96, 0.55, 0.22),
+        (0.52, 0.95, 0.52),
+        (0.92, 0.48, 0.78),
+        (1.0, 0.72, 0.22),
+        (0.42, 0.78, 0.96),
+    ];
+    let (r, g, b) = COMPANY_PALETTE[company_id % COMPANY_PALETTE.len()];
+    Color::srgb(r, g, b)
 }
 
 fn cargo_color(commodity: Commodity) -> Color {

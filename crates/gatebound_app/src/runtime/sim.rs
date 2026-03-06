@@ -17,6 +17,7 @@ pub struct UiPanelState {
     pub assets: bool,
     pub policies: bool,
     pub station_ops: bool,
+    pub corporations: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +27,7 @@ pub struct PanelButtonSpec {
     pub hotkey: &'static str,
 }
 
-const PANEL_BUTTON_SPECS: [PanelButtonSpec; 6] = [
+const PANEL_BUTTON_SPECS: [PanelButtonSpec; 7] = [
     PanelButtonSpec {
         index: 1,
         label: "Contracts",
@@ -57,9 +58,14 @@ const PANEL_BUTTON_SPECS: [PanelButtonSpec; 6] = [
         label: "Station",
         hotkey: "F6",
     },
+    PanelButtonSpec {
+        index: 7,
+        label: "Corps",
+        hotkey: "F7",
+    },
 ];
 
-pub fn panel_button_specs() -> &'static [PanelButtonSpec; 6] {
+pub fn panel_button_specs() -> &'static [PanelButtonSpec; 7] {
     &PANEL_BUTTON_SPECS
 }
 
@@ -71,6 +77,7 @@ pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
         4 => panels.assets,
         5 => panels.policies,
         6 => panels.station_ops,
+        7 => panels.corporations,
         _ => false,
     }
 }
@@ -411,6 +418,7 @@ pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
         '4' => Some(4),
         '5' => Some(5),
         '6' => Some(6),
+        '7' => Some(7),
         _ => None,
     }
 }
@@ -423,6 +431,7 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
         4 => panels.assets = !panels.assets,
         5 => panels.policies = !panels.policies,
         6 => panels.station_ops = !panels.station_ops,
+        7 => panels.corporations = !panels.corporations,
         _ => {}
     }
 }
@@ -574,6 +583,10 @@ pub fn handle_panel_hotkeys(
                 open_station_card(&mut station_ui, station_id, Some(preferred));
             }
         }
+        manual_action = true;
+    }
+    if keys.just_pressed(KeyCode::F7) {
+        apply_panel_toggle(&mut panels, 7);
         manual_action = true;
     }
 

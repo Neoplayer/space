@@ -160,6 +160,50 @@ impl Simulation {
         }
     }
 
+    pub fn corporation_panel_view(&self) -> CorporationPanelView {
+        let mut rows = self
+            .npc_company_runtimes
+            .values()
+            .filter_map(|runtime| {
+                let company = self.companies.get(&runtime.company_id)?;
+                let mut idle_ships = 0_usize;
+                let mut in_transit_ships = 0_usize;
+                for ship in self
+                    .ships
+                    .values()
+                    .filter(|ship| ship.company_id == runtime.company_id)
+                {
+                    let busy = ship.trade_order_id.is_some()
+                        || ship.segment_eta_remaining > 0
+                        || !ship.movement_queue.is_empty();
+                    if busy {
+                        in_transit_ships += 1;
+                    } else {
+                        idle_ships += 1;
+                    }
+                }
+                let active_orders = self
+                    .trade_orders
+                    .values()
+                    .filter(|order| order.company_id == runtime.company_id)
+                    .count();
+                Some(CorporationRowView {
+                    company_id: runtime.company_id,
+                    name: company.name.clone(),
+                    archetype: company.archetype,
+                    balance: runtime.balance,
+                    last_realized_profit: runtime.last_realized_profit,
+                    idle_ships,
+                    in_transit_ships,
+                    active_orders,
+                    next_plan_tick: runtime.next_plan_tick,
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| row.company_id.0);
+        CorporationPanelView { rows }
+    }
+
     pub fn market_panel_view(
         &self,
         selected_system_id: SystemId,

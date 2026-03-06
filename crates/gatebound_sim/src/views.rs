@@ -117,6 +117,24 @@ pub struct FleetPanelView {
     pub avg_route_hops_player: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorporationRowView {
+    pub company_id: CompanyId,
+    pub name: String,
+    pub archetype: CompanyArchetype,
+    pub balance: f64,
+    pub last_realized_profit: f64,
+    pub idle_ships: usize,
+    pub in_transit_ships: usize,
+    pub active_orders: usize,
+    pub next_plan_tick: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorporationPanelView {
+    pub rows: Vec<CorporationRowView>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MarketRowView {
     pub commodity: Commodity,

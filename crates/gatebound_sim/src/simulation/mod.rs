@@ -70,7 +70,46 @@ fn seed_stage_a_companies() -> BTreeMap<CompanyId, Company> {
             archetype: CompanyArchetype::Industrial,
         },
     );
+    companies.insert(
+        CompanyId(5),
+        Company {
+            id: CompanyId(5),
+            name: "Frontier Exchange".to_string(),
+            archetype: CompanyArchetype::Hauler,
+        },
+    );
+    companies.insert(
+        CompanyId(6),
+        Company {
+            id: CompanyId(6),
+            name: "Orbital Freight".to_string(),
+            archetype: CompanyArchetype::Hauler,
+        },
+    );
     companies
+}
+
+fn seed_stage_a_npc_company_runtimes(
+    config: &RuntimeConfig,
+) -> BTreeMap<CompanyId, NpcCompanyRuntime> {
+    config
+        .pressure
+        .npc_company_starting_balances
+        .iter()
+        .enumerate()
+        .map(|(index, balance)| {
+            let company_id = index + 1;
+            (
+                CompanyId(company_id),
+                NpcCompanyRuntime {
+                    company_id: CompanyId(company_id),
+                    balance: *balance,
+                    next_plan_tick: company_id as u64,
+                    last_realized_profit: 0.0,
+                },
+            )
+        })
+        .collect()
 }
 
 fn stage_a_ship_metadata(
@@ -80,7 +119,7 @@ fn stage_a_ship_metadata(
 ) -> (ShipDescriptor, Vec<ShipModule>, ShipTechnicalState) {
     let class = match (role, company_id.0) {
         (ShipRole::PlayerContract, _) => ShipClass::Courier,
-        (_, 1 | 2) => ShipClass::Hauler,
+        (_, 1 | 2 | 5 | 6) => ShipClass::Hauler,
         (_, 3) => ShipClass::Miner,
         _ => ShipClass::Industrial,
     };
@@ -299,10 +338,9 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
         },
     );
 
-    let npc_companies = [CompanyId(1), CompanyId(2), CompanyId(3), CompanyId(4)];
     for idx in 0..60 {
         let ship_id = ShipId(idx + 1);
-        let company_id = npc_companies[idx % npc_companies.len()];
+        let company_id = CompanyId(idx / 10 + 1);
         let location = sid(idx);
         let (descriptor, modules, technical_state) =
             stage_a_ship_metadata(ship_id, company_id, ShipRole::NpcTrade);

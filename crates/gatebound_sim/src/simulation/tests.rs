@@ -927,6 +927,20 @@ fn runtime_config_rejects_zero_months_per_year() {
 }
 
 #[test]
+fn runtime_config_rejects_wrong_npc_company_balance_count() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.pressure.npc_company_starting_balances.pop();
+
+    let err = cfg
+        .validate()
+        .expect_err("five npc company balances must be rejected");
+    assert_eq!(
+        err.to_string(),
+        "npc_company_starting_balances must contain exactly 6 entries"
+    );
+}
+
+#[test]
 fn market_intel_local_is_fresh_remote_is_stale() {
     let sim = Simulation::new(stage_a_config(), 43);
     let local = sim
@@ -1117,17 +1131,17 @@ fn snapshot_round_trip_preserves_active_loan() {
 }
 
 #[test]
-fn snapshot_save_writes_v2_json_envelope() {
+fn snapshot_save_writes_v3_json_envelope() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 97);
-    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v2.json");
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v3.json");
 
     crate::snapshot::save_snapshot(&sim, &tmp).expect("snapshot save should pass");
     let payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
 
     assert!(
-        payload.contains("\"version\": 2"),
-        "snapshot payload should use v2 envelope"
+        payload.contains("\"version\": 3"),
+        "snapshot payload should use v3 envelope"
     );
     assert!(
         payload.contains("\"state\""),
@@ -1142,7 +1156,7 @@ fn snapshot_save_writes_v2_json_envelope() {
 fn legacy_snapshot_versions_are_rejected() {
     let cfg = stage_a_config();
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_legacy.json");
-    fs::write(&tmp, "{\"version\":3,\"state\":\"legacy\"}\n")
+    fs::write(&tmp, "{\"version\":2,\"state\":\"legacy\"}\n")
         .expect("legacy snapshot fixture write should pass");
 
     let err = crate::snapshot::load_snapshot(&tmp, cfg).expect_err("legacy payload must fail");
@@ -1472,7 +1486,7 @@ fn snapshot_load_normalizes_to_single_player_ship() {
 #[test]
 fn npc_stage_a_baseline_roster_is_created() {
     let sim = Simulation::new(stage_a_config(), 131);
-    assert_eq!(sim.companies.len(), 5);
+    assert_eq!(sim.companies.len(), 7);
     assert_eq!(
         sim.ships.len(),
         61,
@@ -1499,6 +1513,32 @@ fn npc_stage_a_baseline_roster_is_created() {
             .all(|ship| (ship.cargo_capacity - 18.0).abs() < 1e-9),
         "npc cargo ships must use stage A capacity"
     );
+    let mut npc_ships_by_company = BTreeMap::new();
+    for ship in sim
+        .ships
+        .values()
+        .filter(|ship| ship.role == ShipRole::NpcTrade)
+    {
+        *npc_ships_by_company
+            .entry(ship.company_id)
+            .or_insert(0_usize) += 1;
+    }
+    assert_eq!(npc_ships_by_company.len(), 6);
+    assert!(npc_ships_by_company.values().all(|count| *count == 10));
+    assert_eq!(
+        sim.companies
+            .get(&CompanyId(5))
+            .expect("frontier exchange should exist")
+            .name,
+        "Frontier Exchange"
+    );
+    assert_eq!(
+        sim.companies
+            .get(&CompanyId(6))
+            .expect("orbital freight should exist")
+            .name,
+        "Orbital Freight"
+    );
     assert!(sim
         .companies
         .values()
@@ -1511,6 +1551,323 @@ fn npc_stage_a_baseline_roster_is_created() {
         .companies
         .values()
         .any(|company| company.archetype == CompanyArchetype::Industrial));
+}
+
+#[test]
+fn npc_company_runtime_starts_with_staggered_plan_ticks() {
+    let sim = Simulation::new(stage_a_config(), 141);
+
+    let runtimes = (1..=6)
+        .map(|id| {
+            sim.npc_company_runtimes
+                .get(&CompanyId(id))
+                .expect("npc company runtime should exist")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        runtimes
+            .iter()
+            .map(|runtime| runtime.balance)
+            .collect::<Vec<_>>(),
+        vec![1400.0, 1100.0, 1800.0, 2600.0, 3200.0, 2200.0]
+    );
+    assert_eq!(
+        runtimes
+            .iter()
+            .map(|runtime| runtime.next_plan_tick)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5, 6]
+    );
+}
+
+#[test]
+fn company_planner_prefers_positive_profit_over_short_eta() {
+    let mut sim = Simulation::new(stage_a_config(), 143);
+    let company_id = CompanyId(1);
+    let ship_id = sim
+        .ships
+        .values()
+        .find(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .map(|ship| ship.id)
+        .expect("company ship should exist");
+    sim.ships.retain(|id, _| *id == ShipId(0) || *id == ship_id);
+
+    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    let source_station = ship.current_station.expect("ship should start docked");
+    let mut destinations = sim
+        .world
+        .stations
+        .iter()
+        .map(|station| station.id)
+        .filter(|station_id| *station_id != source_station)
+        .collect::<Vec<_>>();
+    destinations.sort_by_key(|station_id| {
+        sim.build_station_route_with_speed(
+            source_station,
+            *station_id,
+            AutopilotPolicy {
+                max_hops: 6,
+                ..AutopilotPolicy::default()
+            },
+            ship.sub_light_speed,
+        )
+        .expect("route should exist")
+        .eta_ticks
+    });
+
+    let short_destination = destinations[0];
+    let long_destination = destinations
+        .iter()
+        .rev()
+        .copied()
+        .find(|station_id| *station_id != short_destination)
+        .expect("long destination should exist");
+
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 180.0;
+        state.target_stock = 100.0;
+        state.price = 100.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&short_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 5.0;
+        state.target_stock = 100.0;
+        state.price = 101.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&long_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 5.0;
+        state.target_stock = 100.0;
+        state.price = 160.0;
+    }
+
+    sim.plan_company_orders(company_id);
+
+    let order_id = sim
+        .ships
+        .get(&ship_id)
+        .and_then(|ship| ship.trade_order_id)
+        .expect("planner should assign an order");
+    let order = sim
+        .trade_orders
+        .get(&order_id)
+        .expect("trade order should exist");
+    assert_eq!(order.company_id, company_id);
+    assert_eq!(order.source_station, source_station);
+    assert_eq!(order.destination_station, long_destination);
+}
+
+#[test]
+fn npc_trade_order_applies_partial_fill_and_realized_loss() {
+    let mut sim = Simulation::new(stage_a_config(), 145);
+    let company_id = CompanyId(1);
+    if let Some(runtime) = sim.npc_company_runtimes.get_mut(&company_id) {
+        runtime.balance = 0.0;
+    }
+    let ship_id = sim
+        .ships
+        .values()
+        .find(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .map(|ship| ship.id)
+        .expect("company ship should exist");
+    sim.ships.retain(|id, _| *id == ShipId(0) || *id == ship_id);
+
+    let source_station = sim.ships[&ship_id]
+        .current_station
+        .expect("ship should start docked");
+    let destination_station = sim
+        .world
+        .stations
+        .iter()
+        .find(|station| station.id != source_station)
+        .map(|station| station.id)
+        .expect("destination station should exist");
+    let destination_system = sim
+        .world
+        .stations
+        .iter()
+        .find(|station| station.id == destination_station)
+        .map(|station| station.system_id)
+        .expect("destination system should exist");
+
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 6.0;
+        state.target_stock = 100.0;
+        state.price = 20.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 0.0;
+        state.target_stock = 100.0;
+        state.price = 10.0;
+    }
+
+    let order_id = TradeOrderId(9_001);
+    sim.trade_orders.insert(
+        order_id,
+        TradeOrder {
+            id: order_id,
+            company_id,
+            ship_id,
+            commodity: Commodity::Fuel,
+            amount: 15.0,
+            purchased_amount: 0.0,
+            cost_basis_total: 0.0,
+            gate_fees_accrued: 0.0,
+            source_station,
+            destination_station,
+            stage: TradeOrderStage::ToPickup,
+        },
+    );
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.trade_order_id = Some(order_id);
+    }
+
+    assert!(sim.advance_npc_trade_ship(ship_id));
+    let runtime = sim
+        .npc_company_runtimes
+        .get(&company_id)
+        .expect("runtime should exist");
+    let order = sim
+        .trade_orders
+        .get(&order_id)
+        .expect("order should survive pickup");
+    assert_eq!(order.stage, TradeOrderStage::ToDropoff);
+    assert!((order.purchased_amount - 6.0).abs() < 1e-9);
+    assert!((order.cost_basis_total - 126.0).abs() < 1e-9);
+    assert!((runtime.balance + 126.0).abs() < 1e-9);
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = destination_system;
+        ship.current_station = Some(destination_station);
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.current_segment_kind = None;
+        ship.current_target = None;
+        ship.eta_ticks_remaining = 0;
+        ship.movement_queue.clear();
+    }
+
+    assert!(sim.advance_npc_trade_ship(ship_id));
+    let runtime = sim
+        .npc_company_runtimes
+        .get(&company_id)
+        .expect("runtime should exist");
+    assert!(!sim.trade_orders.contains_key(&order_id));
+    assert!(runtime.balance < 0.0, "negative balances must remain valid");
+    assert!((runtime.balance + 69.0).abs() < 1e-9);
+    assert!((runtime.last_realized_profit + 69.0).abs() < 1e-9);
+}
+
+#[test]
+fn snapshot_round_trip_preserves_npc_company_runtime_and_trade_orders() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 147);
+    let company_id = CompanyId(4);
+    let ship_id = sim
+        .ships
+        .values()
+        .find(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .map(|ship| ship.id)
+        .expect("company ship should exist");
+    let source_station = sim.ships[&ship_id]
+        .current_station
+        .expect("ship should start docked");
+    let destination_station = sim
+        .world
+        .stations
+        .iter()
+        .find(|station| station.id != source_station)
+        .map(|station| station.id)
+        .expect("destination station should exist");
+    let order_id = TradeOrderId(31337);
+
+    if let Some(runtime) = sim.npc_company_runtimes.get_mut(&company_id) {
+        runtime.balance = -42.5;
+        runtime.next_plan_tick = 37;
+        runtime.last_realized_profit = 12.25;
+    }
+    sim.trade_orders.insert(
+        order_id,
+        TradeOrder {
+            id: order_id,
+            company_id,
+            ship_id,
+            commodity: Commodity::Parts,
+            amount: 8.0,
+            purchased_amount: 4.0,
+            cost_basis_total: 96.0,
+            gate_fees_accrued: 1.2,
+            source_station,
+            destination_station,
+            stage: TradeOrderStage::ToDropoff,
+        },
+    );
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.trade_order_id = Some(order_id);
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Parts,
+            amount: 4.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_npc_company_runtime.json");
+    sim.save_snapshot(&tmp)
+        .expect("snapshot save should succeed");
+    let loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should succeed");
+
+    let runtime = loaded
+        .npc_company_runtimes
+        .get(&company_id)
+        .expect("runtime should round-trip");
+    let order = loaded
+        .trade_orders
+        .get(&order_id)
+        .expect("trade order should round-trip");
+    assert!((runtime.balance + 42.5).abs() < 1e-9);
+    assert_eq!(runtime.next_plan_tick, 37);
+    assert!((runtime.last_realized_profit - 12.25).abs() < 1e-9);
+    assert_eq!(order.company_id, company_id);
+    assert!((order.purchased_amount - 4.0).abs() < 1e-9);
+    assert!((order.cost_basis_total - 96.0).abs() < 1e-9);
+    assert!((order.gate_fees_accrued - 1.2).abs() < 1e-9);
 }
 
 #[test]
@@ -1600,7 +1957,7 @@ fn legacy_snapshot_without_ship_card_fields_loads_and_backfills_metadata() {
     }
 
     let payload = serde_json::json!({
-        "version": 2,
+        "version": 3,
         "state": state,
     });
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_ship_card_legacy.json");

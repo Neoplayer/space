@@ -131,7 +131,7 @@ pub fn draw_hud_panel(
             ui.label("Mouse wheel / +/-: zoom");
             ui.label("Double-click system: enter System view");
             ui.label("Esc: back to Galaxy view");
-            ui.label("F1..F6: toggle window buttons");
+            ui.label("F1..F7: toggle window buttons");
             ui.label("[ / ]: switch selected player ship");
             ui.label("Right-click station: context menu (Fly / Open station card)");
             ui.label("Right-click ship: context menu (Track / Open ship card)");
@@ -894,6 +894,46 @@ pub fn draw_hud_panel(
                 }
             });
         panels.policies = open;
+    }
+
+    if panels.corporations {
+        let mut open = panels.corporations;
+        egui::Window::new("NPC Corporations")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Tracked corporations: {}",
+                    snapshot.corporation_rows.len()
+                ));
+                ui.separator();
+                egui::Grid::new("corporation_panel_grid")
+                    .num_columns(8)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Corp");
+                        ui.strong("Type");
+                        ui.strong("Balance");
+                        ui.strong("Last P&L");
+                        ui.strong("Idle");
+                        ui.strong("Transit");
+                        ui.strong("Orders");
+                        ui.strong("Next Tick");
+                        ui.end_row();
+
+                        for row in &snapshot.corporation_rows {
+                            ui.label(&row.name);
+                            ui.monospace(company_archetype_label(row.archetype));
+                            ui.monospace(format!("{:.1}", row.balance));
+                            ui.monospace(format!("{:.1}", row.last_realized_profit));
+                            ui.monospace(format!("{}", row.idle_ships));
+                            ui.monospace(format!("{}", row.in_transit_ships));
+                            ui.monospace(format!("{}", row.active_orders));
+                            ui.monospace(format!("{}", row.next_plan_tick));
+                            ui.end_row();
+                        }
+                    });
+            });
+        panels.corporations = open;
     }
 
     Ok(())

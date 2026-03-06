@@ -3,8 +3,8 @@ use crate::input::camera::{
     CameraMode, CameraUiState, ClickTracker,
 };
 use crate::render::world::{
-    segment_from_point, ship_is_visible_in_current_view, system_objects_visible_in_current_view,
-    update_ship_motion_cache, ShipMotionCache,
+    company_color, segment_from_point, ship_is_visible_in_current_view,
+    system_objects_visible_in_current_view, update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
@@ -15,9 +15,9 @@ use crate::runtime::sim::{
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
 use gatebound_domain::{
-    ActiveLoan, CargoLoad, CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId,
-    LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig, SegmentKind, ShipId,
-    ShipRole, StationId, SystemId,
+    ActiveLoan, CargoLoad, CargoSource, Commodity, CompanyId, ContractOffer, ContractTypeStageA,
+    GateId, LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig, SegmentKind,
+    ShipId, ShipRole, StationId, SystemId,
 };
 use gatebound_sim::{
     test_support::{
@@ -249,6 +249,7 @@ fn panel_hotkeys_toggle_expected_windows() {
     assert!(!panels.assets);
     assert!(!panels.policies);
     assert!(!panels.station_ops);
+    assert!(!panels.corporations);
 
     assert_eq!(panel_hotkey_to_index('1'), Some(1));
     apply_panel_toggle(&mut panels, 1);
@@ -264,6 +265,9 @@ fn panel_hotkeys_toggle_expected_windows() {
     assert_eq!(panel_hotkey_to_index('6'), Some(6));
     apply_panel_toggle(&mut panels, 6);
     assert!(panels.station_ops);
+    assert_eq!(panel_hotkey_to_index('7'), Some(7));
+    apply_panel_toggle(&mut panels, 7);
+    assert!(panels.corporations);
 }
 
 #[test]
@@ -282,8 +286,48 @@ fn left_panel_buttons_cover_all_windows() {
             (4, "Finance", "F4"),
             (5, "Policies", "F5"),
             (6, "Station", "F6"),
+            (7, "Corps", "F7"),
         ]
     );
+}
+
+#[test]
+fn corporations_snapshot_exposes_balance_and_ship_counts() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.corporation_rows.len(), 6);
+    let row = snapshot
+        .corporation_rows
+        .iter()
+        .find(|row| row.company_id == CompanyId(1))
+        .expect("haulers alpha row should exist");
+    assert_eq!(row.name, "Haulers Alpha");
+    assert_eq!(row.idle_ships, 10);
+    assert_eq!(row.in_transit_ships, 0);
+    assert_eq!(row.active_orders, 0);
+    assert!((row.balance - 1400.0).abs() < 1e-9);
+    assert_eq!(row.next_plan_tick, 1);
+}
+
+#[test]
+fn company_palette_is_distinct_for_player_and_all_npc_corps() {
+    let colors = (0..=6)
+        .map(|company_id| company_color(company_id).to_srgba())
+        .collect::<Vec<_>>();
+    for i in 0..colors.len() {
+        for j in (i + 1)..colors.len() {
+            assert_ne!(colors[i], colors[j]);
+        }
+    }
 }
 
 #[test]

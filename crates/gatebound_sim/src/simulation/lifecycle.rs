@@ -34,6 +34,7 @@ impl Simulation {
 
         let companies = seed_stage_a_companies();
         let mut ships = seed_stage_a_ships(&world);
+        let npc_company_runtimes = seed_stage_a_npc_company_runtimes(&config);
         let mut contracts = BTreeMap::new();
         if world.system_count() >= 2 && ships.contains_key(&ShipId(0)) {
             let origin_station = world.first_station(SystemId(0)).unwrap_or(StationId(0));
@@ -76,6 +77,7 @@ impl Simulation {
             tick: 0,
             cycle: 0,
             companies,
+            npc_company_runtimes,
             markets,
             contracts,
             contract_offers: BTreeMap::new(),
@@ -141,9 +143,7 @@ impl Simulation {
     pub fn step_tick(&mut self) -> TickReport {
         self.tick = self.tick.saturating_add(1);
         self.run_economy_flow();
-        if self.tick.is_multiple_of(10) {
-            self.dispatch_npc_trade_orders();
-        }
+        self.dispatch_npc_trade_orders();
         self.update_ship_movements();
         self.update_contracts_tick();
         self.expire_modifiers();
@@ -330,6 +330,7 @@ impl Simulation {
                 })
                 .collect(),
             companies: self.companies.values().cloned().collect(),
+            company_runtimes: self.npc_company_runtimes.values().cloned().collect(),
             markets: self
                 .markets
                 .iter()
@@ -468,6 +469,7 @@ impl Simulation {
             next_trade_order_id,
             edges,
             companies,
+            company_runtimes,
             markets,
             contracts,
             contract_offers,
@@ -514,6 +516,10 @@ impl Simulation {
         simulation.companies = companies
             .into_iter()
             .map(|company| (company.id, company))
+            .collect();
+        simulation.npc_company_runtimes = company_runtimes
+            .into_iter()
+            .map(|runtime| (runtime.company_id, runtime))
             .collect();
         simulation.markets = markets
             .into_iter()
