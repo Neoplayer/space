@@ -7,6 +7,8 @@ pub struct TimeSettingsView {
     pub rolling_window_cycles: u32,
     pub day_ticks: u32,
     pub days_per_month: u32,
+    pub months_per_year: u32,
+    pub start_year: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

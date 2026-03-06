@@ -383,19 +383,27 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
     }
 }
 
+pub fn toggle_pause(clock: &mut SimClock) {
+    clock.paused = !clock.paused;
+}
+
+pub fn set_time_speed(clock: &mut SimClock, speed_multiplier: u32) {
+    clock.speed_multiplier = speed_multiplier.max(1);
+}
+
 pub fn apply_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
     if keys.just_pressed(KeyCode::Space) {
-        clock.paused = !clock.paused;
+        toggle_pause(&mut clock);
     }
 
     if keys.just_pressed(KeyCode::Digit1) {
-        clock.speed_multiplier = 1;
+        set_time_speed(&mut clock, 1);
     }
     if keys.just_pressed(KeyCode::Digit2) {
-        clock.speed_multiplier = 2;
+        set_time_speed(&mut clock, 2);
     }
     if keys.just_pressed(KeyCode::Digit4) {
-        clock.speed_multiplier = 4;
+        set_time_speed(&mut clock, 4);
     }
 }
 

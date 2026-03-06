@@ -7,8 +7,8 @@ use crate::render::world::{
 };
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, panel_button_specs,
-    panel_hotkey_to_index, ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey,
-    SimResource, StationUiState, UiKpiTracker,
+    panel_hotkey_to_index, set_time_speed, toggle_pause, ContractsFilterState, FinanceUiState,
+    OfferSortMode, RiskHotkey, SimResource, StationUiState, UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
@@ -77,6 +77,25 @@ fn fixed_step_consumes_expected_ticks_for_speed_modes() {
         ..crate::runtime::sim::SimClock::default()
     };
     assert_eq!(consume_ticks(&mut clock_4x, 1.26, 1), 5);
+}
+
+#[test]
+fn shared_time_controls_update_pause_and_speed() {
+    let mut clock = crate::runtime::sim::SimClock::default();
+    assert!(!clock.paused);
+    assert_eq!(clock.speed_multiplier, 1);
+
+    toggle_pause(&mut clock);
+    assert!(clock.paused);
+
+    toggle_pause(&mut clock);
+    assert!(!clock.paused);
+
+    set_time_speed(&mut clock, 2);
+    assert_eq!(clock.speed_multiplier, 2);
+
+    set_time_speed(&mut clock, 4);
+    assert_eq!(clock.speed_multiplier, 4);
 }
 
 #[test]
@@ -933,6 +952,74 @@ fn finance_snapshot_preserves_selected_system_context() {
     );
     assert_eq!(snapshot.selected_system_id, SystemId(0));
     assert_eq!(snapshot.loan_offers.len(), 3);
+}
+
+#[test]
+fn hud_snapshot_formats_calendar_time_from_tick_config() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.time.day_ticks = 10;
+    cfg.time.days_per_month = 2;
+    cfg.time.months_per_year = 2;
+    cfg.time.start_year = 3500;
+
+    let mut sim = Simulation::new(cfg, 42);
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.time_label, "3500-01-01 00:00");
+
+    for _ in 0..5 {
+        sim.step_tick();
+    }
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.time_label, "3500-01-01 12:00");
+
+    for _ in 0..15 {
+        sim.step_tick();
+    }
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.time_label, "3500-02-01 00:00");
+
+    for _ in 0..20 {
+        sim.step_tick();
+    }
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    assert_eq!(snapshot.time_label, "3501-01-01 00:00");
 }
 
 #[test]

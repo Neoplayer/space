@@ -887,6 +887,14 @@ fn snapshot_round_trip_preserves_last_gate_arrival() {
 fn stage_a_scope_guards_are_locked() {
     let cfg = stage_a_config();
     assert_eq!(cfg.time.cycle_ticks, 60, "cycle must be 60 ticks");
+    assert_eq!(
+        cfg.time.start_year, 3500,
+        "calendar must start in year 3500"
+    );
+    assert_eq!(
+        cfg.time.months_per_year, 12,
+        "calendar must use a 12 month year"
+    );
 
     let sim = Simulation::new(cfg, 41);
     for contract in sim.contracts.values() {
@@ -898,6 +906,24 @@ fn stage_a_scope_guards_are_locked() {
             "stage A must contain delivery/supply only"
         );
     }
+}
+
+#[test]
+fn runtime_config_defaults_include_calendar_settings() {
+    let cfg = RuntimeConfig::default();
+    assert_eq!(cfg.time.start_year, 3500);
+    assert_eq!(cfg.time.months_per_year, 12);
+}
+
+#[test]
+fn runtime_config_rejects_zero_months_per_year() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.time.months_per_year = 0;
+
+    let err = cfg
+        .validate()
+        .expect_err("zero months_per_year must be rejected");
+    assert_eq!(err.to_string(), "months_per_year must be > 0");
 }
 
 #[test]

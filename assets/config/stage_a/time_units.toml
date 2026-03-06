@@ -3,3 +3,5 @@ cycle_ticks = 60
 rolling_window_cycles = 20
 day_ticks = 200
 days_per_month = 30
+months_per_year = 12
+start_year = 3500

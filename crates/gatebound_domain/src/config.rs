@@ -9,6 +9,8 @@ pub struct TimeUnitsConfig {
     pub rolling_window_cycles: u32,
     pub day_ticks: u32,
     pub days_per_month: u32,
+    pub months_per_year: u32,
+    pub start_year: u32,
 }
 
 impl Default for TimeUnitsConfig {
@@ -19,6 +21,8 @@ impl Default for TimeUnitsConfig {
             rolling_window_cycles: 20,
             day_ticks: 200,
             days_per_month: 30,
+            months_per_year: 12,
+            start_year: 3500,
         }
     }
 }
@@ -135,6 +139,11 @@ impl RuntimeConfig {
         if self.time.days_per_month == 0 {
             return Err(ConfigError::Validation(
                 "days_per_month must be > 0".to_string(),
+            ));
+        }
+        if self.time.months_per_year == 0 {
+            return Err(ConfigError::Validation(
+                "months_per_year must be > 0".to_string(),
             ));
         }
         if self.galaxy.cluster_system_min == 0 || self.galaxy.cluster_system_max == 0 {

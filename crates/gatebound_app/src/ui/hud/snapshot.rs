@@ -2,7 +2,9 @@ use gatebound_domain::{
     ContractTypeStageA, FleetShipStatus, GateId, GateThroughputSnapshot, MarketInsightRow,
     MilestoneStatus, ShipId, StationId, StationProfile, SystemId,
 };
-use gatebound_sim::{ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation};
+use gatebound_sim::{
+    ActiveLoanView, ContractOfferView, LoanOfferView, MarketRowView, Simulation, TimeSettingsView,
+};
 
 use crate::input::camera::CameraMode;
 use crate::runtime::sim::{
@@ -28,6 +30,7 @@ pub struct HudSnapshot {
     pub default_player_ship_id: Option<ShipId>,
     pub paused: bool,
     pub speed_multiplier: u32,
+    pub time_label: String,
     pub sla_success_rate: f64,
     pub reroutes: u64,
     pub avg_price_index: f64,
@@ -52,6 +55,24 @@ pub struct HudSnapshot {
     pub avg_route_hops_player: f64,
 }
 
+fn format_time_label(tick: u64, time: TimeSettingsView) -> String {
+    let day_ticks = u64::from(time.day_ticks.max(1));
+    let days_per_month = u64::from(time.days_per_month.max(1));
+    let months_per_year = u64::from(time.months_per_year.max(1));
+    let days_per_year = days_per_month.saturating_mul(months_per_year).max(1);
+
+    let total_days = tick / day_ticks;
+    let ticks_into_day = tick % day_ticks;
+    let minutes_into_day = ticks_into_day.saturating_mul(24 * 60) / day_ticks;
+    let hours = minutes_into_day / 60;
+    let minutes = minutes_into_day % 60;
+    let year = u64::from(time.start_year) + total_days / days_per_year;
+    let month = (total_days / days_per_month) % months_per_year + 1;
+    let day = total_days % days_per_month + 1;
+
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_hud_snapshot(
     simulation: &Simulation,
@@ -66,6 +87,7 @@ pub fn build_hud_snapshot(
 ) -> HudSnapshot {
     let cycle_report = derive_cycle_report(simulation);
     let overview = simulation.hud_overview_view();
+    let time_settings = simulation.time_settings_view();
     let contracts_board = simulation.contracts_board_view();
     let fleet_panel = simulation.fleet_panel_view();
     let render_snapshot = simulation.world_render_snapshot();
@@ -163,6 +185,7 @@ pub fn build_hud_snapshot(
         default_player_ship_id: fleet_panel.default_player_ship_id,
         paused,
         speed_multiplier,
+        time_label: format_time_label(overview.tick, time_settings),
         sla_success_rate: cycle_report.sla_success_rate,
         reroutes: overview.reroutes,
         avg_price_index: market_panel.avg_price_index,

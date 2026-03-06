@@ -3,9 +3,9 @@ use bevy_egui::{egui, EguiContexts};
 use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode};
 
 use crate::runtime::sim::{
-    panel_button_specs, panel_is_open, ContractsFilterState, FinanceUiState, OfferSortMode,
-    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, StationUiState,
-    UiKpiTracker, UiPanelState,
+    panel_button_specs, panel_is_open, set_time_speed, toggle_pause, ContractsFilterState,
+    FinanceUiState, OfferSortMode, SelectedShip, SelectedStation, SelectedSystem, SimClock,
+    SimResource, StationUiState, UiKpiTracker, UiPanelState,
 };
 
 use super::labels::{
@@ -20,7 +20,7 @@ use super::snapshot::build_hud_snapshot;
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
     mut sim: ResMut<SimResource>,
-    clock: Res<SimClock>,
+    mut clock: ResMut<SimClock>,
     camera: Res<crate::input::camera::CameraUiState>,
     selected_system: Res<SelectedSystem>,
     selected_station: Res<SelectedStation>,
@@ -48,47 +48,37 @@ pub fn draw_hud_panel(
     let ctx = egui_contexts.ctx_mut()?;
 
     egui::TopBottomPanel::top("gatebound_top_panel").show(ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("View: {}", snapshot.camera_mode));
-            ui.separator();
-            ui.label(format!("Tick: {}", snapshot.tick));
-            ui.separator();
-            ui.label(format!("Cycle: {}", snapshot.cycle));
-            ui.separator();
-            ui.label(format!(
-                "Time: {} @ {}x",
-                if snapshot.paused { "paused" } else { "running" },
-                snapshot.speed_multiplier
-            ));
-            ui.separator();
-            ui.label(format!("Capital: {:.1}", snapshot.capital));
-            ui.separator();
-            ui.label(format!("Debt: {:.1}", snapshot.debt));
-            ui.separator();
-            ui.label(format!("Rate: {:.2}%", snapshot.interest_rate * 100.0));
-            ui.separator();
-            ui.label(format!("Rep: {:.2}", snapshot.reputation));
-            ui.separator();
-            ui.label(format!("SLA: {:.2}", snapshot.sla_success_rate));
-            ui.separator();
-            ui.label(format!("Reroutes: {}", snapshot.reroutes));
-            ui.separator();
-            ui.label(format!("PriceIdx: {:.2}", snapshot.avg_price_index));
-            ui.separator();
-            ui.label(format!("MShare: {:.2}", snapshot.market_share));
-            ui.separator();
-            ui.label(format!(
-                "Manual/min: {:.1}",
-                snapshot.manual_actions_per_min
-            ));
-            ui.separator();
-            ui.label(format!(
-                "Ship: {}",
-                snapshot
-                    .selected_ship_id
-                    .map(|ship_id| ship_id.0.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            ));
+        ui.columns(2, |columns| {
+            columns[0].horizontal_wrapped(|ui| {
+                ui.label(format!("View: {}", snapshot.camera_mode));
+                ui.separator();
+                ui.label(format!("Time: {}", snapshot.time_label));
+                ui.separator();
+
+                let pause_label = if snapshot.paused { "Resume" } else { "Pause" };
+                let mut pause_button = egui::Button::new(pause_label);
+                if snapshot.paused {
+                    pause_button = pause_button.fill(ui.visuals().selection.bg_fill);
+                }
+                if ui.add(pause_button).clicked() {
+                    toggle_pause(&mut clock);
+                    kpi.record_manual_action(sim.simulation.tick());
+                }
+
+                for speed in [1_u32, 2, 4] {
+                    let mut speed_button = egui::Button::new(format!("{speed}x"));
+                    if snapshot.speed_multiplier == speed {
+                        speed_button = speed_button.fill(ui.visuals().selection.bg_fill);
+                    }
+                    if ui.add(speed_button).clicked() {
+                        set_time_speed(&mut clock, speed);
+                        kpi.record_manual_action(sim.simulation.tick());
+                    }
+                }
+            });
+            columns[1].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.strong(format!("Balance: {:.1}", snapshot.capital));
+            });
         });
     });
 

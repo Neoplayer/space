@@ -8,6 +8,8 @@ impl Simulation {
             rolling_window_cycles: self.config.time.rolling_window_cycles,
             day_ticks: self.config.time.day_ticks,
             days_per_month: self.config.time.days_per_month,
+            months_per_year: self.config.time.months_per_year,
+            start_year: self.config.time.start_year,
         }
     }
 
