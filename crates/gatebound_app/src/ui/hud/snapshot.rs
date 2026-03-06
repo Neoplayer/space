@@ -7,8 +7,8 @@ use gatebound_sim::{
     ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, ContractOfferView,
     CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
     StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
-    StationMarketDetailView, StationTradeView, SystemCommodityHotspotView,
-    SystemMarketStressRowView, TimeSettingsView,
+    StationMarketDetailView, StationTradeView, SystemCommodityHotspotView, SystemDetailsView,
+    SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -52,6 +52,7 @@ pub struct HudSnapshot {
     pub manual_actions_per_min: f64,
     pub policy_edits_per_min: f64,
     pub avg_route_hops_player: f64,
+    pub system_panel: Option<SystemPanelSnapshot>,
     pub ship_card: Option<ShipCardSnapshot>,
     pub station_card: Option<StationCardSnapshot>,
 }
@@ -255,6 +256,59 @@ pub struct ShipCardSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SystemPanelSnapshot {
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub owner_faction_id: gatebound_domain::FactionId,
+    pub owner_faction_name: String,
+    pub owner_faction_color_rgb: [u8; 3],
+    pub dock_capacity: f64,
+    pub outgoing_gate_count: usize,
+    pub station_count: usize,
+    pub ship_count: usize,
+    pub avg_price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub congestion: f64,
+    pub fuel_stress: f64,
+    pub stress_score: f64,
+    pub stations: Vec<SystemStationSnapshot>,
+    pub ships: Vec<SystemShipSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemStationSnapshot {
+    pub station_id: StationId,
+    pub station_name: String,
+    pub profile: StationProfile,
+    pub host_body_name: String,
+    pub orbit_label: String,
+    pub price_index: f64,
+    pub stock_coverage: f64,
+    pub strongest_shortage_commodity: Option<Commodity>,
+    pub strongest_surplus_commodity: Option<Commodity>,
+    pub best_buy_commodity: Option<Commodity>,
+    pub best_sell_commodity: Option<Commodity>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemShipSnapshot {
+    pub ship_id: ShipId,
+    pub ship_name: String,
+    pub owner_name: String,
+    pub owner_archetype: CompanyArchetype,
+    pub role: ShipRole,
+    pub ship_class: ShipClass,
+    pub system_id: SystemId,
+    pub current_station_name: Option<String>,
+    pub target_system_name: Option<String>,
+    pub eta_ticks_remaining: u32,
+    pub last_risk_score: f64,
+    pub reroutes: u64,
+    pub status_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FleetListRowSnapshot {
     pub ship_id: ShipId,
     pub ship_name: String,
@@ -334,6 +388,12 @@ pub fn build_hud_snapshot(
         .and_then(|(ship_id, station_id)| {
             build_station_card_snapshot(simulation, ship_id, station_id)
         });
+    let system_panel = match camera_mode {
+        CameraMode::Galaxy => None,
+        CameraMode::System(system_id) => simulation
+            .system_details_view(system_id)
+            .and_then(|view| build_system_panel_snapshot(simulation, view)),
+    };
     let ship_card =
         ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot(simulation, ship_id));
 
@@ -444,6 +504,7 @@ pub fn build_hud_snapshot(
         manual_actions_per_min: kpi.manual_actions_per_min,
         policy_edits_per_min: kpi.policy_edits_per_min,
         avg_route_hops_player: kpi.avg_route_hops_player,
+        system_panel,
         ship_card,
         station_card,
     }
@@ -675,6 +736,109 @@ fn build_station_commodity_detail_snapshot(
         trend_delta: row.trend_delta,
         forecast_next: row.forecast_next,
         price_vs_base: row.price_vs_base,
+    }
+}
+
+fn build_system_panel_snapshot(
+    simulation: &Simulation,
+    view: SystemDetailsView,
+) -> Option<SystemPanelSnapshot> {
+    let topology = simulation.camera_topology_view();
+    let system = topology
+        .systems
+        .iter()
+        .find(|system| system.system_id == view.system_id)?;
+
+    Some(SystemPanelSnapshot {
+        system_id: view.system_id,
+        system_name: generated_system_name(view.system_id),
+        owner_faction_id: view.owner_faction_id,
+        owner_faction_name: view.owner_faction_name,
+        owner_faction_color_rgb: view.faction_color_rgb,
+        dock_capacity: view.dock_capacity,
+        outgoing_gate_count: view.outgoing_gate_count,
+        station_count: view.stations.len(),
+        ship_count: view.ships.len(),
+        avg_price_index: view.avg_price_index,
+        stock_coverage: view.stock_coverage,
+        net_flow: view.net_flow,
+        congestion: view.congestion,
+        fuel_stress: view.fuel_stress,
+        stress_score: view.stress_score,
+        stations: view
+            .stations
+            .iter()
+            .map(|station| build_system_station_snapshot(system, station))
+            .collect(),
+        ships: view
+            .ships
+            .iter()
+            .map(|ship| build_system_ship_snapshot(simulation, ship))
+            .collect(),
+    })
+}
+
+fn build_system_station_snapshot(
+    system: &gatebound_sim::CameraSystemView,
+    station: &SystemStationSummaryView,
+) -> SystemStationSnapshot {
+    let orbit_ratio = orbit_ratio(system.x, system.y, station.x, station.y, system.radius);
+    SystemStationSnapshot {
+        station_id: station.station_id,
+        station_name: generated_station_name(station.station_id, station.profile),
+        profile: station.profile,
+        host_body_name: generated_host_body_name(system.system_id, station.station_id, orbit_ratio),
+        orbit_label: orbit_label(orbit_ratio).to_string(),
+        price_index: station.price_index,
+        stock_coverage: station.stock_coverage,
+        strongest_shortage_commodity: station.strongest_shortage_commodity,
+        strongest_surplus_commodity: station.strongest_surplus_commodity,
+        best_buy_commodity: station.best_buy_commodity,
+        best_sell_commodity: station.best_sell_commodity,
+    }
+}
+
+fn build_system_ship_snapshot(
+    simulation: &Simulation,
+    ship: &SystemShipSummaryView,
+) -> SystemShipSnapshot {
+    let topology = simulation.camera_topology_view();
+    let current_station_name = ship.current_station.and_then(|station_id| {
+        topology
+            .systems
+            .iter()
+            .flat_map(|system| system.stations.iter())
+            .find(|station| station.station_id == station_id)
+            .map(|station| generated_station_name(station.station_id, station.profile))
+    });
+    let target_system_name = ship.current_target.map(generated_system_name);
+    let status_text = if let Some(station_name) = current_station_name.as_ref() {
+        format!("Docked at {station_name}")
+    } else if let Some(target_name) = target_system_name.as_ref() {
+        format!(
+            "In transit to {target_name} • ETA {}",
+            ship.eta_ticks_remaining
+        )
+    } else if let Some(kind) = ship.current_segment_kind {
+        format!("{kind:?} • ETA {}", ship.eta_ticks_remaining)
+    } else {
+        format!("Idle in {}", generated_system_name(ship.location))
+    };
+
+    SystemShipSnapshot {
+        ship_id: ship.ship_id,
+        ship_name: ship.ship_name.clone(),
+        owner_name: ship.owner_name.clone(),
+        owner_archetype: ship.owner_archetype,
+        role: ship.role,
+        ship_class: ship.ship_class,
+        system_id: ship.location,
+        current_station_name,
+        target_system_name,
+        eta_ticks_remaining: ship.eta_ticks_remaining,
+        last_risk_score: ship.last_risk_score,
+        reroutes: ship.reroutes,
+        status_text,
     }
 }
 

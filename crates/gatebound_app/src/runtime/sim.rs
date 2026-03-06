@@ -490,11 +490,32 @@ pub fn open_station_card(
     }
 }
 
+pub fn open_system_station_inspector_selection(
+    selected_station: &mut SelectedStation,
+    panels: &mut UiPanelState,
+    station_ui: &mut StationUiState,
+    station_id: StationId,
+    preferred_commodity: Option<Commodity>,
+) {
+    selected_station.station_id = Some(station_id);
+    panels.station_ops = true;
+    open_station_card(station_ui, station_id, preferred_commodity);
+}
+
 pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
     state.card_open = true;
     state.card_ship_id = Some(ship_id);
     state.context_ship_id = Some(ship_id);
     state.card_tab = ShipCardTab::Overview;
+}
+
+pub fn open_system_ship_inspector_selection(
+    selected_ship: &mut SelectedShip,
+    ship_ui: &mut ShipUiState,
+    ship_id: ShipId,
+) {
+    selected_ship.ship_id = Some(ship_id);
+    open_ship_card(ship_ui, ship_id);
 }
 
 pub fn preferred_trade_commodity(

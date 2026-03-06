@@ -37,6 +37,56 @@ pub struct CameraTopologyView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SystemDetailsView {
+    pub system_id: SystemId,
+    pub owner_faction_id: FactionId,
+    pub owner_faction_name: String,
+    pub faction_color_rgb: [u8; 3],
+    pub dock_capacity: f64,
+    pub outgoing_gate_count: usize,
+    pub avg_price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub congestion: f64,
+    pub fuel_stress: f64,
+    pub stress_score: f64,
+    pub stations: Vec<SystemStationSummaryView>,
+    pub ships: Vec<SystemShipSummaryView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemStationSummaryView {
+    pub station_id: StationId,
+    pub profile: StationProfile,
+    pub x: f64,
+    pub y: f64,
+    pub price_index: f64,
+    pub stock_coverage: f64,
+    pub strongest_shortage_commodity: Option<Commodity>,
+    pub strongest_surplus_commodity: Option<Commodity>,
+    pub best_buy_commodity: Option<Commodity>,
+    pub best_sell_commodity: Option<Commodity>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemShipSummaryView {
+    pub ship_id: ShipId,
+    pub company_id: CompanyId,
+    pub owner_name: String,
+    pub owner_archetype: CompanyArchetype,
+    pub role: ShipRole,
+    pub ship_name: String,
+    pub ship_class: ShipClass,
+    pub location: SystemId,
+    pub current_station: Option<StationId>,
+    pub current_target: Option<SystemId>,
+    pub eta_ticks_remaining: u32,
+    pub current_segment_kind: Option<SegmentKind>,
+    pub last_risk_score: f64,
+    pub reroutes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenderGateNodeView {
     pub gate_id: GateId,
     pub x: f64,

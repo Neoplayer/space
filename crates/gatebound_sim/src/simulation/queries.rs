@@ -36,6 +36,108 @@ impl Simulation {
         }
     }
 
+    pub fn system_details_view(&self, system_id: SystemId) -> Option<SystemDetailsView> {
+        let system = self
+            .world
+            .systems
+            .iter()
+            .find(|system| system.id == system_id)?;
+        let faction = self
+            .world
+            .factions
+            .iter()
+            .find(|faction| faction.id == system.owner_faction_id)?;
+        let stress = self
+            .system_market_stress_rows()
+            .into_iter()
+            .find(|row| row.system_id == system_id)
+            .unwrap_or(SystemMarketStressRowView {
+                system_id,
+                avg_price_index: 1.0,
+                stock_coverage: 0.0,
+                net_flow: 0.0,
+                congestion: 0.0,
+                fuel_stress: 0.0,
+                stress_score: 0.0,
+            });
+
+        let mut stations = self
+            .camera_stations_for_system(system_id)
+            .into_iter()
+            .map(|station| {
+                let detail = self.station_market_detail(station.station_id);
+                SystemStationSummaryView {
+                    station_id: station.station_id,
+                    profile: station.profile,
+                    x: station.x,
+                    y: station.y,
+                    price_index: detail.as_ref().map_or(1.0, |detail| detail.price_index),
+                    stock_coverage: detail.as_ref().map_or(0.0, |detail| detail.stock_coverage),
+                    strongest_shortage_commodity: detail
+                        .as_ref()
+                        .and_then(|detail| detail.strongest_shortage_commodity),
+                    strongest_surplus_commodity: detail
+                        .as_ref()
+                        .and_then(|detail| detail.strongest_surplus_commodity),
+                    best_buy_commodity: detail
+                        .as_ref()
+                        .and_then(|detail| detail.best_buy_commodity),
+                    best_sell_commodity: detail
+                        .as_ref()
+                        .and_then(|detail| detail.best_sell_commodity),
+                }
+            })
+            .collect::<Vec<_>>();
+        stations.sort_by_key(|station| station.station_id.0);
+
+        let mut ships = self
+            .ships
+            .values()
+            .filter(|ship| ship.location == system_id)
+            .filter_map(|ship| {
+                let owner = self.companies.get(&ship.company_id)?;
+                Some(SystemShipSummaryView {
+                    ship_id: ship.id,
+                    company_id: ship.company_id,
+                    owner_name: owner.name.clone(),
+                    owner_archetype: owner.archetype,
+                    role: ship.role,
+                    ship_name: ship.descriptor.name.clone(),
+                    ship_class: ship.descriptor.class,
+                    location: ship.location,
+                    current_station: ship.current_station,
+                    current_target: ship.current_target,
+                    eta_ticks_remaining: ship.eta_ticks_remaining,
+                    current_segment_kind: ship.current_segment_kind,
+                    last_risk_score: ship.last_risk_score,
+                    reroutes: ship.reroutes,
+                })
+            })
+            .collect::<Vec<_>>();
+        ships.sort_by_key(|ship| ship.ship_id.0);
+
+        Some(SystemDetailsView {
+            system_id,
+            owner_faction_id: system.owner_faction_id,
+            owner_faction_name: faction.name.clone(),
+            faction_color_rgb: faction.color_rgb,
+            dock_capacity: system.dock_capacity,
+            outgoing_gate_count: self
+                .world
+                .adjacency
+                .get(&system_id)
+                .map_or(0, |entries| entries.len()),
+            avg_price_index: stress.avg_price_index,
+            stock_coverage: stress.stock_coverage,
+            net_flow: stress.net_flow,
+            congestion: stress.congestion,
+            fuel_stress: stress.fuel_stress,
+            stress_score: stress.stress_score,
+            stations,
+            ships,
+        })
+    }
+
     pub fn world_render_snapshot(&self) -> WorldRenderSnapshot {
         WorldRenderSnapshot {
             tick: self.tick,

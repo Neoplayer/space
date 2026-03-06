@@ -92,6 +92,26 @@ pub fn clamp_zoom(current_zoom: f32, delta: f32, min_zoom: f32, max_zoom: f32) -
     (current_zoom - delta * CAMERA_ZOOM_STEP).clamp(min_zoom, max_zoom)
 }
 
+pub fn zoom_level_with_delta(
+    mode: CameraMode,
+    current_zoom: f32,
+    delta: f32,
+    min_zoom: f32,
+    max_zoom: f32,
+) -> f32 {
+    match mode {
+        CameraMode::Galaxy => clamp_zoom(current_zoom, delta, min_zoom, max_zoom),
+        CameraMode::System(_) => current_zoom,
+    }
+}
+
+pub fn zoom_level_for_camera_mode(mode: CameraMode, current_zoom: f32, system_zoom: f32) -> f32 {
+    match mode {
+        CameraMode::Galaxy => current_zoom,
+        CameraMode::System(_) => system_zoom,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GalaxyPanDragState {
     pub last_cursor_position: Option<Vec2>,
@@ -222,16 +242,24 @@ pub fn galaxy_pan_input_system(
     drag_state.last_cursor_position = Some(cursor_position);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn camera_mode_input_system(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     mut ui_state: ResMut<CameraUiState>,
     mut tracker: Local<ClickTracker>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    if egui_wants_input
+        .as_ref()
+        .is_some_and(|input| input.wants_any_pointer_input())
+    {
         return;
     }
     if ui_state.mode != CameraMode::Galaxy {
@@ -263,10 +291,12 @@ pub fn camera_mode_input_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn station_select_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     ui_state: Res<CameraUiState>,
     mut selected_station: ResMut<SelectedStation>,
@@ -275,6 +305,12 @@ pub fn station_select_input_system(
     let left_click = buttons.just_pressed(MouseButton::Left);
     let right_click = buttons.just_pressed(MouseButton::Right);
     if !(left_click || right_click) {
+        return;
+    }
+    if egui_wants_input
+        .as_ref()
+        .is_some_and(|input| input.wants_any_pointer_input())
+    {
         return;
     }
     let CameraMode::System(system_id) = ui_state.mode else {
@@ -309,16 +345,24 @@ pub fn apply_station_context_open(state: &mut StationUiState, station_id: Statio
     state.context_menu_open = true;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn ship_context_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     cache: Res<ShipMotionCache>,
     ui_state: Res<CameraUiState>,
     mut ship_ui: ResMut<ShipUiState>,
 ) {
     if !buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+    if egui_wants_input
+        .as_ref()
+        .is_some_and(|input| input.wants_any_pointer_input())
+    {
         return;
     }
     let CameraMode::System(_) = ui_state.mode else {
@@ -370,7 +414,8 @@ pub fn apply_zoom_controls(
     }
 
     if delta.abs() > f32::EPSILON {
-        ui_state.zoom_level = clamp_zoom(
+        ui_state.zoom_level = zoom_level_with_delta(
+            ui_state.mode,
             ui_state.zoom_level,
             delta,
             ui_state.zoom_min,
@@ -389,8 +434,11 @@ pub fn sync_camera_transform(
         return;
     };
 
+    let camera_zoom =
+        zoom_level_for_camera_mode(ui_state.mode, ui_state.zoom_level, ui_state.zoom_min);
+
     if let Projection::Orthographic(orthographic) = &mut *projection {
-        orthographic.scale = ui_state.zoom_level;
+        orthographic.scale = camera_zoom;
     }
 
     match ui_state.mode {
@@ -400,7 +448,7 @@ pub fn sync_camera_transform(
                 ui_state.galaxy_pan = clamp_galaxy_pan(
                     ui_state.galaxy_pan,
                     bounds,
-                    camera_viewport_size(camera, &windows) * ui_state.zoom_level * 0.5,
+                    camera_viewport_size(camera, &windows) * camera_zoom * 0.5,
                 );
             } else {
                 ui_state.galaxy_pan = Vec2::ZERO;

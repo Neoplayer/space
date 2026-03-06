@@ -1,7 +1,7 @@
 use crate::input::camera::{
     apply_escape, apply_galaxy_pan_drag, apply_ship_context_open, apply_station_context_open,
     apply_system_click, clamp_galaxy_pan, clamp_zoom, galaxy_pan_bounds, should_start_galaxy_pan,
-    CameraMode, CameraUiState, ClickTracker,
+    zoom_level_for_camera_mode, zoom_level_with_delta, CameraMode, CameraUiState, ClickTracker,
 };
 use crate::render::world::{
     company_color, faction_color, segment_from_point, ship_is_visible_in_current_view,
@@ -9,10 +9,12 @@ use crate::render::world::{
 };
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
-    open_station_card, panel_button_specs, panel_hotkey_to_index, seed_markets_ui_state,
-    set_time_speed, toggle_pause, track_ship, ContractsFilterState, FinanceUiState, MarketsUiState,
-    OfferSortMode, RiskHotkey, ShipCardTab, ShipUiState, SimResource, StationCardTab,
-    StationUiState, TrackedShip, UiKpiTracker,
+    open_station_card, open_system_ship_inspector_selection,
+    open_system_station_inspector_selection, panel_button_specs, panel_hotkey_to_index,
+    seed_markets_ui_state, set_time_speed, toggle_pause, track_ship, ContractsFilterState,
+    FinanceUiState, MarketsUiState, OfferSortMode, RiskHotkey, SelectedShip, SelectedStation,
+    ShipCardTab, ShipUiState, SimResource, StationCardTab, StationUiState, TrackedShip,
+    UiKpiTracker, UiPanelState,
 };
 use crate::ui::hud::{build_hud_snapshot as build_hud_snapshot_v2, player_fleet_rows};
 use bevy::prelude::*;
@@ -192,6 +194,30 @@ fn galaxy_pan_drag_applies_world_space_delta() {
 fn zoom_step_is_smoother_for_scroll_input() {
     assert_eq!(clamp_zoom(1.0, 1.0, 0.3, 4.0), 0.92);
     assert_eq!(clamp_zoom(1.0, -1.0, 0.3, 4.0), 1.08);
+}
+
+#[test]
+fn system_view_ignores_zoom_delta_but_galaxy_view_keeps_existing_behavior() {
+    assert_eq!(
+        zoom_level_with_delta(CameraMode::System(SystemId(2)), 1.7, 1.0, 0.3, 4.0),
+        1.7
+    );
+    assert_eq!(
+        zoom_level_with_delta(CameraMode::Galaxy, 1.0, 1.0, 0.3, 4.0),
+        0.92
+    );
+}
+
+#[test]
+fn system_view_uses_fixed_zoom_min_scale_while_galaxy_uses_stored_zoom() {
+    assert_eq!(
+        zoom_level_for_camera_mode(CameraMode::System(SystemId(4)), 1.7, 0.3),
+        0.3
+    );
+    assert_eq!(
+        zoom_level_for_camera_mode(CameraMode::Galaxy, 1.7, 0.3),
+        1.7
+    );
 }
 
 #[test]
@@ -1525,6 +1551,43 @@ fn opening_ship_card_resets_tab_and_binds_requested_ship() {
 }
 
 #[test]
+fn system_inspector_station_selection_opens_station_card_window() {
+    let mut selected_station = SelectedStation::default();
+    let mut panels = UiPanelState::default();
+    let mut station_ui = StationUiState {
+        trade_commodity: Commodity::Ore,
+        ..StationUiState::default()
+    };
+
+    open_system_station_inspector_selection(
+        &mut selected_station,
+        &mut panels,
+        &mut station_ui,
+        StationId(7),
+        Some(Commodity::Fuel),
+    );
+
+    assert_eq!(selected_station.station_id, Some(StationId(7)));
+    assert!(panels.station_ops);
+    assert!(station_ui.station_panel_open);
+    assert_eq!(station_ui.card_station_id, Some(StationId(7)));
+    assert_eq!(station_ui.trade_commodity, Commodity::Fuel);
+}
+
+#[test]
+fn system_inspector_ship_selection_opens_ship_card_window() {
+    let mut selected_ship = SelectedShip::default();
+    let mut ship_ui = ShipUiState::default();
+
+    open_system_ship_inspector_selection(&mut selected_ship, &mut ship_ui, ShipId(9));
+
+    assert_eq!(selected_ship.ship_id, Some(ShipId(9)));
+    assert!(ship_ui.card_open);
+    assert_eq!(ship_ui.card_ship_id, Some(ShipId(9)));
+    assert_eq!(ship_ui.card_tab, ShipCardTab::Overview);
+}
+
+#[test]
 fn tracking_npc_ship_updates_focus_without_changing_selected_player_ship() {
     let sim = Simulation::new(RuntimeConfig::default(), 42);
     let tracked_id = ShipId(1);
@@ -1614,6 +1677,79 @@ fn station_card_snapshot_builds_generated_info_metadata() {
     assert!(card.profile_summary.len() > 20);
     assert!(!card.imports.is_empty());
     assert!(!card.exports.is_empty());
+}
+
+#[test]
+fn system_panel_snapshot_is_hidden_in_galaxy_mode() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    assert!(snapshot.system_panel.is_none());
+}
+
+#[test]
+fn system_panel_snapshot_exposes_owner_metrics_stations_and_local_ships() {
+    let mut builder = SimulationScenarioBuilder::stage_a(58);
+    let selected_system_id = (0..25)
+        .map(SystemId)
+        .find(|system_id| !builder.stations_in_system(*system_id).is_empty())
+        .expect("fixture should contain a system with stations");
+    let selected_station_id = builder.stations_in_system(selected_system_id)[0];
+    builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            location: Some(selected_system_id),
+            current_station: Some(Some(selected_station_id)),
+            current_target: Some(None),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        false,
+        1,
+        CameraMode::System(selected_system_id),
+        selected_system_id,
+        Some(selected_station_id),
+        Some(selected_station_id),
+        Commodity::Fuel,
+        Some(selected_station_id),
+        None,
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+    let system_panel = snapshot
+        .system_panel
+        .as_ref()
+        .expect("system panel snapshot should be present");
+
+    assert_eq!(system_panel.system_id, selected_system_id);
+    assert!(!system_panel.system_name.is_empty());
+    assert!(!system_panel.owner_faction_name.is_empty());
+    assert!(system_panel.station_count > 0);
+    assert_eq!(system_panel.station_count, system_panel.stations.len());
+    assert!(!system_panel.stations[0].station_name.is_empty());
+    assert!(!system_panel.stations[0].orbit_label.is_empty());
+    assert_eq!(system_panel.ship_count, system_panel.ships.len());
+    assert!(!system_panel.ships.is_empty());
+    assert!(system_panel
+        .ships
+        .iter()
+        .all(|ship| ship.system_id == selected_system_id));
+    assert!(!system_panel.ships[0].status_text.is_empty());
 }
 
 #[test]
