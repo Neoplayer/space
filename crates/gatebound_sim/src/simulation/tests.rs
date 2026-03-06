@@ -439,6 +439,22 @@ fn world_views_expose_owner_faction_and_configured_faction_color() {
 }
 
 #[test]
+fn world_render_snapshot_omits_resource_signal_fields_from_system_view() {
+    let sim = Simulation::new(stage_a_config(), 808);
+    let snapshot = sim.world_render_snapshot();
+    let debug = format!("{:?}", snapshot.systems);
+
+    assert!(
+        !debug.contains("dock_congestion"),
+        "render snapshot should not expose dock_congestion in system view"
+    );
+    assert!(
+        !debug.contains("fuel_stress"),
+        "render snapshot should not expose fuel_stress in system view"
+    );
+}
+
+#[test]
 fn market_panel_view_does_not_fallback_to_global_station_for_unknown_system() {
     let sim = Simulation::new(stage_a_config(), 247);
     let panel = sim.market_panel_view(SystemId(999), None, Commodity::Fuel);

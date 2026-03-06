@@ -135,23 +135,6 @@ pub fn draw_world_gizmos(
         gizmos.circle_2d(center, system.radius as f32 * 0.18, color);
 
         if system_open {
-            let dock_pressure = system.dock_congestion;
-            let fuel_stress = system.fuel_stress;
-            if dock_pressure > 0.15 {
-                gizmos.circle_2d(
-                    center,
-                    system.radius as f32 * (0.24 + dock_pressure * 0.08),
-                    Color::srgba(1.0, 0.72, 0.18, 0.4 + dock_pressure * 0.2),
-                );
-            }
-            if fuel_stress > 0.20 {
-                gizmos.circle_2d(
-                    center,
-                    system.radius as f32 * (0.30 + fuel_stress * 0.12),
-                    Color::srgba(1.0, 0.2, 0.2, 0.35 + fuel_stress * 0.25),
-                );
-            }
-
             for station in &system.stations {
                 gizmos.circle_2d(
                     Vec2::new(station.x as f32, station.y as f32),

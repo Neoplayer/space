@@ -72,8 +72,6 @@ impl Simulation {
                             y: station.y,
                         })
                         .collect(),
-                    dock_congestion: self.dock_congestion_index(system.id),
-                    fuel_stress: self.fuel_stress_index(system.id),
                 })
                 .collect(),
             edges: self
@@ -1416,15 +1414,6 @@ impl Simulation {
         } else {
             (self.capital / effective_buy_price).max(0.0)
         }
-    }
-
-    fn dock_congestion_index(&self, system_id: SystemId) -> f32 {
-        let inbound = self
-            .ships
-            .values()
-            .filter(|ship| ship.current_target == Some(system_id) && ship.eta_ticks_remaining > 0)
-            .count() as f32;
-        (inbound / 6.0).clamp(0.0, 1.0)
     }
 
     fn fuel_stress_index(&self, system_id: SystemId) -> f32 {

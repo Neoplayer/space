@@ -61,8 +61,6 @@ pub struct RenderSystemView {
     pub radius: f64,
     pub gate_nodes: Vec<RenderGateNodeView>,
     pub stations: Vec<RenderStationView>,
-    pub dock_congestion: f32,
-    pub fuel_stress: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
