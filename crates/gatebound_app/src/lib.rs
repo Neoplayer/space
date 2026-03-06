@@ -53,6 +53,7 @@ pub fn run() {
             primary_window: Some(Window {
                 title: "Gatebound Stage A UI Slice".to_string(),
                 resolution: WindowResolution::new(1280, 720),
+                fit_canvas_to_parent: true,
                 ..Window::default()
             }),
             ..WindowPlugin::default()
