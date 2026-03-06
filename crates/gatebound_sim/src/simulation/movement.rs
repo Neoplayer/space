@@ -53,6 +53,7 @@ impl Simulation {
                     active_contract: None,
                     route_cursor: 0,
                     policy: AutopilotPolicy {
+                        max_hops: super::stage_a_route_hop_limit(&self.world),
                         waypoints: vec![player_location],
                         ..AutopilotPolicy::default()
                     },

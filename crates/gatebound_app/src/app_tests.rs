@@ -3,7 +3,7 @@ use crate::input::camera::{
     CameraMode, CameraUiState, ClickTracker,
 };
 use crate::render::world::{
-    company_color, segment_from_point, ship_is_visible_in_current_view,
+    company_color, faction_color, segment_from_point, ship_is_visible_in_current_view,
     system_objects_visible_in_current_view, update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
@@ -13,7 +13,7 @@ use crate::runtime::sim::{
     OfferSortMode, RiskHotkey, ShipCardTab, ShipUiState, SimResource, StationCardTab,
     StationUiState, TrackedShip, UiKpiTracker,
 };
-use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
+use crate::ui::hud::{build_hud_snapshot as build_hud_snapshot_v2, player_fleet_rows};
 use bevy::prelude::*;
 use gatebound_domain::{
     ActiveLoan, CargoLoad, CargoSource, Commodity, CompanyId, ContractOffer, ContractTypeStageA,
@@ -266,6 +266,17 @@ fn seed_markets_ui_state_uses_world_selection_once_and_preserves_manual_pick() {
 }
 
 #[test]
+fn seed_markets_ui_state_does_not_fallback_to_other_system_station() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let mut state = MarketsUiState::default();
+
+    seed_markets_ui_state(&mut state, &sim, SystemId(999), None);
+
+    assert_eq!(state.detail_station_id, None);
+    assert!(state.seeded_from_world_selection);
+}
+
+#[test]
 fn panel_hotkeys_toggle_expected_windows() {
     let mut panels = crate::runtime::sim::UiPanelState::default();
     assert!(!panels.contracts);
@@ -353,6 +364,15 @@ fn company_palette_is_distinct_for_player_and_all_npc_corps() {
             assert_ne!(colors[i], colors[j]);
         }
     }
+}
+
+#[test]
+fn faction_color_uses_exact_config_rgb_triplet() {
+    let color = faction_color([12, 34, 56]).to_srgba();
+    assert!((color.red - 12.0 / 255.0).abs() < 1e-6);
+    assert!((color.green - 34.0 / 255.0).abs() < 1e-6);
+    assert!((color.blue - 56.0 / 255.0).abs() < 1e-6);
+    assert!((color.alpha - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -576,6 +596,29 @@ fn fleet_snapshot_contains_job_queue_idle_delay_profit() {
     assert!(row.avg_delay_ticks_cycle > 0.0);
     assert!(row.profit_per_run > 0.0);
     assert!(!row.job_queue.is_empty());
+}
+
+#[test]
+fn fleet_manager_rows_only_include_player_ships() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let snapshot = build_hud_snapshot(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    let rows = player_fleet_rows(&snapshot.fleet_rows);
+    assert_eq!(
+        rows.len(),
+        1,
+        "stage_a fleet manager should show one player ship"
+    );
+    assert!(rows.iter().all(|row| row.company_id == CompanyId(0)));
 }
 
 #[test]

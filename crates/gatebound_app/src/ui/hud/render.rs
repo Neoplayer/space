@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
+use gatebound_domain::{
+    CargoSource, Commodity, CompanyId, FleetShipStatus, OfferProblemTag, PriorityMode, ShipId,
+};
 use gatebound_sim::TradePriceTone;
 
 use crate::runtime::sim::{
@@ -23,6 +25,13 @@ use super::snapshot::{
     build_hud_snapshot, MarketsDashboardSnapshot, MarketsStationDetailSnapshot, ShipCardSnapshot,
     StationCardSnapshot, StationRefSnapshot, SystemRefSnapshot,
 };
+
+pub(crate) fn player_fleet_rows(rows: &[FleetShipStatus]) -> Vec<&FleetShipStatus> {
+    rows.iter()
+        .filter(|row| row.company_id == CompanyId(0))
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
@@ -411,11 +420,12 @@ pub fn draw_hud_panel(
 
     if panels.fleet {
         let mut open = panels.fleet;
+        let fleet_rows = player_fleet_rows(&snapshot.fleet_rows);
         egui::Window::new("Fleet Manager")
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(format!("Ships: {}", snapshot.fleet_rows.len()));
-                for row in &snapshot.fleet_rows {
+                ui.label(format!("Ships: {}", fleet_rows.len()));
+                for row in fleet_rows {
                     ui.collapsing(format!("Ship #{}", row.ship_id.0), |ui| {
                         let active_segment = row
                             .job_queue

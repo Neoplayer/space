@@ -21,6 +21,11 @@ impl Simulation {
                 .iter()
                 .map(|system| CameraSystemView {
                     system_id: system.id,
+                    owner_faction_id: system.owner_faction_id,
+                    faction_color_rgb: self
+                        .world
+                        .faction_color(system.owner_faction_id)
+                        .unwrap_or([255, 255, 255]),
                     x: system.x,
                     y: system.y,
                     radius: system.radius,
@@ -40,6 +45,11 @@ impl Simulation {
                 .iter()
                 .map(|system| RenderSystemView {
                     system_id: system.id,
+                    owner_faction_id: system.owner_faction_id,
+                    faction_color_rgb: self
+                        .world
+                        .faction_color(system.owner_faction_id)
+                        .unwrap_or([255, 255, 255]),
                     x: system.x,
                     y: system.y,
                     radius: system.radius,
@@ -222,7 +232,6 @@ impl Simulation {
             station_anomaly_rows: self.station_market_anomaly_rows(),
             station_detail: detail_station_id
                 .or_else(|| self.world.first_station(selected_system_id))
-                .or_else(|| self.world.stations.first().map(|station| station.id))
                 .and_then(|station_id| self.station_market_detail(station_id)),
         }
     }

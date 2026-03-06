@@ -1,7 +1,7 @@
 use gatebound_domain::{
-    AutopilotPolicy, GateEdge, GateId, GateNode, PriorityMode, RepeatMode, RouteSegment,
-    RoutingGraphView, RoutingRequest, RoutingService, SegmentKind, StationAnchor, StationId,
-    StationProfile, SystemId, SystemNode, World,
+    AutopilotPolicy, Cluster, ClusterId, Faction, FactionId, GateEdge, GateId, GateNode,
+    PriorityMode, RepeatMode, RouteSegment, RoutingGraphView, RoutingRequest, RoutingService,
+    SegmentKind, StationAnchor, StationId, StationProfile, SystemId, SystemNode, World,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,6 +70,8 @@ fn world_queries_return_station_and_gate_coordinates() {
     let world = World {
         systems: vec![SystemNode {
             id: SystemId(0),
+            cluster_id: ClusterId(0),
+            owner_faction_id: FactionId(0),
             x: 10.0,
             y: 20.0,
             radius: 100.0,
@@ -90,6 +92,16 @@ fn world_queries_return_station_and_gate_coordinates() {
             capacity_factor: 1.0,
         }],
         adjacency: BTreeMap::from([(SystemId(0), vec![(SystemId(0), GateId(3))])]),
+        factions: vec![Faction {
+            id: FactionId(0),
+            name: "Test Collective".to_string(),
+            color_rgb: [64, 169, 255],
+        }],
+        clusters: vec![Cluster {
+            id: ClusterId(0),
+            faction_id: FactionId(0),
+            system_ids: vec![SystemId(0)],
+        }],
         stations: vec![StationAnchor {
             id: StationId(4),
             system_id: SystemId(0),

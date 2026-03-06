@@ -22,6 +22,8 @@ pub struct CameraStationView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CameraSystemView {
     pub system_id: SystemId,
+    pub owner_faction_id: FactionId,
+    pub faction_color_rgb: [u8; 3],
     pub x: f64,
     pub y: f64,
     pub radius: f64,
@@ -52,6 +54,8 @@ pub struct RenderStationView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderSystemView {
     pub system_id: SystemId,
+    pub owner_faction_id: FactionId,
+    pub faction_color_rgb: [u8; 3],
     pub x: f64,
     pub y: f64,
     pub radius: f64,

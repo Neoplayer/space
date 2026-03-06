@@ -36,38 +36,40 @@ impl Simulation {
         let mut ships = seed_stage_a_ships(&world);
         let npc_company_runtimes = seed_stage_a_npc_company_runtimes(&config);
         let mut contracts = BTreeMap::new();
-        if world.system_count() >= 2 && ships.contains_key(&ShipId(0)) {
-            let origin_station = world.first_station(SystemId(0)).unwrap_or(StationId(0));
-            let destination_station = world.first_station(SystemId(1)).unwrap_or(origin_station);
-            contracts.insert(
-                ContractId(0),
-                Contract {
-                    id: ContractId(0),
-                    kind: ContractTypeStageA::Delivery,
-                    progress: ContractProgress::AwaitPickup,
-                    commodity: Commodity::Fuel,
-                    origin: SystemId(0),
-                    destination: SystemId(1),
-                    origin_station,
-                    destination_station,
-                    quantity: 10.0,
-                    deadline_tick: u64::from(config.time.cycle_ticks) * 3,
-                    per_cycle: 0.0,
-                    total_cycles: 0,
-                    payout: 50.0,
-                    penalty: 25.0,
-                    assigned_ship: Some(ShipId(0)),
-                    loaded_amount: 0.0,
-                    delivered_cycle_amount: 0.0,
-                    delivered_amount: 0.0,
-                    missed_cycles: 0,
-                    completed: false,
-                    failed: false,
-                    last_eval_cycle: 0,
-                },
-            );
-            if let Some(player_ship) = ships.get_mut(&ShipId(0)) {
-                player_ship.active_contract = Some(ContractId(0));
+        if ships.contains_key(&ShipId(0)) {
+            if let Some([(origin, origin_station), (destination, destination_station)]) =
+                super::stage_a_starter_route(&world)
+            {
+                contracts.insert(
+                    ContractId(0),
+                    Contract {
+                        id: ContractId(0),
+                        kind: ContractTypeStageA::Delivery,
+                        progress: ContractProgress::AwaitPickup,
+                        commodity: Commodity::Fuel,
+                        origin,
+                        destination,
+                        origin_station,
+                        destination_station,
+                        quantity: 10.0,
+                        deadline_tick: u64::from(config.time.cycle_ticks) * 3,
+                        per_cycle: 0.0,
+                        total_cycles: 0,
+                        payout: 50.0,
+                        penalty: 25.0,
+                        assigned_ship: Some(ShipId(0)),
+                        loaded_amount: 0.0,
+                        delivered_cycle_amount: 0.0,
+                        delivered_amount: 0.0,
+                        missed_cycles: 0,
+                        completed: false,
+                        failed: false,
+                        last_eval_cycle: 0,
+                    },
+                );
+                if let Some(player_ship) = ships.get_mut(&ShipId(0)) {
+                    player_ship.active_contract = Some(ContractId(0));
+                }
             }
         }
 

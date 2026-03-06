@@ -112,6 +112,39 @@ fn seed_stage_a_npc_company_runtimes(
         .collect()
 }
 
+fn stage_a_route_hop_limit(world: &World) -> usize {
+    world.system_count().saturating_sub(1).max(1)
+}
+
+fn stage_a_station_systems(world: &World) -> Vec<SystemId> {
+    world.systems_with_stations()
+}
+
+fn stage_a_player_cluster_systems(world: &World) -> Vec<SystemId> {
+    let cluster_systems = world.systems_with_stations_in_cluster(ClusterId(0));
+    if cluster_systems.is_empty() {
+        stage_a_station_systems(world)
+    } else {
+        cluster_systems
+    }
+}
+
+fn stage_a_starter_route(world: &World) -> Option<[(SystemId, StationId); 2]> {
+    let mut systems = stage_a_player_cluster_systems(world);
+    if systems.len() < 2 {
+        systems = stage_a_station_systems(world);
+    }
+    let origin = *systems.first()?;
+    let destination = systems
+        .iter()
+        .copied()
+        .find(|system_id| *system_id != origin)?;
+    Some([
+        (origin, world.first_station(origin)?),
+        (destination, world.first_station(destination)?),
+    ])
+}
+
 fn stage_a_ship_metadata(
     ship_id: ShipId,
     company_id: CompanyId,
@@ -297,11 +330,15 @@ fn stage_a_ship_metadata(
 
 fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
     let mut ships = BTreeMap::new();
-    if world.system_count() == 0 {
+    let spawn_systems = stage_a_station_systems(world);
+    if spawn_systems.is_empty() {
         return ships;
     }
-    let sid = |idx: usize| SystemId(idx % world.system_count());
-    let player_location = sid(0);
+    let player_route = stage_a_starter_route(world)
+        .map(|route| route.map(|(system_id, _)| system_id))
+        .unwrap_or([spawn_systems[0], spawn_systems[0]]);
+    let player_location = player_route[0];
+    let hop_limit = stage_a_route_hop_limit(world);
     let (descriptor, modules, technical_state) =
         stage_a_ship_metadata(ShipId(0), CompanyId(0), ShipRole::PlayerContract);
     ships.insert(
@@ -324,7 +361,8 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
             active_contract: None,
             route_cursor: 0,
             policy: AutopilotPolicy {
-                waypoints: vec![sid(0), sid(1)],
+                max_hops: hop_limit,
+                waypoints: vec![player_route[0], player_route[1]],
                 ..AutopilotPolicy::default()
             },
             planned_path: Vec::new(),
@@ -341,7 +379,7 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
     for idx in 0..60 {
         let ship_id = ShipId(idx + 1);
         let company_id = CompanyId(idx / 10 + 1);
-        let location = sid(idx);
+        let location = spawn_systems[idx % spawn_systems.len()];
         let (descriptor, modules, technical_state) =
             stage_a_ship_metadata(ship_id, company_id, ShipRole::NpcTrade);
         ships.insert(
@@ -364,7 +402,7 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 active_contract: None,
                 route_cursor: 0,
                 policy: AutopilotPolicy {
-                    max_hops: 6,
+                    max_hops: hop_limit,
                     waypoints: Vec::new(),
                     ..AutopilotPolicy::default()
                 },

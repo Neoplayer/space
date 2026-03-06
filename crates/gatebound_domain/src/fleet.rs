@@ -39,7 +39,7 @@ impl Default for AutopilotPolicy {
         Self {
             min_margin: 0.0,
             max_risk_score: 100.0,
-            max_hops: 6,
+            max_hops: 24,
             priority_mode: PriorityMode::Hybrid,
             waypoints: vec![SystemId(0)],
             repeat_mode: RepeatMode::Loop,

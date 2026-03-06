@@ -20,16 +20,121 @@ fn all_station_ids(sim: &Simulation) -> Vec<StationId> {
         .collect()
 }
 
+fn last_station_system(sim: &Simulation) -> SystemId {
+    sim.world
+        .systems_with_stations()
+        .last()
+        .copied()
+        .expect("world should contain a station-bearing system")
+}
+
+fn route_hop_limit(sim: &Simulation) -> usize {
+    sim.world.system_count().saturating_sub(1).max(1)
+}
+
+fn ordered_system_pair(a: SystemId, b: SystemId) -> (SystemId, SystemId) {
+    if a.0 < b.0 {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn cluster_centroid(world: &World, cluster_id: ClusterId) -> (f64, f64) {
+    let members = world
+        .clusters
+        .iter()
+        .find(|cluster| cluster.id == cluster_id)
+        .expect("cluster should exist");
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    for system_id in &members.system_ids {
+        let system = world
+            .systems
+            .iter()
+            .find(|system| system.id == *system_id)
+            .expect("cluster member system should exist");
+        sum_x += system.x;
+        sum_y += system.y;
+    }
+    let count = members.system_ids.len() as f64;
+    (sum_x / count, sum_y / count)
+}
+
+fn positions_are_contiguous_on_ring(mut positions: Vec<usize>, ring_len: usize) -> bool {
+    positions.sort_unstable();
+    if positions.len() <= 1 || ring_len <= 1 {
+        return true;
+    }
+
+    let mut large_gaps = 0_usize;
+    for idx in 0..positions.len() {
+        let current = positions[idx];
+        let next = positions[(idx + 1) % positions.len()];
+        let gap = if idx + 1 == positions.len() {
+            (next + ring_len).saturating_sub(current + 1)
+        } else {
+            next.saturating_sub(current + 1)
+        };
+        if gap > 0 {
+            large_gaps += 1;
+        }
+    }
+
+    large_gaps <= 1
+}
+
+fn expected_faction_cluster_counts(cfg: &GalaxyGenConfig, cluster_count: usize) -> Vec<usize> {
+    let faction_count = cfg.factions.len();
+    let mut counts = vec![0_usize; faction_count];
+    if cluster_count <= faction_count {
+        counts
+            .iter_mut()
+            .take(cluster_count)
+            .for_each(|count| *count = 1);
+        return counts;
+    }
+
+    counts.iter_mut().for_each(|count| *count = 1);
+    let remaining = cluster_count - faction_count;
+    let total_weight = cfg
+        .factions
+        .iter()
+        .map(|faction| faction.cluster_weight)
+        .sum::<f64>();
+    let mut quotas = cfg
+        .factions
+        .iter()
+        .enumerate()
+        .map(|(index, faction)| {
+            let raw = remaining as f64 * faction.cluster_weight / total_weight;
+            let base = raw.floor() as usize;
+            (index, base, raw - base as f64)
+        })
+        .collect::<Vec<_>>();
+    let allocated = quotas.iter().map(|(_, base, _)| *base).sum::<usize>();
+    let leftover = remaining - allocated;
+    for (index, base, _) in &quotas {
+        counts[*index] += *base;
+    }
+    quotas.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (index, _, _) in quotas.into_iter().take(leftover) {
+        counts[index] += 1;
+    }
+    counts
+}
+
 #[test]
 fn generation_respects_cluster_and_connectivity_and_degree() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), cfg.galaxy.seed);
     let systems = sim.world.system_count();
-    assert!(
-        systems >= usize::from(cfg.galaxy.cluster_system_min)
-            && systems <= usize::from(cfg.galaxy.cluster_system_max),
-        "system count out of stage A bounds"
-    );
+    assert_eq!(systems, 25, "stage A world must always generate 25 systems");
     assert!(sim.world.is_connected(), "world graph must be connected");
 
     let degrees = sim.world.degree_map();
@@ -40,6 +145,307 @@ fn generation_respects_cluster_and_connectivity_and_degree() {
             "node degree outside configured bounds"
         );
     }
+
+    for system in &sim.world.systems {
+        let station_count = sim
+            .world
+            .stations_by_system
+            .get(&system.id)
+            .map(|stations| stations.len())
+            .unwrap_or(0);
+        assert!(
+            station_count <= 4,
+            "systems must generate between 0 and 4 stations"
+        );
+    }
+}
+
+#[test]
+fn runtime_config_rejects_wrong_fixed_faction_count() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.galaxy.factions.pop();
+
+    let err = cfg
+        .validate()
+        .expect_err("exactly five config factions must be required");
+    assert_eq!(
+        err.to_string(),
+        "galaxy factions must contain exactly 5 entries"
+    );
+}
+
+#[test]
+fn runtime_config_rejects_non_positive_faction_weights() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.galaxy.factions[0].cluster_weight = 0.0;
+
+    let err = cfg
+        .validate()
+        .expect_err("non-positive faction weights must be rejected");
+    assert_eq!(err.to_string(), "galaxy faction weights must be > 0");
+}
+
+#[test]
+fn load_runtime_config_rejects_invalid_faction_rgb_bytes() {
+    let dir = std::env::temp_dir().join("gatebound_invalid_faction_rgb_config");
+    fs::create_dir_all(&dir).expect("temp config dir should be created");
+
+    for file_name in ["time_units.toml", "market.toml", "economy_pressure.toml"] {
+        let source = Path::new("../../assets/config/stage_a").join(file_name);
+        fs::write(
+            dir.join(file_name),
+            fs::read_to_string(source).expect("fixture file should load"),
+        )
+        .expect("fixture file should copy");
+    }
+
+    fs::write(
+        dir.join("galaxy.toml"),
+        r#"seed = 42
+system_count = 25
+cluster_size_min = 3
+cluster_size_max = 5
+station_count_min = 0
+station_count_max = 4
+inter_cluster_gate_min = 1
+inter_cluster_gate_max = 3
+min_degree = 2
+max_degree = 4
+system_radius = 100.0
+base_gate_capacity = 8.0
+base_gate_travel_ticks = 15
+
+[[factions]]
+name = "Aegis Collective"
+color_rgb = [256, 169, 255]
+cluster_weight = 1.3
+
+[[factions]]
+name = "Cinder Consortium"
+color_rgb = [255, 122, 72]
+cluster_weight = 1.1
+
+[[factions]]
+name = "Verdant League"
+color_rgb = [108, 214, 112]
+cluster_weight = 0.9
+
+[[factions]]
+name = "Helix Syndicate"
+color_rgb = [198, 108, 255]
+cluster_weight = 0.8
+
+[[factions]]
+name = "Solar Union"
+color_rgb = [255, 214, 82]
+cluster_weight = 1.4
+"#,
+    )
+    .expect("invalid galaxy fixture should write");
+
+    let err = crate::config::load_runtime_config(&dir)
+        .expect_err("invalid RGB byte must fail runtime config loading");
+    assert!(
+        err.to_string().contains("failed to parse galaxy.toml"),
+        "invalid RGB byte should be rejected during galaxy config parsing"
+    );
+}
+
+#[test]
+fn generation_reuses_fixed_factions_contiguously_and_picks_nearest_cluster_bridges() {
+    let mut cfg = RuntimeConfig::default();
+    cfg.galaxy.system_count = 30;
+    cfg.galaxy.cluster_size_min = 3;
+    cfg.galaxy.cluster_size_max = 4;
+    cfg.galaxy.inter_cluster_gate_min = 1;
+    cfg.galaxy.inter_cluster_gate_max = 1;
+
+    let world = World::generate(&cfg.galaxy, 313);
+    assert_eq!(
+        world.factions.len(),
+        5,
+        "world must reuse only the fixed 5 factions"
+    );
+    assert!(
+        world.clusters.len() > world.factions.len(),
+        "test fixture must generate more clusters than factions"
+    );
+    let actual_cluster_counts = world.clusters.iter().fold(
+        BTreeMap::<FactionId, usize>::new(),
+        |mut counts, cluster| {
+            *counts.entry(cluster.faction_id).or_insert(0) += 1;
+            counts
+        },
+    );
+    let expected_cluster_counts =
+        expected_faction_cluster_counts(&cfg.galaxy, world.clusters.len());
+    for (index, expected) in expected_cluster_counts.iter().copied().enumerate() {
+        assert_eq!(
+            actual_cluster_counts
+                .get(&FactionId(index))
+                .copied()
+                .unwrap_or(0),
+            expected,
+            "faction cluster counts must follow deterministic weighted quotas"
+        );
+    }
+
+    let mut cluster_order = world
+        .clusters
+        .iter()
+        .map(|cluster| {
+            let (x, y) = cluster_centroid(&world, cluster.id);
+            (cluster.id, y.atan2(x))
+        })
+        .collect::<Vec<_>>();
+    cluster_order.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+    let mut positions_by_faction = BTreeMap::<FactionId, Vec<usize>>::new();
+    for (index, (cluster_id, _)) in cluster_order.iter().enumerate() {
+        let cluster = world
+            .clusters
+            .iter()
+            .find(|cluster| cluster.id == *cluster_id)
+            .expect("cluster should exist");
+        positions_by_faction
+            .entry(cluster.faction_id)
+            .or_default()
+            .push(index);
+    }
+
+    assert!(
+        positions_by_faction
+            .values()
+            .all(|positions| positions_are_contiguous_on_ring(
+                positions.clone(),
+                cluster_order.len()
+            )),
+        "reused faction clusters must stay geographically contiguous"
+    );
+
+    let mut bridge_pairs = BTreeMap::<(ClusterId, ClusterId), Vec<(SystemId, SystemId)>>::new();
+    for edge in &world.edges {
+        let a_cluster = world.systems[edge.a.0].cluster_id;
+        let b_cluster = world.systems[edge.b.0].cluster_id;
+        if a_cluster == b_cluster {
+            continue;
+        }
+        let cluster_pair = if a_cluster.0 < b_cluster.0 {
+            (a_cluster, b_cluster)
+        } else {
+            (b_cluster, a_cluster)
+        };
+        bridge_pairs
+            .entry(cluster_pair)
+            .or_default()
+            .push(ordered_system_pair(edge.a, edge.b));
+    }
+
+    assert!(
+        !bridge_pairs.is_empty(),
+        "world must contain inter-cluster bridges"
+    );
+    for ((cluster_a, cluster_b), actual_pairs) in bridge_pairs {
+        assert_eq!(
+            actual_pairs.len(),
+            1,
+            "fixture should generate one bridge per cluster pair"
+        );
+
+        let systems_a = world
+            .clusters
+            .iter()
+            .find(|cluster| cluster.id == cluster_a)
+            .expect("cluster a should exist")
+            .system_ids
+            .clone();
+        let systems_b = world
+            .clusters
+            .iter()
+            .find(|cluster| cluster.id == cluster_b)
+            .expect("cluster b should exist")
+            .system_ids
+            .clone();
+
+        let mut candidates = Vec::new();
+        for left in &systems_a {
+            for right in &systems_b {
+                let left_system = &world.systems[left.0];
+                let right_system = &world.systems[right.0];
+                let dx = left_system.x - right_system.x;
+                let dy = left_system.y - right_system.y;
+                candidates.push((ordered_system_pair(*left, *right), dx * dx + dy * dy));
+            }
+        }
+        candidates.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+        assert_eq!(
+            actual_pairs[0], candidates[0].0,
+            "inter-cluster bridge must use the nearest system pair"
+        );
+    }
+}
+
+#[test]
+fn world_views_expose_owner_faction_and_configured_faction_color() {
+    let sim = Simulation::new(RuntimeConfig::default(), 515);
+    let topology = sim.camera_topology_view();
+    let snapshot = sim.world_render_snapshot();
+    assert_eq!(sim.world.factions.len(), 5);
+    for (configured, generated) in sim
+        .config()
+        .galaxy
+        .factions
+        .iter()
+        .zip(sim.world.factions.iter())
+    {
+        assert_eq!(configured.name, generated.name);
+        assert_eq!(configured.color_rgb, generated.color_rgb);
+    }
+
+    for system in &topology.systems {
+        let world_system = sim
+            .world
+            .systems
+            .iter()
+            .find(|candidate| candidate.id == system.system_id)
+            .expect("world system should exist");
+        let faction = sim
+            .world
+            .factions
+            .iter()
+            .find(|faction| faction.id == world_system.owner_faction_id)
+            .expect("faction should exist");
+        assert_eq!(system.owner_faction_id, world_system.owner_faction_id);
+        assert_eq!(system.faction_color_rgb, faction.color_rgb);
+    }
+
+    for system in &snapshot.systems {
+        let world_system = sim
+            .world
+            .systems
+            .iter()
+            .find(|candidate| candidate.id == system.system_id)
+            .expect("world system should exist");
+        let faction = sim
+            .world
+            .factions
+            .iter()
+            .find(|faction| faction.id == world_system.owner_faction_id)
+            .expect("faction should exist");
+        assert_eq!(system.owner_faction_id, world_system.owner_faction_id);
+        assert_eq!(system.faction_color_rgb, faction.color_rgb);
+    }
+}
+
+#[test]
+fn market_panel_view_does_not_fallback_to_global_station_for_unknown_system() {
+    let sim = Simulation::new(stage_a_config(), 247);
+    let panel = sim.market_panel_view(SystemId(999), None, Commodity::Fuel);
+    assert!(
+        panel.station_detail.is_none(),
+        "unknown or stationless systems must not borrow station detail from another system"
+    );
 }
 
 #[test]
@@ -309,11 +715,12 @@ fn autopilot_loop_and_policy_change_affect_route() {
     }
 
     let ship_id = ShipId(0);
-    let last = SystemId(sim.world.system_count() - 1);
+    let last = last_station_system(&sim);
+    let hop_limit = route_hop_limit(&sim);
 
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.policy.waypoints = vec![SystemId(0), SystemId(1), last];
-        ship.policy.max_hops = 16;
+        ship.policy.max_hops = hop_limit;
         ship.location = SystemId(0);
         ship.route_cursor = 0;
     }
@@ -331,6 +738,17 @@ fn autopilot_loop_and_policy_change_affect_route() {
         cursor_after_loop < 3,
         "loop cursor must remain in waypoint bounds"
     );
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = sim.world.first_station(SystemId(0));
+        ship.movement_queue.clear();
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.current_segment_kind = None;
+        ship.current_target = None;
+        ship.eta_ticks_remaining = 0;
+    }
 
     let route_before = sim
         .route_for_ship(ship_id, last)
@@ -496,7 +914,7 @@ fn station_route_contains_in_system_segments_between_gates_and_stations() {
         .expect("origin station should exist");
     let destination_station = sim
         .world
-        .first_station(SystemId(sim.world.system_count().saturating_sub(1)))
+        .first_station(last_station_system(&sim))
         .expect("destination station should exist");
     let route = sim
         .build_station_route(
@@ -1157,6 +1575,12 @@ fn snapshot_save_writes_v3_json_envelope() {
     );
 
     let loaded = crate::snapshot::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+    let loaded_state = loaded.snapshot_state();
+    let sim_state = sim.snapshot_state();
+    assert_eq!(
+        serde_json::to_value(loaded_state).expect("loaded snapshot should serialize"),
+        serde_json::to_value(sim_state).expect("snapshot state should serialize"),
+    );
     assert_eq!(loaded.snapshot_hash(), sim.snapshot_hash());
 }
 
@@ -1615,7 +2039,7 @@ fn company_planner_prefers_positive_profit_over_short_eta() {
             source_station,
             *station_id,
             AutopilotPolicy {
-                max_hops: 6,
+                max_hops: route_hop_limit(&sim),
                 ..AutopilotPolicy::default()
             },
             ship.sub_light_speed,

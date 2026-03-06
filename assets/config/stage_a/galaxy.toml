@@ -1,8 +1,38 @@
 seed = 42
-cluster_system_min = 3
-cluster_system_max = 7
-min_degree = 1
-max_degree = 3
+system_count = 25
+cluster_size_min = 3
+cluster_size_max = 5
+station_count_min = 0
+station_count_max = 4
+inter_cluster_gate_min = 1
+inter_cluster_gate_max = 3
+min_degree = 2
+max_degree = 4
 system_radius = 100.0
 base_gate_capacity = 8.0
 base_gate_travel_ticks = 15
+
+[[factions]]
+name = "Aegis Collective"
+color_rgb = [64, 169, 255]
+cluster_weight = 1.3
+
+[[factions]]
+name = "Cinder Consortium"
+color_rgb = [255, 122, 72]
+cluster_weight = 1.1
+
+[[factions]]
+name = "Verdant League"
+color_rgb = [108, 214, 112]
+cluster_weight = 0.9
+
+[[factions]]
+name = "Helix Syndicate"
+color_rgb = [198, 108, 255]
+cluster_weight = 0.8
+
+[[factions]]
+name = "Solar Union"
+color_rgb = [255, 214, 82]
+cluster_weight = 1.4

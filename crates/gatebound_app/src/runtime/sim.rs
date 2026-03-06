@@ -388,22 +388,13 @@ pub fn seed_markets_ui_state(
     }
 
     let topology = simulation.camera_topology_view();
-    let fallback_station = selected_station_id
-        .or_else(|| {
-            topology
-                .systems
-                .iter()
-                .find(|system| system.system_id == selected_system_id)
-                .and_then(|system| system.stations.first().map(|station| station.station_id))
-        })
-        .or_else(|| {
-            topology
-                .systems
-                .iter()
-                .flat_map(|system| system.stations.iter())
-                .map(|station| station.station_id)
-                .next()
-        });
+    let fallback_station = selected_station_id.or_else(|| {
+        topology
+            .systems
+            .iter()
+            .find(|system| system.system_id == selected_system_id)
+            .and_then(|system| system.stations.first().map(|station| station.station_id))
+    });
 
     state.detail_station_id = fallback_station;
     state.seeded_from_world_selection = true;

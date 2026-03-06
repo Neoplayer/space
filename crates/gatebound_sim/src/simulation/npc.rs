@@ -134,7 +134,7 @@ impl Simulation {
                     }
 
                     let policy = AutopilotPolicy {
-                        max_hops: 6,
+                        max_hops: super::stage_a_route_hop_limit(&self.world),
                         ..AutopilotPolicy::default()
                     };
                     let Some(route_to_source) = self.build_station_route_with_speed(
@@ -211,7 +211,7 @@ impl Simulation {
         if let Some(ship) = self.ships.get_mut(&plan.ship_id) {
             ship.trade_order_id = Some(order_id);
             ship.cargo = None;
-            ship.policy.max_hops = 6;
+            ship.policy.max_hops = super::stage_a_route_hop_limit(&self.world);
         }
 
         let at_source = self
@@ -329,7 +329,7 @@ impl Simulation {
                         order.source_station,
                         order.destination_station,
                         AutopilotPolicy {
-                            max_hops: 6,
+                            max_hops: super::stage_a_route_hop_limit(&self.world),
                             ..AutopilotPolicy::default()
                         },
                         ship_snapshot.sub_light_speed,
@@ -351,7 +351,7 @@ impl Simulation {
                     from_station,
                     order.source_station,
                     AutopilotPolicy {
-                        max_hops: 6,
+                        max_hops: super::stage_a_route_hop_limit(&self.world),
                         ..AutopilotPolicy::default()
                     },
                     ship_snapshot.sub_light_speed,
@@ -415,7 +415,7 @@ impl Simulation {
                     from_station,
                     order.destination_station,
                     AutopilotPolicy {
-                        max_hops: 6,
+                        max_hops: super::stage_a_route_hop_limit(&self.world),
                         ..AutopilotPolicy::default()
                     },
                     ship_snapshot.sub_light_speed,

@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FactionSeedConfig {
+    pub name: String,
+    pub color_rgb: [u8; 3],
+    pub cluster_weight: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TimeUnitsConfig {
     pub tick_seconds: u32,
@@ -27,29 +34,67 @@ impl Default for TimeUnitsConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GalaxyGenConfig {
     pub seed: u64,
-    pub cluster_system_min: u8,
-    pub cluster_system_max: u8,
+    pub system_count: u8,
+    pub cluster_size_min: u8,
+    pub cluster_size_max: u8,
+    pub station_count_min: u8,
+    pub station_count_max: u8,
+    pub inter_cluster_gate_min: u8,
+    pub inter_cluster_gate_max: u8,
     pub min_degree: u8,
     pub max_degree: u8,
     pub system_radius: f64,
     pub base_gate_capacity: f64,
     pub base_gate_travel_ticks: u32,
+    pub factions: Vec<FactionSeedConfig>,
 }
 
 impl Default for GalaxyGenConfig {
     fn default() -> Self {
         Self {
             seed: 42,
-            cluster_system_min: 3,
-            cluster_system_max: 7,
-            min_degree: 1,
-            max_degree: 3,
+            system_count: 25,
+            cluster_size_min: 3,
+            cluster_size_max: 5,
+            station_count_min: 0,
+            station_count_max: 4,
+            inter_cluster_gate_min: 1,
+            inter_cluster_gate_max: 3,
+            min_degree: 2,
+            max_degree: 4,
             system_radius: 100.0,
             base_gate_capacity: 8.0,
             base_gate_travel_ticks: 15,
+            factions: vec![
+                FactionSeedConfig {
+                    name: "Aegis Collective".to_string(),
+                    color_rgb: [64, 169, 255],
+                    cluster_weight: 1.3,
+                },
+                FactionSeedConfig {
+                    name: "Cinder Consortium".to_string(),
+                    color_rgb: [255, 122, 72],
+                    cluster_weight: 1.1,
+                },
+                FactionSeedConfig {
+                    name: "Verdant League".to_string(),
+                    color_rgb: [108, 214, 112],
+                    cluster_weight: 0.9,
+                },
+                FactionSeedConfig {
+                    name: "Helix Syndicate".to_string(),
+                    color_rgb: [198, 108, 255],
+                    cluster_weight: 0.8,
+                },
+                FactionSeedConfig {
+                    name: "Solar Union".to_string(),
+                    color_rgb: [255, 214, 82],
+                    cluster_weight: 1.4,
+                },
+            ],
         }
     }
 }
@@ -148,19 +193,73 @@ impl RuntimeConfig {
                 "months_per_year must be > 0".to_string(),
             ));
         }
-        if self.galaxy.cluster_system_min == 0 || self.galaxy.cluster_system_max == 0 {
+        if self.galaxy.system_count == 0 {
             return Err(ConfigError::Validation(
-                "cluster_system_(min|max) must be > 0".to_string(),
+                "system_count must be > 0".to_string(),
             ));
         }
-        if self.galaxy.cluster_system_min > self.galaxy.cluster_system_max {
+        if self.galaxy.cluster_size_min == 0 || self.galaxy.cluster_size_max == 0 {
             return Err(ConfigError::Validation(
-                "cluster_system_min must be <= cluster_system_max".to_string(),
+                "cluster_size_(min|max) must be > 0".to_string(),
+            ));
+        }
+        if self.galaxy.cluster_size_min > self.galaxy.cluster_size_max {
+            return Err(ConfigError::Validation(
+                "cluster_size_min must be <= cluster_size_max".to_string(),
+            ));
+        }
+        if self.galaxy.station_count_min > self.galaxy.station_count_max {
+            return Err(ConfigError::Validation(
+                "station_count_min must be <= station_count_max".to_string(),
+            ));
+        }
+        if self.galaxy.inter_cluster_gate_min == 0 || self.galaxy.inter_cluster_gate_max == 0 {
+            return Err(ConfigError::Validation(
+                "inter_cluster_gate_(min|max) must be > 0".to_string(),
+            ));
+        }
+        if self.galaxy.inter_cluster_gate_min > self.galaxy.inter_cluster_gate_max {
+            return Err(ConfigError::Validation(
+                "inter_cluster_gate_min must be <= inter_cluster_gate_max".to_string(),
             ));
         }
         if self.galaxy.min_degree > self.galaxy.max_degree {
             return Err(ConfigError::Validation(
                 "min_degree must be <= max_degree".to_string(),
+            ));
+        }
+        if self.galaxy.factions.len() != 5 {
+            return Err(ConfigError::Validation(
+                "galaxy factions must contain exactly 5 entries".to_string(),
+            ));
+        }
+        if self
+            .galaxy
+            .factions
+            .iter()
+            .any(|faction| faction.name.trim().is_empty())
+        {
+            return Err(ConfigError::Validation(
+                "galaxy faction names must not be empty".to_string(),
+            ));
+        }
+        if self
+            .galaxy
+            .factions
+            .iter()
+            .any(|faction| faction.cluster_weight <= 0.0)
+        {
+            return Err(ConfigError::Validation(
+                "galaxy faction weights must be > 0".to_string(),
+            ));
+        }
+        let min_clusters = usize::from(self.galaxy.system_count)
+            .div_ceil(usize::from(self.galaxy.cluster_size_max));
+        let max_clusters =
+            usize::from(self.galaxy.system_count) / usize::from(self.galaxy.cluster_size_min);
+        if min_clusters > max_clusters {
+            return Err(ConfigError::Validation(
+                "system_count must be partitionable into cluster size bounds".to_string(),
             ));
         }
         if self.market.delta_cap <= 0.0 {

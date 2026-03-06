@@ -130,7 +130,7 @@ pub fn draw_world_gizmos(
             CameraMode::System(selected) if selected == system.system_id => {
                 Color::srgb(0.40, 0.80, 1.0)
             }
-            _ => Color::srgb(0.20, 0.55, 0.95),
+            _ => faction_color(system.faction_color_rgb),
         };
         gizmos.circle_2d(center, system.radius as f32 * 0.18, color);
 
@@ -372,6 +372,10 @@ pub(crate) fn company_color(company_id: usize) -> Color {
     ];
     let (r, g, b) = COMPANY_PALETTE[company_id % COMPANY_PALETTE.len()];
     Color::srgb(r, g, b)
+}
+
+pub(crate) fn faction_color(color_rgb: [u8; 3]) -> Color {
+    Color::srgb_u8(color_rgb[0], color_rgb[1], color_rgb[2])
 }
 
 fn cargo_color(commodity: Commodity) -> Color {

@@ -4,6 +4,28 @@ use gatebound_domain::*;
 
 use super::state::Simulation;
 
+fn round_decimal(value: f64, digits: i32) -> f64 {
+    let scale = 10_f64.powi(digits);
+    let rounded = (value * scale).round() / scale;
+    if rounded == -0.0 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
+fn stable_offer_quantity(value: f64) -> f64 {
+    round_decimal(value, 3)
+}
+
+fn stable_offer_ratio(value: f64) -> f64 {
+    round_decimal(value, 4)
+}
+
+fn stable_offer_money(value: f64) -> f64 {
+    round_decimal(value, 2)
+}
+
 impl Simulation {
     pub fn player_contract_load(
         &mut self,
@@ -245,11 +267,16 @@ impl Simulation {
         total_cycles: u32,
     ) -> ContractId {
         let next_id = ContractId(self.contracts.len());
-        let origin_station = self.world.first_station(origin).unwrap_or(StationId(0));
-        let destination_station = self
+        let origin_station = self
             .world
-            .first_station(destination)
-            .unwrap_or(origin_station);
+            .first_station(origin)
+            .unwrap_or_else(|| panic!("origin system {:?} must contain a station", origin));
+        let destination_station = self.world.first_station(destination).unwrap_or_else(|| {
+            panic!(
+                "destination system {:?} must contain a station",
+                destination
+            )
+        });
         self.contracts.insert(
             next_id,
             Contract {
@@ -282,7 +309,7 @@ impl Simulation {
 
     pub fn refresh_contract_offers(&mut self) {
         let mut offers = BTreeMap::new();
-        let system_ids: Vec<SystemId> = self.world.systems.iter().map(|system| system.id).collect();
+        let system_ids = self.world.systems_with_stations();
 
         for window in system_ids.windows(2) {
             let origin = window[0];
@@ -478,11 +505,12 @@ impl Simulation {
         if origin == destination {
             return;
         }
-        let origin_station = self.world.first_station(origin).unwrap_or(StationId(0));
-        let destination_station = self
-            .world
-            .first_station(destination)
-            .unwrap_or(origin_station);
+        let Some(origin_station) = self.world.first_station(origin) else {
+            return;
+        };
+        let Some(destination_station) = self.world.first_station(destination) else {
+            return;
+        };
         let Some(origin_market) = self.markets.get(&origin_station) else {
             return;
         };
@@ -512,7 +540,7 @@ impl Simulation {
             origin_station,
             destination_station,
             AutopilotPolicy {
-                max_hops: 16,
+                max_hops: super::stage_a_route_hop_limit(&self.world),
                 ..AutopilotPolicy::default()
             },
             18.0,
@@ -545,19 +573,23 @@ impl Simulation {
             .map(|state| state.stock)
             .unwrap_or(0.0);
 
-        let quantity = (8.0 + imbalance * 12.0 + flow_pressure * 0.8)
-            .clamp(5.0, 30.0)
-            .min(origin_stock.max(0.0));
+        let quantity = stable_offer_quantity(
+            (8.0 + imbalance * 12.0 + flow_pressure * 0.8)
+                .clamp(5.0, 30.0)
+                .min(origin_stock.max(0.0)),
+        );
         if quantity <= 0.0 {
             return;
         }
-        let payout = 18.0 + quantity * 2.2 + eta_ticks as f64 * 0.3;
-        let penalty = (payout * 0.45).max(8.0);
-        let margin_estimate = payout
-            - f64::from(eta_ticks) * 0.15
-            - risk_score * 10.0
-            - self.config.pressure.gate_fee_per_jump;
-        let profit_per_ton = margin_estimate / quantity.max(1.0);
+        let payout = stable_offer_money(18.0 + quantity * 2.2 + eta_ticks as f64 * 0.3);
+        let penalty = stable_offer_money((payout * 0.45).max(8.0));
+        let margin_estimate = stable_offer_money(
+            payout
+                - f64::from(eta_ticks) * 0.15
+                - risk_score * 10.0
+                - self.config.pressure.gate_fee_per_jump,
+        );
+        let profit_per_ton = stable_offer_ratio(margin_estimate / quantity.max(1.0));
         let route_is_congested = route_gate_ids.iter().any(|gate_id| {
             let load = self.gate_queue_load.get(gate_id).copied().unwrap_or(0.0);
             let effective_capacity = self
@@ -596,7 +628,7 @@ impl Simulation {
             payout,
             penalty,
             eta_ticks,
-            risk_score,
+            risk_score: stable_offer_ratio(risk_score),
             margin_estimate,
             route_gate_ids,
             problem_tag,
