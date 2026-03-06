@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use crate::input::camera::{CameraMode, CameraUiState};
 use crate::ui::hud::HudMessages;
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
 pub struct UiPanelState {
     pub contracts: bool,
     pub fleet: bool,
@@ -19,16 +19,59 @@ pub struct UiPanelState {
     pub station_ops: bool,
 }
 
-impl Default for UiPanelState {
-    fn default() -> Self {
-        Self {
-            contracts: true,
-            fleet: true,
-            markets: true,
-            assets: true,
-            policies: true,
-            station_ops: true,
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelButtonSpec {
+    pub index: u8,
+    pub label: &'static str,
+    pub hotkey: &'static str,
+}
+
+const PANEL_BUTTON_SPECS: [PanelButtonSpec; 6] = [
+    PanelButtonSpec {
+        index: 1,
+        label: "Contracts",
+        hotkey: "F1",
+    },
+    PanelButtonSpec {
+        index: 2,
+        label: "MyShip",
+        hotkey: "F2",
+    },
+    PanelButtonSpec {
+        index: 3,
+        label: "Markets",
+        hotkey: "F3",
+    },
+    PanelButtonSpec {
+        index: 4,
+        label: "Finance",
+        hotkey: "F4",
+    },
+    PanelButtonSpec {
+        index: 5,
+        label: "Policies",
+        hotkey: "F5",
+    },
+    PanelButtonSpec {
+        index: 6,
+        label: "Station",
+        hotkey: "F6",
+    },
+];
+
+pub fn panel_button_specs() -> &'static [PanelButtonSpec; 6] {
+    &PANEL_BUTTON_SPECS
+}
+
+pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
+    match index {
+        1 => panels.contracts,
+        2 => panels.fleet,
+        3 => panels.markets,
+        4 => panels.assets,
+        5 => panels.policies,
+        6 => panels.station_ops,
+        _ => false,
     }
 }
 
@@ -392,6 +435,7 @@ pub fn handle_panel_hotkeys(
     mut panels: ResMut<UiPanelState>,
     mut selected_ship: ResMut<SelectedShip>,
     sim: Res<SimResource>,
+    mut station_ui: ResMut<StationUiState>,
     mut kpi: ResMut<UiKpiTracker>,
 ) {
     let mut manual_action = false;
@@ -417,6 +461,7 @@ pub fn handle_panel_hotkeys(
     }
     if keys.just_pressed(KeyCode::F6) {
         apply_panel_toggle(&mut panels, 6);
+        station_ui.station_panel_open = panels.station_ops;
         manual_action = true;
     }
 

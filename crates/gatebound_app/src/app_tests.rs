@@ -6,9 +6,9 @@ use crate::render::world::{
     update_ship_motion_cache, ShipMotionCache,
 };
 use crate::runtime::sim::{
-    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, panel_hotkey_to_index,
-    ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey, SimResource, StationUiState,
-    UiKpiTracker,
+    apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, panel_button_specs,
+    panel_hotkey_to_index, ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey,
+    SimResource, StationUiState, UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
@@ -211,20 +211,47 @@ fn finance_ui_state_defaults_are_sensible() {
 #[test]
 fn panel_hotkeys_toggle_expected_windows() {
     let mut panels = crate::runtime::sim::UiPanelState::default();
+    assert!(!panels.contracts);
+    assert!(!panels.fleet);
+    assert!(!panels.markets);
+    assert!(!panels.assets);
+    assert!(!panels.policies);
+    assert!(!panels.station_ops);
+
     assert_eq!(panel_hotkey_to_index('1'), Some(1));
     apply_panel_toggle(&mut panels, 1);
-    assert!(!panels.contracts);
+    assert!(panels.contracts);
     apply_panel_toggle(&mut panels, 2);
-    assert!(!panels.fleet);
+    assert!(panels.fleet);
     apply_panel_toggle(&mut panels, 3);
-    assert!(!panels.markets);
+    assert!(panels.markets);
     apply_panel_toggle(&mut panels, 4);
-    assert!(!panels.assets);
+    assert!(panels.assets);
     apply_panel_toggle(&mut panels, 5);
-    assert!(!panels.policies);
+    assert!(panels.policies);
     assert_eq!(panel_hotkey_to_index('6'), Some(6));
     apply_panel_toggle(&mut panels, 6);
-    assert!(!panels.station_ops);
+    assert!(panels.station_ops);
+}
+
+#[test]
+fn left_panel_buttons_cover_all_windows() {
+    let buttons: Vec<_> = panel_button_specs()
+        .iter()
+        .map(|button| (button.index, button.label, button.hotkey))
+        .collect();
+
+    assert_eq!(
+        buttons,
+        vec![
+            (1, "Contracts", "F1"),
+            (2, "MyShip", "F2"),
+            (3, "Markets", "F3"),
+            (4, "Finance", "F4"),
+            (5, "Policies", "F5"),
+            (6, "Station", "F6"),
+        ]
+    );
 }
 
 #[test]

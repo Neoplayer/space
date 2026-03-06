@@ -3,8 +3,9 @@ use bevy_egui::{egui, EguiContexts};
 use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode};
 
 use crate::runtime::sim::{
-    ContractsFilterState, FinanceUiState, OfferSortMode, SelectedShip, SelectedStation,
-    SelectedSystem, SimClock, SimResource, StationUiState, UiKpiTracker, UiPanelState,
+    panel_button_specs, panel_is_open, ContractsFilterState, FinanceUiState, OfferSortMode,
+    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, StationUiState,
+    UiKpiTracker, UiPanelState,
 };
 
 use super::labels::{
@@ -94,13 +95,29 @@ pub fn draw_hud_panel(
     egui::SidePanel::left("gatebound_left_hud")
         .resizable(true)
         .show(ctx, |ui| {
+            ui.heading("Windows");
+            ui.label("All HUD windows start closed.");
+            for button in panel_button_specs() {
+                let open = panel_is_open(&panels, button.index);
+                let status = if open { "open" } else { "closed" };
+                let label = format!("{} ({}) [{}]", button.label, button.hotkey, status);
+                if ui.selectable_label(open, label).clicked() {
+                    crate::runtime::sim::apply_panel_toggle(&mut panels, button.index);
+                    if button.index == 6 {
+                        station_ui.station_panel_open = panels.station_ops;
+                    }
+                    kpi.record_manual_action(sim.simulation.tick());
+                }
+            }
+
+            ui.separator();
             ui.heading("Controls");
             ui.label("Space: pause/resume");
             ui.label("1/2/4: sim speed");
             ui.label("Mouse wheel / +/-: zoom");
             ui.label("Double-click system: enter System view");
             ui.label("Esc: back to Galaxy view");
-            ui.label("F1..F6: toggle panels");
+            ui.label("F1..F6: toggle window buttons");
             ui.label("[ / ]: switch selected player ship");
             ui.label("Right-click station: context menu (Fly / Open station UI)");
             ui.label("Finance panel (F4): take credit, repay partially or fully");
@@ -471,7 +488,7 @@ pub fn draw_hud_panel(
     }
 
     if panels.station_ops && station_ui.station_panel_open {
-        let mut open = station_ui.station_panel_open;
+        let mut open = panels.station_ops;
         egui::Window::new("Station Operations")
             .open(&mut open)
             .show(ctx, |ui| {
@@ -701,6 +718,7 @@ pub fn draw_hud_panel(
                     buy_cap, sell_cap
                 ));
             });
+        panels.station_ops = open;
         station_ui.station_panel_open = open;
     }
 
