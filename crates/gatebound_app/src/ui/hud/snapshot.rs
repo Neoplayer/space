@@ -8,7 +8,8 @@ use gatebound_sim::{
     CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
     StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
     StationMarketDetailView, StationTradeView, SystemCommodityHotspotView, SystemDetailsView,
-    SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView, TimeSettingsView,
+    SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView,
+    SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -46,6 +47,7 @@ pub struct HudSnapshot {
     pub offers: Vec<ContractOfferView>,
     pub fleet_rows: Vec<FleetShipStatus>,
     pub fleet_list_rows: Vec<FleetListRowSnapshot>,
+    pub systems_list_rows: Vec<SystemsListRowSnapshot>,
     pub corporation_rows: Vec<CorporationRowView>,
     pub markets: MarketsDashboardSnapshot,
     pub milestones: Vec<MilestoneStatus>,
@@ -317,6 +319,18 @@ pub struct FleetListRowSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SystemsListRowSnapshot {
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub owner_faction_name: String,
+    pub owner_faction_color_rgb: [u8; 3],
+    pub station_count: usize,
+    pub ship_count: usize,
+    pub outgoing_gate_count: usize,
+    pub stock_coverage: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct StationCardSnapshot {
     pub station_id: StationId,
     pub system_id: SystemId,
@@ -381,8 +395,10 @@ pub fn build_hud_snapshot(
     );
     let finance_panel = simulation.finance_panel_view();
     let corporation_panel = simulation.corporation_panel_view();
+    let systems_panel = simulation.systems_panel_view();
     let resolved_ship_id = selected_ship_id.or(fleet_panel.default_player_ship_id);
     let fleet_list_rows = build_fleet_list_rows(simulation, &fleet_panel.player_ship_ids);
+    let systems_list_rows = build_systems_list_rows(&systems_panel);
     let station_card = station_card_station_id
         .and_then(|station_id| resolved_ship_id.map(|ship_id| (ship_id, station_id)))
         .and_then(|(ship_id, station_id)| {
@@ -498,6 +514,7 @@ pub fn build_hud_snapshot(
         offers,
         fleet_rows: fleet_panel.rows,
         fleet_list_rows,
+        systems_list_rows,
         corporation_rows: corporation_panel.rows,
         markets: build_markets_snapshot(simulation, &market_panel),
         milestones: overview.milestones,
@@ -923,6 +940,27 @@ fn build_fleet_list_rows(
             .then_with(|| left.ship_id.0.cmp(&right.ship_id.0))
     });
     rows
+}
+
+fn build_systems_list_rows(panel: &SystemsPanelView) -> Vec<SystemsListRowSnapshot> {
+    panel
+        .rows
+        .iter()
+        .map(build_systems_list_row_snapshot)
+        .collect()
+}
+
+fn build_systems_list_row_snapshot(row: &SystemsPanelRowView) -> SystemsListRowSnapshot {
+    SystemsListRowSnapshot {
+        system_id: row.system_id,
+        system_name: row.system_name.clone(),
+        owner_faction_name: row.owner_faction_name.clone(),
+        owner_faction_color_rgb: row.owner_faction_color_rgb,
+        station_count: row.station_count,
+        ship_count: row.ship_count,
+        outgoing_gate_count: row.outgoing_gate_count,
+        stock_coverage: row.stock_coverage,
+    }
 }
 
 pub(crate) fn build_ship_card_snapshot_for_ui(

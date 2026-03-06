@@ -6,7 +6,9 @@ use gatebound_domain::{ShipId, StationId, SystemId};
 use gatebound_sim::CameraTopologyView;
 
 use crate::render::world::{pick_visible_ship, ShipMotionCache};
-use crate::runtime::sim::{SelectedStation, ShipUiState, SimResource, StationUiState};
+use crate::runtime::sim::{
+    open_system_view, SelectedStation, ShipUiState, SimResource, StationUiState,
+};
 
 const GALAXY_PAN_MARGIN_FACTOR: f32 = 1.2;
 const CAMERA_ZOOM_STEP: f32 = 0.08;
@@ -68,7 +70,7 @@ pub fn apply_system_click(
     tracker.last_click_seconds = now_seconds;
 
     if is_double_click {
-        *mode = CameraMode::System(system_id);
+        open_system_view(mode, system_id);
         return true;
     }
 

@@ -10,11 +10,11 @@ use crate::render::world::{
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
     open_station_card, open_system_ship_inspector_selection,
-    open_system_station_inspector_selection, panel_button_specs, panel_hotkey_to_index,
-    seed_markets_ui_state, set_time_speed, toggle_pause, track_ship, ContractsFilterState,
-    FinanceUiState, MarketsUiState, OfferSortMode, RiskHotkey, SelectedShip, SelectedStation,
-    ShipCardTab, ShipUiState, SimResource, StationCardTab, StationUiState, TrackedShip,
-    UiKpiTracker, UiPanelState,
+    open_system_station_inspector_selection, open_system_view, panel_button_specs,
+    panel_hotkey_to_index, seed_markets_ui_state, set_time_speed, toggle_pause, track_ship,
+    ContractsFilterState, FinanceUiState, MarketsUiState, OfferSortMode, RiskHotkey, SelectedShip,
+    SelectedStation, ShipCardTab, ShipUiState, SimResource, StationCardTab, StationUiState,
+    TrackedShip, UiKpiTracker, UiPanelState,
 };
 use crate::ui::hud::{
     build_hud_snapshot as build_hud_snapshot_v2, build_ship_card_snapshot_for_ui,
@@ -155,6 +155,7 @@ fn shared_time_controls_update_pause_and_speed() {
 fn double_click_enters_system_and_escape_returns_to_galaxy() {
     let mut mode = CameraMode::Galaxy;
     let mut tracker = ClickTracker::default();
+    let mut helper_mode = CameraMode::Galaxy;
 
     assert!(!apply_system_click(
         &mut mode,
@@ -168,7 +169,10 @@ fn double_click_enters_system_and_escape_returns_to_galaxy() {
         SystemId(2),
         0.2
     ));
+    open_system_view(&mut helper_mode, SystemId(2));
+    assert_eq!(helper_mode, CameraMode::System(SystemId(2)));
     assert_eq!(mode, CameraMode::System(SystemId(2)));
+    assert_eq!(mode, helper_mode);
 
     apply_escape(&mut mode, true);
     assert_eq!(mode, CameraMode::Galaxy);
@@ -438,6 +442,7 @@ fn panel_hotkeys_toggle_expected_windows() {
     assert!(!panels.policies);
     assert!(!panels.station_ops);
     assert!(!panels.corporations);
+    assert!(!panels.systems);
 
     assert_eq!(panel_hotkey_to_index('1'), Some(1));
     apply_panel_toggle(&mut panels, 1);
@@ -456,6 +461,9 @@ fn panel_hotkeys_toggle_expected_windows() {
     assert_eq!(panel_hotkey_to_index('7'), Some(7));
     apply_panel_toggle(&mut panels, 7);
     assert!(panels.corporations);
+    assert_eq!(panel_hotkey_to_index('8'), Some(8));
+    apply_panel_toggle(&mut panels, 8);
+    assert!(panels.systems);
 }
 
 #[test]
@@ -475,6 +483,7 @@ fn left_panel_buttons_cover_all_windows() {
             (5, "Policies", "F5"),
             (6, "Station", "F6"),
             (7, "Corps", "F7"),
+            (8, "Systems", "F8"),
         ]
     );
 }
@@ -1792,6 +1801,68 @@ fn system_panel_snapshot_exposes_owner_metrics_stations_and_local_ships() {
         .iter()
         .all(|ship| ship.system_id == selected_system_id));
     assert!(!system_panel.ships[0].status_text.is_empty());
+}
+
+#[test]
+fn systems_snapshot_lists_all_systems_sorted_by_stock_coverage() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let selected_station_id = sim
+        .camera_topology_view()
+        .systems
+        .iter()
+        .find(|system| system.system_id == SystemId(0))
+        .and_then(|system| system.stations.first().map(|station| station.station_id));
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        false,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        selected_station_id,
+        selected_station_id,
+        Commodity::Fuel,
+        selected_station_id,
+        None,
+        Some(ShipId(0)),
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    assert_eq!(
+        snapshot.systems_list_rows.len(),
+        sim.camera_topology_view().systems.len()
+    );
+
+    for row in &snapshot.systems_list_rows {
+        let details = sim
+            .system_details_view(row.system_id)
+            .expect("systems list row should resolve system details");
+        let topology_system = sim
+            .camera_topology_view()
+            .systems
+            .into_iter()
+            .find(|system| system.system_id == row.system_id)
+            .expect("systems list row should exist in topology");
+
+        assert_eq!(row.system_name, expected_system_name(row.system_id));
+        assert_eq!(row.owner_faction_name, details.owner_faction_name);
+        assert_eq!(row.owner_faction_color_rgb, details.faction_color_rgb);
+        assert_eq!(row.station_count, topology_system.stations.len());
+        assert_eq!(row.ship_count, details.ships.len());
+        assert_eq!(row.outgoing_gate_count, details.outgoing_gate_count);
+        assert_eq!(row.stock_coverage, details.stock_coverage);
+    }
+
+    let mut expected = snapshot.systems_list_rows.clone();
+    expected.sort_by(|left, right| {
+        right
+            .stock_coverage
+            .total_cmp(&left.stock_coverage)
+            .then_with(|| left.system_name.cmp(&right.system_name))
+            .then_with(|| left.system_id.0.cmp(&right.system_id.0))
+    });
+    assert_eq!(snapshot.systems_list_rows, expected);
 }
 
 #[test]

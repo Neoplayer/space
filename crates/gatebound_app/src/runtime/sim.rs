@@ -18,6 +18,7 @@ pub struct UiPanelState {
     pub policies: bool,
     pub station_ops: bool,
     pub corporations: bool,
+    pub systems: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct PanelButtonSpec {
     pub hotkey: &'static str,
 }
 
-const PANEL_BUTTON_SPECS: [PanelButtonSpec; 7] = [
+const PANEL_BUTTON_SPECS: [PanelButtonSpec; 8] = [
     PanelButtonSpec {
         index: 1,
         label: "Contracts",
@@ -63,9 +64,14 @@ const PANEL_BUTTON_SPECS: [PanelButtonSpec; 7] = [
         label: "Corps",
         hotkey: "F7",
     },
+    PanelButtonSpec {
+        index: 8,
+        label: "Systems",
+        hotkey: "F8",
+    },
 ];
 
-pub fn panel_button_specs() -> &'static [PanelButtonSpec; 7] {
+pub fn panel_button_specs() -> &'static [PanelButtonSpec; 8] {
     &PANEL_BUTTON_SPECS
 }
 
@@ -78,6 +84,7 @@ pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
         5 => panels.policies,
         6 => panels.station_ops,
         7 => panels.corporations,
+        8 => panels.systems,
         _ => false,
     }
 }
@@ -459,6 +466,7 @@ pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
         '5' => Some(5),
         '6' => Some(6),
         '7' => Some(7),
+        '8' => Some(8),
         _ => None,
     }
 }
@@ -472,8 +480,13 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
         5 => panels.policies = !panels.policies,
         6 => panels.station_ops = !panels.station_ops,
         7 => panels.corporations = !panels.corporations,
+        8 => panels.systems = !panels.systems,
         _ => {}
     }
+}
+
+pub fn open_system_view(mode: &mut CameraMode, system_id: SystemId) {
+    *mode = CameraMode::System(system_id);
 }
 
 pub fn open_station_card(
@@ -537,7 +550,7 @@ pub fn track_ship(
 ) -> Option<SystemId> {
     let system_id = simulation.ship_card_view(ship_id)?.location;
     tracked_ship.ship_id = Some(ship_id);
-    camera.mode = CameraMode::System(system_id);
+    open_system_view(&mut camera.mode, system_id);
     Some(system_id)
 }
 
@@ -647,6 +660,10 @@ pub fn handle_panel_hotkeys(
     }
     if keys.just_pressed(KeyCode::F7) {
         apply_panel_toggle(&mut panels, 7);
+        manual_action = true;
+    }
+    if keys.just_pressed(KeyCode::F8) {
+        apply_panel_toggle(&mut panels, 8);
         manual_action = true;
     }
 

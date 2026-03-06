@@ -270,6 +270,61 @@ impl Simulation {
         }
     }
 
+    pub fn systems_panel_view(&self) -> SystemsPanelView {
+        let stress_rows = self.system_market_stress_rows();
+        let mut rows = self
+            .world
+            .systems
+            .iter()
+            .filter_map(|system| {
+                let faction = self
+                    .world
+                    .factions
+                    .iter()
+                    .find(|faction| faction.id == system.owner_faction_id)?;
+                let station_count = self
+                    .world
+                    .stations_by_system
+                    .get(&system.id)
+                    .map_or(0, |stations| stations.len());
+                let ship_count = self
+                    .ships
+                    .values()
+                    .filter(|ship| ship.location == system.id)
+                    .count();
+                let outgoing_gate_count = self
+                    .world
+                    .adjacency
+                    .get(&system.id)
+                    .map_or(0, |entries| entries.len());
+                let stock_coverage = stress_rows
+                    .iter()
+                    .find(|row| row.system_id == system.id)
+                    .map_or(0.0, |row| row.stock_coverage);
+
+                Some(SystemsPanelRowView {
+                    system_id: system.id,
+                    system_name: generated_system_name(system.id),
+                    owner_faction_name: faction.name.clone(),
+                    owner_faction_color_rgb: faction.color_rgb,
+                    station_count,
+                    ship_count,
+                    outgoing_gate_count,
+                    stock_coverage,
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .stock_coverage
+                .total_cmp(&left.stock_coverage)
+                .then_with(|| left.system_name.cmp(&right.system_name))
+                .then_with(|| left.system_id.0.cmp(&right.system_id.0))
+        });
+
+        SystemsPanelView { rows }
+    }
+
     pub fn corporation_panel_view(&self) -> CorporationPanelView {
         let mut rows = self
             .npc_company_runtimes
@@ -1540,6 +1595,19 @@ impl Simulation {
         let ratio = (stock / target).clamp(0.0, 1.0);
         (1.0 - ratio as f32).clamp(0.0, 1.0)
     }
+}
+
+fn generated_system_name(system_id: SystemId) -> String {
+    const PREFIXES: [&str; 8] = [
+        "Aster", "Cinder", "Helios", "Kepler", "Lyra", "Nimbus", "Orion", "Vega",
+    ];
+    const SUFFIXES: [&str; 8] = [
+        "Reach", "Gate", "Haven", "Drift", "Span", "Crown", "Verge", "Anchor",
+    ];
+
+    let prefix = PREFIXES[system_id.0 % PREFIXES.len()];
+    let suffix = SUFFIXES[(system_id.0 / PREFIXES.len()) % SUFFIXES.len()];
+    format!("{prefix} {suffix}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

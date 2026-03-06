@@ -5,7 +5,7 @@ use gatebound_sim::TradePriceTone;
 
 use crate::runtime::sim::{
     open_ship_card, open_station_card, open_system_ship_inspector_selection,
-    open_system_station_inspector_selection, panel_button_specs, panel_is_open,
+    open_system_station_inspector_selection, open_system_view, panel_button_specs, panel_is_open,
     preferred_trade_commodity, seed_markets_ui_state, set_time_speed, toggle_pause, track_ship,
     ContractsFilterState, FinanceUiState, MarketsUiState, OfferSortMode, SelectedShip,
     SelectedStation, SelectedSystem, ShipCardTab, ShipUiState, SimClock, SimResource,
@@ -24,7 +24,7 @@ use super::snapshot::{
     build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
     MarketsDashboardSnapshot, MarketsStationDetailSnapshot, ShipCardSnapshot, StationCardSnapshot,
     StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot, SystemShipSnapshot,
-    SystemStationSnapshot,
+    SystemStationSnapshot, SystemsListRowSnapshot,
 };
 
 #[cfg(test)]
@@ -527,6 +527,41 @@ pub fn draw_hud_panel(
                     });
             });
         panels.fleet = open;
+    }
+
+    if panels.systems {
+        let mut open = panels.systems;
+        let current_mode = camera.mode;
+        egui::Window::new("Systems")
+            .default_width(520.0)
+            .default_height(480.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Systems: {}", snapshot.systems_list_rows.len()));
+                ui.separator();
+
+                if snapshot.systems_list_rows.is_empty() {
+                    ui.label("No systems available");
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for row in &snapshot.systems_list_rows {
+                            render_systems_list_row(
+                                ui,
+                                row,
+                                current_mode,
+                                &mut camera,
+                                &mut kpi,
+                                sim.simulation.tick(),
+                            );
+                            ui.add_space(6.0);
+                        }
+                    });
+            });
+        panels.systems = open;
     }
 
     if panels.markets {
@@ -1357,6 +1392,54 @@ fn render_system_panel_header(ui: &mut egui::Ui, panel: &SystemPanelSnapshot) {
                     ),
                     &panel.owner_faction_name,
                 );
+            });
+        });
+}
+
+fn render_systems_list_row(
+    ui: &mut egui::Ui,
+    row: &SystemsListRowSnapshot,
+    current_mode: crate::input::camera::CameraMode,
+    camera: &mut crate::input::camera::CameraUiState,
+    kpi: &mut UiKpiTracker,
+    current_tick: u64,
+) {
+    let is_open = matches!(
+        current_mode,
+        crate::input::camera::CameraMode::System(system_id) if system_id == row.system_id
+    );
+    let fill = if is_open {
+        egui::Color32::from_rgb(24, 35, 44)
+    } else {
+        egui::Color32::from_rgb(16, 21, 28)
+    };
+
+    egui::Frame::group(ui.style())
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 72, 88)))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(&row.system_name).strong());
+                    ui.colored_label(
+                        egui::Color32::from_rgb(
+                            row.owner_faction_color_rgb[0],
+                            row.owner_faction_color_rgb[1],
+                            row.owner_faction_color_rgb[2],
+                        ),
+                        &row.owner_faction_name,
+                    );
+                    ui.label(format!(
+                        "Stations {}  Ships {}  Gates {}",
+                        row.station_count, row.ship_count, row.outgoing_gate_count
+                    ));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Open system").clicked() {
+                        open_system_view(&mut camera.mode, row.system_id);
+                        kpi.record_manual_action(current_tick);
+                    }
+                });
             });
         });
 }

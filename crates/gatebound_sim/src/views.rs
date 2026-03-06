@@ -170,6 +170,23 @@ pub struct FleetPanelView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SystemsPanelRowView {
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub owner_faction_name: String,
+    pub owner_faction_color_rgb: [u8; 3],
+    pub station_count: usize,
+    pub ship_count: usize,
+    pub outgoing_gate_count: usize,
+    pub stock_coverage: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemsPanelView {
+    pub rows: Vec<SystemsPanelRowView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CorporationRowView {
     pub company_id: CompanyId,
     pub name: String,
