@@ -12,6 +12,14 @@ fn station_for_system(sim: &Simulation, system_id: SystemId) -> StationId {
         .expect("system station should exist")
 }
 
+fn all_station_ids(sim: &Simulation) -> Vec<StationId> {
+    sim.world
+        .stations
+        .iter()
+        .map(|station| station.id)
+        .collect()
+}
+
 #[test]
 fn generation_respects_cluster_and_connectivity_and_degree() {
     let cfg = stage_a_config();
@@ -2126,6 +2134,289 @@ fn market_insights_produce_trend_forecast_and_factors() {
     assert!(fuel_row.forecast_next.is_finite());
     assert!(fuel_row.imbalance_factor.is_finite());
     assert!(fuel_row.congestion_factor.is_finite());
+}
+
+#[test]
+fn market_panel_view_aggregates_galaxy_metrics_per_commodity() {
+    let mut sim = Simulation::new(stage_a_config(), 247);
+    let all_stations = all_station_ids(&sim);
+    let system0 = sim
+        .world
+        .stations_by_system
+        .get(&SystemId(0))
+        .cloned()
+        .expect("system 0 should exist");
+    let system1 = sim
+        .world
+        .stations_by_system
+        .get(&SystemId(1))
+        .cloned()
+        .expect("system 1 should exist");
+    let s0a = system0[0];
+    let s0b = system0[1];
+    let s1a = system1[0];
+    let s1b = system1[1];
+
+    for station_id in &all_stations {
+        let fuel = sim
+            .markets
+            .get_mut(station_id)
+            .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+            .expect("fuel state should exist");
+        fuel.price = 20.0;
+        fuel.stock = 100.0;
+        fuel.target_stock = 100.0;
+        fuel.cycle_inflow = 4.0;
+        fuel.cycle_outflow = 4.0;
+        sim.previous_cycle_prices
+            .insert((*station_id, Commodity::Fuel), 18.0);
+    }
+
+    let patches = [
+        (s0a, 10.0, 50.0, 3.0, 9.0, 8.0),
+        (s0b, 14.0, 80.0, 2.0, 7.0, 14.0),
+        (s1a, 30.0, 120.0, 9.0, 2.0, 28.0),
+        (s1b, 26.0, 110.0, 8.0, 3.0, 25.0),
+    ];
+    for (station_id, price, stock, inflow, outflow, previous_price) in patches {
+        let fuel = sim
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+            .expect("patched fuel state should exist");
+        fuel.price = price;
+        fuel.stock = stock;
+        fuel.cycle_inflow = inflow;
+        fuel.cycle_outflow = outflow;
+        sim.previous_cycle_prices
+            .insert((station_id, Commodity::Fuel), previous_price);
+    }
+
+    let panel = sim.market_panel_view(SystemId(0), Some(s0a), Commodity::Fuel);
+    let fuel = panel
+        .commodity_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel commodity row should exist");
+
+    let station_count = all_stations.len() as f64;
+    let expected_avg = (10.0 + 14.0 + 30.0 + 26.0 + 20.0 * (station_count - 4.0)) / station_count;
+    let expected_total_stock = 50.0 + 80.0 + 120.0 + 110.0 + 100.0 * (station_count - 4.0);
+    let expected_total_target = 100.0 * station_count;
+    let expected_inflow = 3.0 + 2.0 + 9.0 + 8.0 + 4.0 * (station_count - 4.0);
+    let expected_outflow = 9.0 + 7.0 + 2.0 + 3.0 + 4.0 * (station_count - 4.0);
+    let expected_trend = ((10.0 - 8.0)
+        + (14.0 - 14.0)
+        + (30.0 - 28.0)
+        + (26.0 - 25.0)
+        + 2.0 * (station_count - 4.0))
+        / station_count;
+    let forecast = |price: f64, stock: f64, inflow: f64, outflow: f64| {
+        let imbalance = (100.0 - stock) / 100.0;
+        let flow_pressure = (outflow - inflow) / 100.0;
+        let raw_delta =
+            sim.config.market.k_stock * imbalance + sim.config.market.k_flow * flow_pressure;
+        let delta = raw_delta.clamp(-sim.config.market.delta_cap, sim.config.market.delta_cap);
+        let floor = 16.0 * sim.config.market.floor_mult;
+        let ceil = 16.0 * sim.config.market.ceiling_mult;
+        (price * (1.0 + delta)).clamp(floor, ceil)
+    };
+    let expected_forecast = (forecast(10.0, 50.0, 3.0, 9.0)
+        + forecast(14.0, 80.0, 2.0, 7.0)
+        + forecast(30.0, 120.0, 9.0, 2.0)
+        + forecast(26.0, 110.0, 8.0, 3.0)
+        + forecast(20.0, 100.0, 4.0, 4.0) * (station_count - 4.0))
+        / station_count;
+
+    assert!((fuel.galaxy_avg_price - expected_avg).abs() < 1e-9);
+    assert_eq!(fuel.min_price_station_id, Some(s0a));
+    assert!((fuel.min_price - 10.0).abs() < 1e-9);
+    assert_eq!(fuel.max_price_station_id, Some(s1a));
+    assert!((fuel.max_price - 30.0).abs() < 1e-9);
+    assert!((fuel.spread_abs - 20.0).abs() < 1e-9);
+    assert_eq!(fuel.cheapest_system_id, Some(SystemId(0)));
+    assert!((fuel.cheapest_system_avg_price - 12.0).abs() < 1e-9);
+    assert_eq!(fuel.priciest_system_id, Some(SystemId(1)));
+    assert!((fuel.priciest_system_avg_price - 28.0).abs() < 1e-9);
+    assert!((fuel.total_stock - expected_total_stock).abs() < 1e-9);
+    assert!((fuel.stock_coverage - (expected_total_stock / expected_total_target)).abs() < 1e-9);
+    assert!((fuel.inflow - expected_inflow).abs() < 1e-9);
+    assert!((fuel.outflow - expected_outflow).abs() < 1e-9);
+    assert!((fuel.net_flow - (expected_inflow - expected_outflow)).abs() < 1e-9);
+    assert!((fuel.trend_delta - expected_trend).abs() < 1e-9);
+    assert!((fuel.forecast_next_avg - expected_forecast).abs() < 1e-9);
+    assert!((fuel.price_vs_base - (expected_avg / 16.0)).abs() < 1e-9);
+    assert_eq!(fuel.stations_below_target, 2);
+    assert_eq!(fuel.stations_above_target, 2);
+}
+
+#[test]
+fn market_panel_view_ranks_system_stress_hotspots_and_station_anomalies() {
+    let mut sim = Simulation::new(stage_a_config(), 249);
+    let all_stations = all_station_ids(&sim);
+    let system0 = sim
+        .world
+        .stations_by_system
+        .get(&SystemId(0))
+        .cloned()
+        .expect("system 0 should exist");
+    let system1 = sim
+        .world
+        .stations_by_system
+        .get(&SystemId(1))
+        .cloned()
+        .expect("system 1 should exist");
+    let hot_station = system0[0];
+    let stressed_station = system0[1];
+    let cheap_station = system1[0];
+
+    for station_id in &all_stations {
+        let fuel = sim
+            .markets
+            .get_mut(station_id)
+            .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+            .expect("fuel state should exist");
+        fuel.price = 20.0;
+        fuel.stock = 100.0;
+        fuel.target_stock = 100.0;
+        fuel.cycle_inflow = 4.0;
+        fuel.cycle_outflow = 4.0;
+    }
+
+    for station_id in [hot_station, stressed_station] {
+        let fuel = sim
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+            .expect("system 0 fuel state should exist");
+        fuel.price = if station_id == hot_station {
+            40.0
+        } else {
+            36.0
+        };
+        fuel.stock = if station_id == hot_station { 8.0 } else { 16.0 };
+        fuel.cycle_inflow = 1.0;
+        fuel.cycle_outflow = 12.0;
+    }
+    let cheap_fuel = sim
+        .markets
+        .get_mut(&cheap_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("cheap station fuel should exist");
+    cheap_fuel.price = 9.0;
+    cheap_fuel.stock = 180.0;
+    cheap_fuel.cycle_inflow = 12.0;
+    cheap_fuel.cycle_outflow = 1.0;
+
+    if let Some(edges) = sim.world.adjacency.get(&SystemId(0)) {
+        for (_, gate_id) in edges {
+            sim.gate_queue_load.insert(*gate_id, 48.0);
+        }
+    }
+
+    let panel = sim.market_panel_view(SystemId(0), Some(hot_station), Commodity::Fuel);
+
+    assert_eq!(panel.system_stress_rows[0].system_id, SystemId(0));
+    assert_eq!(
+        panel.commodity_hotspots.cheapest_stations[0].station_id,
+        cheap_station
+    );
+    assert_eq!(
+        panel.commodity_hotspots.priciest_stations[0].station_id,
+        hot_station
+    );
+    assert_eq!(
+        panel.commodity_hotspots.cheapest_systems[0].system_id,
+        SystemId(1)
+    );
+    assert_eq!(
+        panel.commodity_hotspots.priciest_systems[0].system_id,
+        SystemId(0)
+    );
+    assert_eq!(panel.station_anomaly_rows[0].station_id, hot_station);
+}
+
+#[test]
+fn market_panel_view_exposes_selected_station_drilldown() {
+    let mut sim = Simulation::new(stage_a_config(), 251);
+    let detail_station = station_for_system(&sim, SystemId(0));
+
+    for station_id in all_station_ids(&sim) {
+        for commodity in [Commodity::Fuel, Commodity::Electronics] {
+            let state = sim
+                .markets
+                .get_mut(&station_id)
+                .and_then(|book| book.goods.get_mut(&commodity))
+                .expect("state should exist");
+            state.price = match commodity {
+                Commodity::Fuel => 20.0,
+                Commodity::Electronics => 34.0,
+                _ => unreachable!(),
+            };
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.cycle_inflow = 4.0;
+            state.cycle_outflow = 4.0;
+            sim.previous_cycle_prices
+                .insert((station_id, commodity), state.price - 1.0);
+        }
+    }
+
+    let fuel = sim
+        .markets
+        .get_mut(&detail_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("fuel state should exist");
+    fuel.price = 12.0;
+    fuel.stock = 30.0;
+    fuel.cycle_inflow = 1.0;
+    fuel.cycle_outflow = 10.0;
+    sim.previous_cycle_prices
+        .insert((detail_station, Commodity::Fuel), 11.0);
+
+    let electronics = sim
+        .markets
+        .get_mut(&detail_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Electronics))
+        .expect("electronics state should exist");
+    electronics.price = 52.0;
+    electronics.stock = 165.0;
+    electronics.cycle_inflow = 12.0;
+    electronics.cycle_outflow = 1.0;
+    sim.previous_cycle_prices
+        .insert((detail_station, Commodity::Electronics), 46.0);
+
+    let panel = sim.market_panel_view(SystemId(0), Some(detail_station), Commodity::Fuel);
+    let detail = panel
+        .station_detail
+        .as_ref()
+        .expect("station drilldown should exist");
+    let fuel_row = detail
+        .commodity_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel detail row should exist");
+    let electronics_row = detail
+        .commodity_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Electronics)
+        .expect("electronics detail row should exist");
+
+    assert_eq!(detail.station_id, detail_station);
+    assert_eq!(detail.system_id, SystemId(0));
+    assert_eq!(detail.strongest_shortage_commodity, Some(Commodity::Fuel));
+    assert_eq!(
+        detail.strongest_surplus_commodity,
+        Some(Commodity::Electronics)
+    );
+    assert_eq!(detail.best_buy_commodity, Some(Commodity::Fuel));
+    assert_eq!(detail.best_sell_commodity, Some(Commodity::Electronics));
+    assert!((fuel_row.local_price - 12.0).abs() < 1e-9);
+    assert!(fuel_row.galaxy_avg_price > fuel_row.local_price);
+    assert!(fuel_row.net_flow < 0.0);
+    assert!((electronics_row.local_price - 52.0).abs() < 1e-9);
+    assert!(electronics_row.galaxy_avg_price < electronics_row.local_price);
+    assert!(electronics_row.net_flow > 0.0);
 }
 
 #[test]

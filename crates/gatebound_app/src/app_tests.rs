@@ -8,9 +8,10 @@ use crate::render::world::{
 };
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
-    open_station_card, panel_button_specs, panel_hotkey_to_index, set_time_speed, toggle_pause,
-    track_ship, ContractsFilterState, FinanceUiState, OfferSortMode, RiskHotkey, ShipCardTab,
-    ShipUiState, SimResource, StationCardTab, StationUiState, TrackedShip, UiKpiTracker,
+    open_station_card, panel_button_specs, panel_hotkey_to_index, seed_markets_ui_state,
+    set_time_speed, toggle_pause, track_ship, ContractsFilterState, FinanceUiState, MarketsUiState,
+    OfferSortMode, RiskHotkey, ShipCardTab, ShipUiState, SimResource, StationCardTab,
+    StationUiState, TrackedShip, UiKpiTracker,
 };
 use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
 use bevy::prelude::*;
@@ -51,6 +52,8 @@ fn build_hud_snapshot(
         camera_mode,
         selected_system_id,
         selected_station,
+        selected_station,
+        Commodity::Fuel,
         selected_station,
         None,
         selected_ship_id,
@@ -238,6 +241,28 @@ fn station_ui_state_defaults_include_info_tab() {
     assert_eq!(state.card_station_id, None);
     assert_eq!(state.trade_commodity, Commodity::Fuel);
     assert!(state.trade_quantity > 0.0);
+}
+
+#[test]
+fn markets_ui_state_defaults_focus_fuel_and_have_no_detail_station() {
+    let state = MarketsUiState::default();
+    assert_eq!(state.detail_station_id, None);
+    assert_eq!(state.focused_commodity, Commodity::Fuel);
+    assert!(!state.seeded_from_world_selection);
+}
+
+#[test]
+fn seed_markets_ui_state_uses_world_selection_once_and_preserves_manual_pick() {
+    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let mut state = MarketsUiState::default();
+
+    seed_markets_ui_state(&mut state, &sim, SystemId(0), Some(StationId(1)));
+    assert_eq!(state.detail_station_id, Some(StationId(1)));
+    assert!(state.seeded_from_world_selection);
+
+    state.detail_station_id = Some(StationId(3));
+    seed_markets_ui_state(&mut state, &sim, SystemId(0), Some(StationId(0)));
+    assert_eq!(state.detail_station_id, Some(StationId(3)));
 }
 
 #[test]
@@ -799,7 +824,7 @@ fn in_system_motion_entry_gate_to_station_interpolates_correctly() {
 }
 
 #[test]
-fn markets_snapshot_contains_trend_forecast_and_factors() {
+fn markets_snapshot_contains_galaxy_dashboard_sections() {
     let sim = Simulation::new(RuntimeConfig::default(), 42);
     let snapshot = build_hud_snapshot(
         &sim,
@@ -811,8 +836,14 @@ fn markets_snapshot_contains_trend_forecast_and_factors() {
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
-    assert!(!snapshot.market_insights.is_empty());
-    assert!(snapshot.market_insights[0].forecast_next.is_finite());
+    assert!(snapshot.markets.global_kpis.system_count > 0);
+    assert!(snapshot.markets.global_kpis.station_count > 0);
+    assert!(!snapshot.markets.commodity_rows.is_empty());
+    assert!(snapshot.markets.commodity_rows[0]
+        .forecast_next_avg
+        .is_finite());
+    assert!(!snapshot.markets.system_stress_rows.is_empty());
+    assert!(snapshot.markets.station_detail.is_some());
 }
 
 #[test]
@@ -829,7 +860,7 @@ fn markets_panel_uses_selected_system_or_fallback() {
         &UiKpiTracker::default(),
     );
     assert_eq!(galaxy_snapshot.selected_system_id, SystemId(0));
-    assert!(!galaxy_snapshot.market_rows.is_empty());
+    assert!(!galaxy_snapshot.markets.commodity_rows.is_empty());
 
     let system_snapshot = build_hud_snapshot(
         &sim,
@@ -842,20 +873,21 @@ fn markets_panel_uses_selected_system_or_fallback() {
         &UiKpiTracker::default(),
     );
     assert_eq!(system_snapshot.selected_system_id, SystemId(1));
-    assert!(!system_snapshot.market_rows.is_empty());
+    assert!(!system_snapshot.markets.commodity_rows.is_empty());
 }
 
 #[test]
-fn markets_panel_uses_selected_station_market() {
+fn markets_snapshot_uses_independent_detail_station() {
     let mut builder = SimulationScenarioBuilder::stage_a(42);
     let system_id = SystemId(0);
     let stations = builder.stations_in_system(system_id);
     if stations.len() < 2 {
         return;
     }
-    let selected_station = stations[1];
+    let world_selected_station = stations[0];
+    let detail_station = stations[1];
     builder.with_market_state_patch(
-        stations[0],
+        world_selected_station,
         Commodity::Fuel,
         MarketStatePatch {
             stock: Some(9.0),
@@ -863,7 +895,7 @@ fn markets_panel_uses_selected_station_market() {
         },
     );
     builder.with_market_state_patch(
-        selected_station,
+        detail_station,
         Commodity::Fuel,
         MarketStatePatch {
             stock: Some(77.0),
@@ -878,7 +910,9 @@ fn markets_panel_uses_selected_station_market() {
         1,
         CameraMode::System(system_id),
         system_id,
-        Some(selected_station),
+        Some(world_selected_station),
+        Some(detail_station),
+        Commodity::Fuel,
         None,
         None,
         None,
@@ -886,12 +920,24 @@ fn markets_panel_uses_selected_station_market() {
         &UiKpiTracker::default(),
     );
     let fuel_row = snapshot
-        .market_rows
+        .markets
+        .station_detail
+        .as_ref()
+        .expect("station detail should exist")
+        .commodity_rows
         .iter()
         .find(|row| row.commodity == Commodity::Fuel)
         .expect("fuel row should exist");
-    assert_eq!(snapshot.selected_station_id, Some(selected_station));
-    assert!((fuel_row.stock - 77.0).abs() < 1e-9);
+    assert_eq!(snapshot.selected_station_id, Some(world_selected_station));
+    assert_eq!(
+        snapshot
+            .markets
+            .station_detail
+            .as_ref()
+            .map(|detail| detail.station_id),
+        Some(detail_station)
+    );
+    assert!((fuel_row.local_stock - 77.0).abs() < 1e-9);
 }
 
 #[test]
@@ -1185,6 +1231,8 @@ fn ship_card_snapshot_includes_owner_and_module_metadata() {
         SystemId(0),
         None,
         None,
+        Commodity::Fuel,
+        None,
         Some(npc_id),
         None,
         ContractsFilterState::default(),
@@ -1231,7 +1279,7 @@ fn station_card_snapshot_builds_generated_info_metadata() {
 }
 
 #[test]
-fn station_card_snapshot_does_not_override_markets_station_selection() {
+fn station_card_snapshot_does_not_override_markets_detail_selection() {
     let mut builder = SimulationScenarioBuilder::stage_a(44);
     let stations = builder.stations_in_system(SystemId(0));
     if stations.len() < 2 {
@@ -1267,6 +1315,8 @@ fn station_card_snapshot_does_not_override_markets_station_selection() {
         CameraMode::System(SystemId(0)),
         SystemId(0),
         Some(market_station),
+        Some(market_station),
+        Commodity::Fuel,
         Some(card_station),
         None,
         Some(ShipId(0)),
@@ -1275,15 +1325,82 @@ fn station_card_snapshot_does_not_override_markets_station_selection() {
     );
 
     let market_row = snapshot
-        .market_rows
+        .markets
+        .station_detail
+        .as_ref()
+        .expect("station detail should exist")
+        .commodity_rows
         .iter()
         .find(|row| row.commodity == Commodity::Fuel)
         .expect("fuel market row should exist");
-    assert_eq!(snapshot.selected_station_id, Some(market_station));
-    assert!((market_row.price - 31.0).abs() < 1e-9);
+    assert_eq!(
+        snapshot
+            .markets
+            .station_detail
+            .as_ref()
+            .map(|detail| detail.station_id),
+        Some(market_station)
+    );
+    assert!((market_row.local_price - 31.0).abs() < 1e-9);
     assert_eq!(
         snapshot.station_card.as_ref().map(|card| card.station_id),
         Some(card_station)
+    );
+}
+
+#[test]
+fn markets_snapshot_hotspots_follow_focused_commodity() {
+    let mut builder = SimulationScenarioBuilder::stage_a(46);
+    let system0 = builder.stations_in_system(SystemId(0));
+    let system1 = builder.stations_in_system(SystemId(1));
+    if system0.len() < 2 || system1.len() < 2 {
+        return;
+    }
+    let cheap_station = system0[0];
+    let expensive_station = system1[1];
+
+    builder.with_market_state_patch(
+        cheap_station,
+        Commodity::Fuel,
+        MarketStatePatch {
+            price: Some(7.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    builder.with_market_state_patch(
+        expensive_station,
+        Commodity::Fuel,
+        MarketStatePatch {
+            price: Some(39.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    let sim = builder.build();
+
+    let snapshot = build_hud_snapshot_v2(
+        &sim,
+        true,
+        1,
+        CameraMode::Galaxy,
+        SystemId(0),
+        None,
+        Some(cheap_station),
+        Commodity::Fuel,
+        None,
+        None,
+        None,
+        ContractsFilterState::default(),
+        &UiKpiTracker::default(),
+    );
+
+    assert_eq!(snapshot.markets.focused_commodity, Commodity::Fuel);
+    assert_eq!(
+        snapshot.markets.hotspots.cheapest_stations[0].station_id,
+        cheap_station
+    );
+    assert_eq!(
+        snapshot.markets.hotspots.priciest_stations[0].station_id,
+        expensive_station
     );
 }
 

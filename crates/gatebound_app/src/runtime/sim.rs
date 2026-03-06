@@ -193,6 +193,23 @@ pub struct SelectedStation {
     pub station_id: Option<StationId>,
 }
 
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarketsUiState {
+    pub detail_station_id: Option<StationId>,
+    pub focused_commodity: Commodity,
+    pub seeded_from_world_selection: bool,
+}
+
+impl Default for MarketsUiState {
+    fn default() -> Self {
+        Self {
+            detail_station_id: None,
+            focused_commodity: Commodity::Fuel,
+            seeded_from_world_selection: false,
+        }
+    }
+}
+
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TrackedShip {
     pub ship_id: Option<ShipId>,
@@ -358,6 +375,38 @@ pub fn selected_system_from_camera(mode: CameraMode) -> SystemId {
 
 pub fn player_ship_ids(simulation: &Simulation) -> Vec<ShipId> {
     simulation.fleet_panel_view().player_ship_ids
+}
+
+pub fn seed_markets_ui_state(
+    state: &mut MarketsUiState,
+    simulation: &Simulation,
+    selected_system_id: SystemId,
+    selected_station_id: Option<StationId>,
+) {
+    if state.seeded_from_world_selection && state.detail_station_id.is_some() {
+        return;
+    }
+
+    let topology = simulation.camera_topology_view();
+    let fallback_station = selected_station_id
+        .or_else(|| {
+            topology
+                .systems
+                .iter()
+                .find(|system| system.system_id == selected_system_id)
+                .and_then(|system| system.stations.first().map(|station| station.station_id))
+        })
+        .or_else(|| {
+            topology
+                .systems
+                .iter()
+                .flat_map(|system| system.stations.iter())
+                .map(|station| station.station_id)
+                .next()
+        });
+
+    state.detail_station_id = fallback_station;
+    state.seeded_from_world_selection = true;
 }
 
 pub fn cycle_selected_ship(

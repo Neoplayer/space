@@ -20,8 +20,8 @@ use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, S
 use runtime::sim::{
     apply_time_controls, drive_simulation, handle_panel_hotkeys, handle_risk_hotkeys,
     sync_selected_station, sync_selected_system, ContractsFilterState, FinanceUiState,
-    SelectedShip, SelectedStation, SelectedSystem, ShipUiState, SimClock, SimResource,
-    StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
+    MarketsUiState, SelectedShip, SelectedStation, SelectedSystem, ShipUiState, SimClock,
+    SimResource, StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
 };
 use ui::hud::{draw_hud_panel, HudMessages};
 
@@ -42,6 +42,7 @@ pub fn run() {
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedStation::default())
+        .insert_resource(MarketsUiState::default())
         .insert_resource(TrackedShip::default())
         .insert_resource(ShipUiState::default())
         .insert_resource(StationUiState::default())

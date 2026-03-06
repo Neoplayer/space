@@ -1,11 +1,14 @@
 use gatebound_domain::{
-    AutopilotPolicy, CargoLoad, CompanyArchetype, Contract, ContractTypeStageA, FleetShipStatus,
-    GateId, GateThroughputSnapshot, MarketInsightRow, MilestoneStatus, SegmentKind, ShipClass,
-    ShipId, ShipModule, ShipRole, ShipTechnicalState, StationId, StationProfile, SystemId,
+    AutopilotPolicy, CargoLoad, Commodity, CompanyArchetype, Contract, ContractTypeStageA,
+    FleetShipStatus, GateId, MilestoneStatus, SegmentKind, ShipClass, ShipId, ShipModule, ShipRole,
+    ShipTechnicalState, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
-    ActiveLoanView, ContractOfferView, CorporationRowView, LoanOfferView, MarketRowView,
-    Simulation, StationTradeView, TimeSettingsView,
+    ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, ContractOfferView,
+    CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
+    StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
+    StationMarketDetailView, StationTradeView, SystemCommodityHotspotView,
+    SystemMarketStressRowView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -27,7 +30,6 @@ pub struct HudSnapshot {
     pub active_ships: usize,
     pub selected_system_id: SystemId,
     pub selected_station_id: Option<StationId>,
-    pub selected_station_profile: Option<StationProfile>,
     pub selected_ship_id: Option<ShipId>,
     pub default_player_ship_id: Option<ShipId>,
     pub paused: bool,
@@ -35,10 +37,7 @@ pub struct HudSnapshot {
     pub time_label: String,
     pub sla_success_rate: f64,
     pub reroutes: u64,
-    pub avg_price_index: f64,
     pub camera_mode: String,
-    pub intel_staleness_ticks: u64,
-    pub intel_confidence: f64,
     pub route_gate_options: Vec<GateId>,
     pub contract_lines: Vec<String>,
     pub ship_lines: Vec<String>,
@@ -47,17 +46,182 @@ pub struct HudSnapshot {
     pub offers: Vec<ContractOfferView>,
     pub fleet_rows: Vec<FleetShipStatus>,
     pub corporation_rows: Vec<CorporationRowView>,
-    pub market_rows: Vec<MarketRowView>,
-    pub system_market_rows: Vec<MarketRowView>,
+    pub markets: MarketsDashboardSnapshot,
     pub milestones: Vec<MilestoneStatus>,
-    pub throughput_rows: Vec<GateThroughputSnapshot>,
-    pub market_share: f64,
-    pub market_insights: Vec<MarketInsightRow>,
     pub manual_actions_per_min: f64,
     pub policy_edits_per_min: f64,
     pub avg_route_hops_player: f64,
     pub ship_card: Option<ShipCardSnapshot>,
     pub station_card: Option<StationCardSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemRefSnapshot {
+    pub system_id: SystemId,
+    pub system_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationRefSnapshot {
+    pub station_id: StationId,
+    pub station_name: String,
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub profile: StationProfile,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketsGlobalKpiSnapshot {
+    pub avg_price_index: f64,
+    pub system_count: usize,
+    pub station_count: usize,
+    pub aggregate_stock: f64,
+    pub aggregate_target_stock: f64,
+    pub aggregate_stock_coverage: f64,
+    pub aggregate_net_flow: f64,
+    pub market_fee_rate: f64,
+    pub rolling_window_total_flow: u64,
+    pub player_market_share: f64,
+    pub gate_congestion_active: bool,
+    pub dock_congestion_active: bool,
+    pub fuel_shock_active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommodityMarketRowSnapshot {
+    pub commodity: Commodity,
+    pub galaxy_avg_price: f64,
+    pub min_price_station: Option<StationRefSnapshot>,
+    pub min_price: f64,
+    pub max_price_station: Option<StationRefSnapshot>,
+    pub max_price: f64,
+    pub spread_abs: f64,
+    pub spread_pct: f64,
+    pub cheapest_system: Option<SystemRefSnapshot>,
+    pub cheapest_system_avg_price: f64,
+    pub priciest_system: Option<SystemRefSnapshot>,
+    pub priciest_system_avg_price: f64,
+    pub total_stock: f64,
+    pub total_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trend_delta: f64,
+    pub forecast_next_avg: f64,
+    pub price_vs_base: f64,
+    pub stations_below_target: usize,
+    pub stations_above_target: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemMarketStressSnapshot {
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub avg_price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub congestion: f64,
+    pub fuel_stress: f64,
+    pub stress_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationCommodityHotspotSnapshot {
+    pub station_id: StationId,
+    pub station_name: String,
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub profile: StationProfile,
+    pub price: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemCommodityHotspotSnapshot {
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub avg_price: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketsHotspotsSnapshot {
+    pub focused_commodity: Commodity,
+    pub cheapest_stations: Vec<StationCommodityHotspotSnapshot>,
+    pub priciest_stations: Vec<StationCommodityHotspotSnapshot>,
+    pub cheapest_systems: Vec<SystemCommodityHotspotSnapshot>,
+    pub priciest_systems: Vec<SystemCommodityHotspotSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMarketAnomalySnapshot {
+    pub station_id: StationId,
+    pub station_name: String,
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub profile: StationProfile,
+    pub price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub avg_price_deviation: f64,
+    pub shortage_count: usize,
+    pub surplus_count: usize,
+    pub anomaly_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationCommodityDetailSnapshot {
+    pub commodity: Commodity,
+    pub local_price: f64,
+    pub galaxy_avg_price: f64,
+    pub price_delta: f64,
+    pub local_stock: f64,
+    pub local_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trend_delta: f64,
+    pub forecast_next: f64,
+    pub price_vs_base: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketsStationDetailSnapshot {
+    pub station_id: StationId,
+    pub station_name: String,
+    pub system_id: SystemId,
+    pub system_name: String,
+    pub profile: StationProfile,
+    pub price_index: f64,
+    pub avg_price_deviation: f64,
+    pub total_stock: f64,
+    pub total_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub shortage_count: usize,
+    pub surplus_count: usize,
+    pub strongest_shortage_commodity: Option<Commodity>,
+    pub strongest_surplus_commodity: Option<Commodity>,
+    pub best_buy_commodity: Option<Commodity>,
+    pub best_sell_commodity: Option<Commodity>,
+    pub commodity_rows: Vec<StationCommodityDetailSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketsDashboardSnapshot {
+    pub focused_commodity: Commodity,
+    pub global_kpis: MarketsGlobalKpiSnapshot,
+    pub commodity_rows: Vec<CommodityMarketRowSnapshot>,
+    pub system_stress_rows: Vec<SystemMarketStressSnapshot>,
+    pub hotspots: MarketsHotspotsSnapshot,
+    pub station_anomaly_rows: Vec<StationMarketAnomalySnapshot>,
+    pub station_detail: Option<MarketsStationDetailSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +297,8 @@ pub fn build_hud_snapshot(
     camera_mode: CameraMode,
     selected_system_id: SystemId,
     selected_station_id: Option<StationId>,
+    markets_detail_station_id: Option<StationId>,
+    focused_commodity: Commodity,
     station_card_station_id: Option<StationId>,
     ship_card_ship_id: Option<ShipId>,
     selected_ship_id: Option<ShipId>,
@@ -147,14 +313,13 @@ pub fn build_hud_snapshot(
     let render_snapshot = simulation.world_render_snapshot();
     let market_panel = simulation.market_panel_view(
         selected_system_id,
-        selected_station_id,
-        matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
+        markets_detail_station_id,
+        focused_commodity,
     );
     let finance_panel = simulation.finance_panel_view();
     let corporation_panel = simulation.corporation_panel_view();
     let resolved_ship_id = selected_ship_id.or(fleet_panel.default_player_ship_id);
     let station_card = station_card_station_id
-        .or(market_panel.selected_station_id)
         .and_then(|station_id| resolved_ship_id.map(|ship_id| (ship_id, station_id)))
         .and_then(|(ship_id, station_id)| {
             build_station_card_snapshot(simulation, ship_id, station_id)
@@ -243,8 +408,7 @@ pub fn build_hud_snapshot(
         active_contracts: overview.active_contracts,
         active_ships: overview.active_ships,
         selected_system_id,
-        selected_station_id: market_panel.selected_station_id,
-        selected_station_profile: market_panel.selected_station_profile,
+        selected_station_id,
         selected_ship_id,
         default_player_ship_id: fleet_panel.default_player_ship_id,
         paused,
@@ -252,13 +416,10 @@ pub fn build_hud_snapshot(
         time_label: format_time_label(overview.tick, time_settings),
         sla_success_rate: cycle_report.sla_success_rate,
         reroutes: overview.reroutes,
-        avg_price_index: market_panel.avg_price_index,
         camera_mode: match camera_mode {
             CameraMode::Galaxy => "Galaxy".to_string(),
             CameraMode::System(system_id) => format!("System({})", system_id.0),
         },
-        intel_staleness_ticks: market_panel.intel.map_or(0, |info| info.staleness_ticks),
-        intel_confidence: market_panel.intel.map_or(1.0, |info| info.confidence),
         route_gate_options: contracts_board.route_gates,
         contract_lines,
         ship_lines,
@@ -267,18 +428,273 @@ pub fn build_hud_snapshot(
         offers,
         fleet_rows: fleet_panel.rows,
         corporation_rows: corporation_panel.rows,
-        market_rows: market_panel.station_market_rows,
-        system_market_rows: market_panel.system_market_rows,
+        markets: build_markets_snapshot(simulation, &market_panel),
         milestones: overview.milestones,
-        throughput_rows: market_panel.throughput_rows,
-        market_share: market_panel.market_share,
-        market_insights: market_panel.market_insights,
         manual_actions_per_min: kpi.manual_actions_per_min,
         policy_edits_per_min: kpi.policy_edits_per_min,
         avg_route_hops_player: kpi.avg_route_hops_player,
         ship_card,
         station_card,
     }
+}
+
+fn build_markets_snapshot(
+    simulation: &Simulation,
+    panel: &MarketPanelView,
+) -> MarketsDashboardSnapshot {
+    MarketsDashboardSnapshot {
+        focused_commodity: panel.focused_commodity,
+        global_kpis: build_market_global_kpis_snapshot(panel.global_kpis),
+        commodity_rows: panel
+            .commodity_rows
+            .iter()
+            .map(|row| build_commodity_market_row_snapshot(simulation, *row))
+            .collect(),
+        system_stress_rows: panel
+            .system_stress_rows
+            .iter()
+            .map(|row| build_system_stress_snapshot(*row))
+            .collect(),
+        hotspots: build_hotspots_snapshot(simulation, &panel.commodity_hotspots),
+        station_anomaly_rows: panel
+            .station_anomaly_rows
+            .iter()
+            .map(|row| build_station_anomaly_snapshot(simulation, *row))
+            .collect(),
+        station_detail: panel
+            .station_detail
+            .as_ref()
+            .and_then(|detail| build_station_detail_snapshot(simulation, detail)),
+    }
+}
+
+fn build_market_global_kpis_snapshot(view: MarketGlobalKpisView) -> MarketsGlobalKpiSnapshot {
+    MarketsGlobalKpiSnapshot {
+        avg_price_index: view.avg_price_index,
+        system_count: view.system_count,
+        station_count: view.station_count,
+        aggregate_stock: view.aggregate_stock,
+        aggregate_target_stock: view.aggregate_target_stock,
+        aggregate_stock_coverage: view.aggregate_stock_coverage,
+        aggregate_net_flow: view.aggregate_net_flow,
+        market_fee_rate: view.market_fee_rate,
+        rolling_window_total_flow: view.rolling_window_total_flow,
+        player_market_share: view.player_market_share,
+        gate_congestion_active: view.gate_congestion_active,
+        dock_congestion_active: view.dock_congestion_active,
+        fuel_shock_active: view.fuel_shock_active,
+    }
+}
+
+fn build_commodity_market_row_snapshot(
+    simulation: &Simulation,
+    row: CommodityMarketRowView,
+) -> CommodityMarketRowSnapshot {
+    CommodityMarketRowSnapshot {
+        commodity: row.commodity,
+        galaxy_avg_price: row.galaxy_avg_price,
+        min_price_station: row
+            .min_price_station_id
+            .and_then(|station_id| station_ref_snapshot(simulation, station_id)),
+        min_price: row.min_price,
+        max_price_station: row
+            .max_price_station_id
+            .and_then(|station_id| station_ref_snapshot(simulation, station_id)),
+        max_price: row.max_price,
+        spread_abs: row.spread_abs,
+        spread_pct: row.spread_pct,
+        cheapest_system: row.cheapest_system_id.map(system_ref_snapshot),
+        cheapest_system_avg_price: row.cheapest_system_avg_price,
+        priciest_system: row.priciest_system_id.map(system_ref_snapshot),
+        priciest_system_avg_price: row.priciest_system_avg_price,
+        total_stock: row.total_stock,
+        total_target_stock: row.total_target_stock,
+        stock_coverage: row.stock_coverage,
+        inflow: row.inflow,
+        outflow: row.outflow,
+        net_flow: row.net_flow,
+        trend_delta: row.trend_delta,
+        forecast_next_avg: row.forecast_next_avg,
+        price_vs_base: row.price_vs_base,
+        stations_below_target: row.stations_below_target,
+        stations_above_target: row.stations_above_target,
+    }
+}
+
+fn build_system_stress_snapshot(row: SystemMarketStressRowView) -> SystemMarketStressSnapshot {
+    SystemMarketStressSnapshot {
+        system_id: row.system_id,
+        system_name: generated_system_name(row.system_id),
+        avg_price_index: row.avg_price_index,
+        stock_coverage: row.stock_coverage,
+        net_flow: row.net_flow,
+        congestion: row.congestion,
+        fuel_stress: row.fuel_stress,
+        stress_score: row.stress_score,
+    }
+}
+
+fn build_hotspots_snapshot(
+    simulation: &Simulation,
+    hotspots: &CommodityHotspotsView,
+) -> MarketsHotspotsSnapshot {
+    MarketsHotspotsSnapshot {
+        focused_commodity: hotspots.focused_commodity,
+        cheapest_stations: hotspots
+            .cheapest_stations
+            .iter()
+            .filter_map(|row| build_station_hotspot_snapshot(simulation, *row))
+            .collect(),
+        priciest_stations: hotspots
+            .priciest_stations
+            .iter()
+            .filter_map(|row| build_station_hotspot_snapshot(simulation, *row))
+            .collect(),
+        cheapest_systems: hotspots
+            .cheapest_systems
+            .iter()
+            .map(|row| build_system_hotspot_snapshot(*row))
+            .collect(),
+        priciest_systems: hotspots
+            .priciest_systems
+            .iter()
+            .map(|row| build_system_hotspot_snapshot(*row))
+            .collect(),
+    }
+}
+
+fn build_station_hotspot_snapshot(
+    simulation: &Simulation,
+    row: StationCommodityHotspotView,
+) -> Option<StationCommodityHotspotSnapshot> {
+    let reference = station_ref_snapshot(simulation, row.station_id)?;
+    Some(StationCommodityHotspotSnapshot {
+        station_id: row.station_id,
+        station_name: reference.station_name,
+        system_id: row.system_id,
+        system_name: reference.system_name,
+        profile: reference.profile,
+        price: row.price,
+        stock_coverage: row.stock_coverage,
+        net_flow: row.net_flow,
+    })
+}
+
+fn build_system_hotspot_snapshot(
+    row: SystemCommodityHotspotView,
+) -> SystemCommodityHotspotSnapshot {
+    SystemCommodityHotspotSnapshot {
+        system_id: row.system_id,
+        system_name: generated_system_name(row.system_id),
+        avg_price: row.avg_price,
+        stock_coverage: row.stock_coverage,
+        net_flow: row.net_flow,
+    }
+}
+
+fn build_station_anomaly_snapshot(
+    simulation: &Simulation,
+    row: StationMarketAnomalyRowView,
+) -> StationMarketAnomalySnapshot {
+    let reference = station_ref_snapshot(simulation, row.station_id)
+        .expect("station anomaly rows should reference real stations");
+    StationMarketAnomalySnapshot {
+        station_id: row.station_id,
+        station_name: reference.station_name,
+        system_id: row.system_id,
+        system_name: reference.system_name,
+        profile: reference.profile,
+        price_index: row.price_index,
+        stock_coverage: row.stock_coverage,
+        net_flow: row.net_flow,
+        avg_price_deviation: row.avg_price_deviation,
+        shortage_count: row.shortage_count,
+        surplus_count: row.surplus_count,
+        anomaly_score: row.anomaly_score,
+    }
+}
+
+fn build_station_detail_snapshot(
+    simulation: &Simulation,
+    detail: &StationMarketDetailView,
+) -> Option<MarketsStationDetailSnapshot> {
+    let reference = station_ref_snapshot(simulation, detail.station_id)?;
+    Some(MarketsStationDetailSnapshot {
+        station_id: detail.station_id,
+        station_name: reference.station_name,
+        system_id: detail.system_id,
+        system_name: reference.system_name,
+        profile: reference.profile,
+        price_index: detail.price_index,
+        avg_price_deviation: detail.avg_price_deviation,
+        total_stock: detail.total_stock,
+        total_target_stock: detail.total_target_stock,
+        stock_coverage: detail.stock_coverage,
+        inflow: detail.inflow,
+        outflow: detail.outflow,
+        net_flow: detail.net_flow,
+        shortage_count: detail.shortage_count,
+        surplus_count: detail.surplus_count,
+        strongest_shortage_commodity: detail.strongest_shortage_commodity,
+        strongest_surplus_commodity: detail.strongest_surplus_commodity,
+        best_buy_commodity: detail.best_buy_commodity,
+        best_sell_commodity: detail.best_sell_commodity,
+        commodity_rows: detail
+            .commodity_rows
+            .iter()
+            .map(|row| build_station_commodity_detail_snapshot(*row))
+            .collect(),
+    })
+}
+
+fn build_station_commodity_detail_snapshot(
+    row: StationCommodityDetailView,
+) -> StationCommodityDetailSnapshot {
+    StationCommodityDetailSnapshot {
+        commodity: row.commodity,
+        local_price: row.local_price,
+        galaxy_avg_price: row.galaxy_avg_price,
+        price_delta: row.price_delta,
+        local_stock: row.local_stock,
+        local_target_stock: row.local_target_stock,
+        stock_coverage: row.stock_coverage,
+        inflow: row.inflow,
+        outflow: row.outflow,
+        net_flow: row.net_flow,
+        trend_delta: row.trend_delta,
+        forecast_next: row.forecast_next,
+        price_vs_base: row.price_vs_base,
+    }
+}
+
+fn system_ref_snapshot(system_id: SystemId) -> SystemRefSnapshot {
+    SystemRefSnapshot {
+        system_id,
+        system_name: generated_system_name(system_id),
+    }
+}
+
+fn station_ref_snapshot(
+    simulation: &Simulation,
+    station_id: StationId,
+) -> Option<StationRefSnapshot> {
+    simulation
+        .camera_topology_view()
+        .systems
+        .into_iter()
+        .find_map(|system| {
+            system
+                .stations
+                .into_iter()
+                .find(|station| station.station_id == station_id)
+                .map(|station| StationRefSnapshot {
+                    station_id,
+                    station_name: generated_station_name(station.station_id, station.profile),
+                    system_id: system.system_id,
+                    system_name: generated_system_name(system.system_id),
+                    profile: station.profile,
+                })
+        })
 }
 
 fn build_ship_card_snapshot(simulation: &Simulation, ship_id: ShipId) -> Option<ShipCardSnapshot> {

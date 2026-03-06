@@ -144,18 +144,148 @@ pub struct MarketRowView {
     pub outflow: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarketGlobalKpisView {
+    pub avg_price_index: f64,
+    pub system_count: usize,
+    pub station_count: usize,
+    pub aggregate_stock: f64,
+    pub aggregate_target_stock: f64,
+    pub aggregate_stock_coverage: f64,
+    pub aggregate_net_flow: f64,
+    pub market_fee_rate: f64,
+    pub rolling_window_total_flow: u64,
+    pub player_market_share: f64,
+    pub gate_congestion_active: bool,
+    pub dock_congestion_active: bool,
+    pub fuel_shock_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CommodityMarketRowView {
+    pub commodity: Commodity,
+    pub galaxy_avg_price: f64,
+    pub min_price_station_id: Option<StationId>,
+    pub min_price: f64,
+    pub max_price_station_id: Option<StationId>,
+    pub max_price: f64,
+    pub spread_abs: f64,
+    pub spread_pct: f64,
+    pub cheapest_system_id: Option<SystemId>,
+    pub cheapest_system_avg_price: f64,
+    pub priciest_system_id: Option<SystemId>,
+    pub priciest_system_avg_price: f64,
+    pub total_stock: f64,
+    pub total_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trend_delta: f64,
+    pub forecast_next_avg: f64,
+    pub base_price: f64,
+    pub price_vs_base: f64,
+    pub stations_below_target: usize,
+    pub stations_above_target: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemMarketStressRowView {
+    pub system_id: SystemId,
+    pub avg_price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub congestion: f64,
+    pub fuel_stress: f64,
+    pub stress_score: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationCommodityHotspotView {
+    pub station_id: StationId,
+    pub system_id: SystemId,
+    pub price: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemCommodityHotspotView {
+    pub system_id: SystemId,
+    pub avg_price: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommodityHotspotsView {
+    pub focused_commodity: Commodity,
+    pub cheapest_stations: Vec<StationCommodityHotspotView>,
+    pub priciest_stations: Vec<StationCommodityHotspotView>,
+    pub cheapest_systems: Vec<SystemCommodityHotspotView>,
+    pub priciest_systems: Vec<SystemCommodityHotspotView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationMarketAnomalyRowView {
+    pub station_id: StationId,
+    pub system_id: SystemId,
+    pub price_index: f64,
+    pub stock_coverage: f64,
+    pub net_flow: f64,
+    pub avg_price_deviation: f64,
+    pub shortage_count: usize,
+    pub surplus_count: usize,
+    pub anomaly_score: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationCommodityDetailView {
+    pub commodity: Commodity,
+    pub local_price: f64,
+    pub galaxy_avg_price: f64,
+    pub price_delta: f64,
+    pub local_stock: f64,
+    pub local_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trend_delta: f64,
+    pub forecast_next: f64,
+    pub price_vs_base: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMarketDetailView {
+    pub station_id: StationId,
+    pub system_id: SystemId,
+    pub price_index: f64,
+    pub avg_price_deviation: f64,
+    pub total_stock: f64,
+    pub total_target_stock: f64,
+    pub stock_coverage: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub shortage_count: usize,
+    pub surplus_count: usize,
+    pub strongest_shortage_commodity: Option<Commodity>,
+    pub strongest_surplus_commodity: Option<Commodity>,
+    pub best_buy_commodity: Option<Commodity>,
+    pub best_sell_commodity: Option<Commodity>,
+    pub commodity_rows: Vec<StationCommodityDetailView>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketPanelView {
-    pub selected_system_id: SystemId,
-    pub selected_station_id: Option<StationId>,
-    pub selected_station_profile: Option<StationProfile>,
-    pub intel: Option<MarketIntel>,
-    pub station_market_rows: Vec<MarketRowView>,
-    pub system_market_rows: Vec<MarketRowView>,
-    pub throughput_rows: Vec<GateThroughputSnapshot>,
-    pub market_share: f64,
-    pub market_insights: Vec<MarketInsightRow>,
-    pub avg_price_index: f64,
+    pub focused_commodity: Commodity,
+    pub global_kpis: MarketGlobalKpisView,
+    pub commodity_rows: Vec<CommodityMarketRowView>,
+    pub system_stress_rows: Vec<SystemMarketStressRowView>,
+    pub commodity_hotspots: CommodityHotspotsView,
+    pub station_anomaly_rows: Vec<StationMarketAnomalyRowView>,
+    pub station_detail: Option<StationMarketDetailView>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

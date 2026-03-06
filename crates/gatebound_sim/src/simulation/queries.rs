@@ -207,78 +207,23 @@ impl Simulation {
     pub fn market_panel_view(
         &self,
         selected_system_id: SystemId,
-        selected_station_id: Option<StationId>,
-        local_cluster: bool,
+        detail_station_id: Option<StationId>,
+        focused_commodity: Commodity,
     ) -> MarketPanelView {
-        let selected_station_id =
-            selected_station_id.or_else(|| self.world.first_station(selected_system_id));
-        let selected_station_profile = selected_station_id.and_then(|station_id| {
-            self.world
-                .stations
-                .iter()
-                .find(|station| station.id == station_id)
-                .map(|station| station.profile)
-        });
-
-        let station_market_rows = selected_station_id
-            .map(|station_id| self.market_rows_for_station(station_id))
-            .unwrap_or_default();
-
-        let system_market_rows = self
-            .world
-            .stations_by_system
-            .get(&selected_system_id)
-            .map(|stations| {
-                let mut rows = Vec::new();
-                for commodity in Commodity::ALL {
-                    let mut price_sum = 0.0;
-                    let mut stock_sum = 0.0;
-                    let mut inflow_sum = 0.0;
-                    let mut outflow_sum = 0.0;
-                    let mut count = 0.0;
-                    for station_id in stations {
-                        if let Some(state) = self
-                            .markets
-                            .get(station_id)
-                            .and_then(|book| book.goods.get(&commodity))
-                        {
-                            price_sum += state.price;
-                            stock_sum += state.stock;
-                            inflow_sum += state.cycle_inflow;
-                            outflow_sum += state.cycle_outflow;
-                            count += 1.0;
-                        }
-                    }
-                    if count > 0.0 {
-                        rows.push(MarketRowView {
-                            commodity,
-                            price: price_sum / count,
-                            stock: stock_sum,
-                            inflow: inflow_sum,
-                            outflow: outflow_sum,
-                        });
-                    }
-                }
-                rows
-            })
-            .unwrap_or_default();
-
-        let mut throughput_rows = self.gate_throughput_view();
-        throughput_rows.sort_by(|a, b| b.player_share.total_cmp(&a.player_share));
-
         MarketPanelView {
-            selected_system_id,
-            selected_station_id,
-            selected_station_profile,
-            intel: self.market_intel(selected_system_id, local_cluster),
-            station_market_rows,
-            system_market_rows,
-            throughput_rows,
-            market_share: self.market_share_view(),
-            market_insights: selected_station_id
-                .map(|station_id| self.market_insights(station_id))
-                .unwrap_or_default(),
-            avg_price_index: self.average_price_index(),
+            focused_commodity,
+            global_kpis: self.market_global_kpis(),
+            commodity_rows: Commodity::ALL
+                .into_iter()
+                .filter_map(|commodity| self.commodity_market_row(commodity))
+                .collect(),
+            system_stress_rows: self.system_market_stress_rows(),
+            commodity_hotspots: self.commodity_hotspots(focused_commodity),
+            station_anomaly_rows: self.station_market_anomaly_rows(),
+            station_detail: detail_station_id
+                .or_else(|| self.world.first_station(selected_system_id))
+                .or_else(|| self.world.stations.first().map(|station| station.id))
+                .and_then(|station_id| self.station_market_detail(station_id)),
         }
     }
 
@@ -750,6 +695,632 @@ impl Simulation {
             .filter(|ship| ship.company_id == CompanyId(0))
             .map(|ship| ship.id)
             .min_by_key(|ship_id| ship_id.0)
+    }
+
+    fn market_global_kpis(&self) -> MarketGlobalKpisView {
+        let mut aggregate_stock = 0.0;
+        let mut aggregate_target_stock = 0.0;
+        let mut aggregate_inflow = 0.0;
+        let mut aggregate_outflow = 0.0;
+
+        for market in self.markets.values() {
+            for state in market.goods.values() {
+                aggregate_stock += state.stock;
+                aggregate_target_stock += state.target_stock;
+                aggregate_inflow += state.cycle_inflow;
+                aggregate_outflow += state.cycle_outflow;
+            }
+        }
+
+        let rolling_window_total_flow = self
+            .gate_traversals_window
+            .iter()
+            .flat_map(|cycle_map| cycle_map.values())
+            .flat_map(|by_company| by_company.values())
+            .map(|count| u64::from(*count))
+            .sum::<u64>();
+
+        MarketGlobalKpisView {
+            avg_price_index: self.average_price_index(),
+            system_count: self.world.systems.len(),
+            station_count: self.world.stations.len(),
+            aggregate_stock,
+            aggregate_target_stock,
+            aggregate_stock_coverage: if aggregate_target_stock <= 0.0 {
+                0.0
+            } else {
+                aggregate_stock / aggregate_target_stock
+            },
+            aggregate_net_flow: aggregate_inflow - aggregate_outflow,
+            market_fee_rate: self.config.pressure.market_fee_rate,
+            rolling_window_total_flow,
+            player_market_share: self.market_share_view(),
+            gate_congestion_active: self
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.risk == RiskStageA::GateCongestion),
+            dock_congestion_active: self
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.risk == RiskStageA::DockCongestion),
+            fuel_shock_active: self
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.risk == RiskStageA::FuelShock),
+        }
+    }
+
+    fn commodity_market_row(&self, commodity: Commodity) -> Option<CommodityMarketRowView> {
+        let mut price_sum = 0.0;
+        let mut base_price_sum = 0.0;
+        let mut total_stock = 0.0;
+        let mut total_target_stock = 0.0;
+        let mut inflow = 0.0;
+        let mut outflow = 0.0;
+        let mut trend_sum = 0.0;
+        let mut forecast_sum = 0.0;
+        let mut count = 0.0;
+        let mut min_price = f64::INFINITY;
+        let mut max_price = f64::NEG_INFINITY;
+        let mut min_price_station_id = None;
+        let mut max_price_station_id = None;
+        let mut stations_below_target = 0_usize;
+        let mut stations_above_target = 0_usize;
+        let mut system_price_sums = BTreeMap::<SystemId, (f64, f64)>::new();
+
+        for (station_id, market) in &self.markets {
+            let Some(state) = market.goods.get(&commodity) else {
+                continue;
+            };
+            let Some(system_id) = self.station_system_id(*station_id) else {
+                continue;
+            };
+
+            price_sum += state.price;
+            base_price_sum += state.base_price;
+            total_stock += state.stock;
+            total_target_stock += state.target_stock;
+            inflow += state.cycle_inflow;
+            outflow += state.cycle_outflow;
+            trend_sum += state.price - self.previous_price_for(*station_id, commodity, state.price);
+            forecast_sum += self.market_forecast(state);
+            count += 1.0;
+
+            if state.price < min_price {
+                min_price = state.price;
+                min_price_station_id = Some(*station_id);
+            }
+            if state.price > max_price {
+                max_price = state.price;
+                max_price_station_id = Some(*station_id);
+            }
+            if state.stock + 1e-9 < state.target_stock {
+                stations_below_target += 1;
+            } else if state.stock > state.target_stock + 1e-9 {
+                stations_above_target += 1;
+            }
+
+            let entry = system_price_sums.entry(system_id).or_insert((0.0, 0.0));
+            entry.0 += state.price;
+            entry.1 += 1.0;
+        }
+
+        if count <= 0.0 {
+            return None;
+        }
+
+        let galaxy_avg_price = price_sum / count;
+        let base_price = base_price_sum / count;
+        let stock_coverage = if total_target_stock <= 0.0 {
+            0.0
+        } else {
+            total_stock / total_target_stock
+        };
+        let mut cheapest_system = None;
+        let mut priciest_system = None;
+        let mut cheapest_system_avg_price = f64::INFINITY;
+        let mut priciest_system_avg_price = f64::NEG_INFINITY;
+        for (system_id, (system_price_sum, system_count)) in system_price_sums {
+            if system_count <= 0.0 {
+                continue;
+            }
+            let avg_price = system_price_sum / system_count;
+            if avg_price < cheapest_system_avg_price {
+                cheapest_system_avg_price = avg_price;
+                cheapest_system = Some(system_id);
+            }
+            if avg_price > priciest_system_avg_price {
+                priciest_system_avg_price = avg_price;
+                priciest_system = Some(system_id);
+            }
+        }
+
+        let spread_abs = max_price - min_price;
+        let spread_pct = if galaxy_avg_price <= 0.0 {
+            0.0
+        } else {
+            spread_abs / galaxy_avg_price
+        };
+
+        Some(CommodityMarketRowView {
+            commodity,
+            galaxy_avg_price,
+            min_price_station_id,
+            min_price,
+            max_price_station_id,
+            max_price,
+            spread_abs,
+            spread_pct,
+            cheapest_system_id: cheapest_system,
+            cheapest_system_avg_price: if cheapest_system.is_some() {
+                cheapest_system_avg_price
+            } else {
+                0.0
+            },
+            priciest_system_id: priciest_system,
+            priciest_system_avg_price: if priciest_system.is_some() {
+                priciest_system_avg_price
+            } else {
+                0.0
+            },
+            total_stock,
+            total_target_stock,
+            stock_coverage,
+            inflow,
+            outflow,
+            net_flow: inflow - outflow,
+            trend_delta: trend_sum / count,
+            forecast_next_avg: forecast_sum / count,
+            base_price,
+            price_vs_base: if base_price <= 0.0 {
+                0.0
+            } else {
+                galaxy_avg_price / base_price
+            },
+            stations_below_target,
+            stations_above_target,
+        })
+    }
+
+    fn system_market_stress_rows(&self) -> Vec<SystemMarketStressRowView> {
+        let mut rows = self
+            .world
+            .systems
+            .iter()
+            .map(|system| {
+                let mut price_index_sum = 0.0;
+                let mut price_index_count = 0.0;
+                let mut total_stock = 0.0;
+                let mut total_target_stock = 0.0;
+                let mut inflow = 0.0;
+                let mut outflow = 0.0;
+
+                for station_id in self
+                    .world
+                    .stations_by_system
+                    .get(&system.id)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(market) = self.markets.get(station_id) {
+                        for state in market.goods.values() {
+                            price_index_sum += state.price / state.base_price.max(1e-9);
+                            price_index_count += 1.0;
+                            total_stock += state.stock;
+                            total_target_stock += state.target_stock;
+                            inflow += state.cycle_inflow;
+                            outflow += state.cycle_outflow;
+                        }
+                    }
+                }
+
+                let avg_price_index = if price_index_count <= 0.0 {
+                    1.0
+                } else {
+                    price_index_sum / price_index_count
+                };
+                let stock_coverage = if total_target_stock <= 0.0 {
+                    0.0
+                } else {
+                    total_stock / total_target_stock
+                };
+                let congestion = self.system_congestion_signal(system.id);
+                let fuel_stress = f64::from(self.fuel_stress_index(system.id));
+                let flow_drain = if total_target_stock <= 0.0 {
+                    0.0
+                } else {
+                    ((outflow - inflow) / total_target_stock).max(0.0)
+                };
+                let scarcity = (1.0 - stock_coverage).max(0.0);
+                let price_pressure = (avg_price_index - 1.0).max(0.0);
+                let stress_score = price_pressure * 0.40
+                    + scarcity * 0.35
+                    + congestion * 0.15
+                    + fuel_stress * 0.10
+                    + flow_drain * 0.10;
+
+                SystemMarketStressRowView {
+                    system_id: system.id,
+                    avg_price_index,
+                    stock_coverage,
+                    net_flow: inflow - outflow,
+                    congestion,
+                    fuel_stress,
+                    stress_score,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        rows.sort_by(|a, b| {
+            b.stress_score
+                .total_cmp(&a.stress_score)
+                .then_with(|| a.system_id.0.cmp(&b.system_id.0))
+        });
+        rows
+    }
+
+    fn commodity_hotspots(&self, commodity: Commodity) -> CommodityHotspotsView {
+        let mut station_rows = self
+            .world
+            .stations
+            .iter()
+            .filter_map(|station| {
+                self.markets
+                    .get(&station.id)
+                    .and_then(|market| market.goods.get(&commodity))
+                    .map(|state| StationCommodityHotspotView {
+                        station_id: station.id,
+                        system_id: station.system_id,
+                        price: state.price,
+                        stock_coverage: if state.target_stock <= 0.0 {
+                            0.0
+                        } else {
+                            state.stock / state.target_stock
+                        },
+                        net_flow: state.cycle_inflow - state.cycle_outflow,
+                    })
+            })
+            .collect::<Vec<_>>();
+        let mut cheapest_stations = station_rows.clone();
+        cheapest_stations.sort_by(|a, b| {
+            a.price
+                .total_cmp(&b.price)
+                .then_with(|| a.station_id.0.cmp(&b.station_id.0))
+        });
+        let mut priciest_stations = station_rows.clone();
+        priciest_stations.sort_by(|a, b| {
+            b.price
+                .total_cmp(&a.price)
+                .then_with(|| a.station_id.0.cmp(&b.station_id.0))
+        });
+        station_rows.clear();
+
+        let mut system_rows = self
+            .world
+            .systems
+            .iter()
+            .filter_map(|system| {
+                let mut price_sum = 0.0;
+                let mut stock_sum = 0.0;
+                let mut target_sum = 0.0;
+                let mut inflow_sum = 0.0;
+                let mut outflow_sum = 0.0;
+                let mut count = 0.0;
+
+                for station_id in self
+                    .world
+                    .stations_by_system
+                    .get(&system.id)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(state) = self
+                        .markets
+                        .get(station_id)
+                        .and_then(|market| market.goods.get(&commodity))
+                    {
+                        price_sum += state.price;
+                        stock_sum += state.stock;
+                        target_sum += state.target_stock;
+                        inflow_sum += state.cycle_inflow;
+                        outflow_sum += state.cycle_outflow;
+                        count += 1.0;
+                    }
+                }
+
+                if count <= 0.0 {
+                    None
+                } else {
+                    Some(SystemCommodityHotspotView {
+                        system_id: system.id,
+                        avg_price: price_sum / count,
+                        stock_coverage: if target_sum <= 0.0 {
+                            0.0
+                        } else {
+                            stock_sum / target_sum
+                        },
+                        net_flow: inflow_sum - outflow_sum,
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut cheapest_systems = system_rows.clone();
+        cheapest_systems.sort_by(|a, b| {
+            a.avg_price
+                .total_cmp(&b.avg_price)
+                .then_with(|| a.system_id.0.cmp(&b.system_id.0))
+        });
+        let mut priciest_systems = system_rows.clone();
+        priciest_systems.sort_by(|a, b| {
+            b.avg_price
+                .total_cmp(&a.avg_price)
+                .then_with(|| a.system_id.0.cmp(&b.system_id.0))
+        });
+        system_rows.clear();
+
+        CommodityHotspotsView {
+            focused_commodity: commodity,
+            cheapest_stations: cheapest_stations.into_iter().take(3).collect(),
+            priciest_stations: priciest_stations.into_iter().take(3).collect(),
+            cheapest_systems: cheapest_systems.into_iter().take(3).collect(),
+            priciest_systems: priciest_systems.into_iter().take(3).collect(),
+        }
+    }
+
+    fn station_market_anomaly_rows(&self) -> Vec<StationMarketAnomalyRowView> {
+        let mut rows = self
+            .world
+            .stations
+            .iter()
+            .filter_map(|station| {
+                let market = self.markets.get(&station.id)?;
+                let mut price_index_sum = 0.0;
+                let mut price_index_count = 0.0;
+                let mut total_stock = 0.0;
+                let mut total_target_stock = 0.0;
+                let mut inflow = 0.0;
+                let mut outflow = 0.0;
+                let mut price_deviation_sum = 0.0;
+                let mut price_deviation_count = 0.0;
+                let mut shortage_count = 0_usize;
+                let mut surplus_count = 0_usize;
+                let mut max_shortage = 0.0_f64;
+                let mut max_surplus = 0.0_f64;
+
+                for commodity in Commodity::ALL {
+                    let Some(state) = market.goods.get(&commodity) else {
+                        continue;
+                    };
+                    price_index_sum += state.price / state.base_price.max(1e-9);
+                    price_index_count += 1.0;
+                    total_stock += state.stock;
+                    total_target_stock += state.target_stock;
+                    inflow += state.cycle_inflow;
+                    outflow += state.cycle_outflow;
+
+                    let galaxy_avg_price = self.average_market_price_for(commodity);
+                    if galaxy_avg_price > 0.0 {
+                        price_deviation_sum +=
+                            ((state.price - galaxy_avg_price) / galaxy_avg_price).abs();
+                        price_deviation_count += 1.0;
+                    }
+
+                    let shortage =
+                        ((state.target_stock - state.stock) / state.target_stock.max(1.0)).max(0.0);
+                    let surplus =
+                        ((state.stock - state.target_stock) / state.target_stock.max(1.0)).max(0.0);
+                    if shortage > 0.0 {
+                        shortage_count += 1;
+                        max_shortage = max_shortage.max(shortage);
+                    }
+                    if surplus > 0.0 {
+                        surplus_count += 1;
+                        max_surplus = max_surplus.max(surplus);
+                    }
+                }
+
+                let price_index = if price_index_count <= 0.0 {
+                    1.0
+                } else {
+                    price_index_sum / price_index_count
+                };
+                let stock_coverage = if total_target_stock <= 0.0 {
+                    0.0
+                } else {
+                    total_stock / total_target_stock
+                };
+                let avg_price_deviation = if price_deviation_count <= 0.0 {
+                    0.0
+                } else {
+                    price_deviation_sum / price_deviation_count
+                };
+                let anomaly_score = avg_price_deviation
+                    + max_shortage * 0.6
+                    + max_surplus * 0.3
+                    + (price_index - 1.0).abs() * 0.25;
+
+                Some(StationMarketAnomalyRowView {
+                    station_id: station.id,
+                    system_id: station.system_id,
+                    price_index,
+                    stock_coverage,
+                    net_flow: inflow - outflow,
+                    avg_price_deviation,
+                    shortage_count,
+                    surplus_count,
+                    anomaly_score,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        rows.sort_by(|a, b| {
+            b.anomaly_score
+                .total_cmp(&a.anomaly_score)
+                .then_with(|| a.station_id.0.cmp(&b.station_id.0))
+        });
+        rows
+    }
+
+    fn station_market_detail(&self, station_id: StationId) -> Option<StationMarketDetailView> {
+        let market = self.markets.get(&station_id)?;
+        let system_id = self.station_system_id(station_id)?;
+        let mut commodity_rows = Vec::new();
+        let mut price_index_sum = 0.0;
+        let mut price_index_count = 0.0;
+        let mut price_deviation_sum = 0.0;
+        let mut price_deviation_count = 0.0;
+        let mut total_stock = 0.0;
+        let mut total_target_stock = 0.0;
+        let mut inflow = 0.0;
+        let mut outflow = 0.0;
+        let mut shortage_count = 0_usize;
+        let mut surplus_count = 0_usize;
+        let mut strongest_shortage = (None, 0.0);
+        let mut strongest_surplus = (None, 0.0);
+        let mut best_buy = (None, 1.0);
+        let mut best_sell = (None, 1.0);
+
+        for commodity in Commodity::ALL {
+            let Some(state) = market.goods.get(&commodity) else {
+                continue;
+            };
+            let galaxy_avg_price = self.average_market_price_for(commodity);
+            let stock_coverage = if state.target_stock <= 0.0 {
+                0.0
+            } else {
+                state.stock / state.target_stock
+            };
+            let trend_delta =
+                state.price - self.previous_price_for(station_id, commodity, state.price);
+            let forecast_next = self.market_forecast(state);
+            let price_ratio = if galaxy_avg_price <= 0.0 {
+                1.0
+            } else {
+                state.price / galaxy_avg_price
+            };
+            let shortage =
+                ((state.target_stock - state.stock) / state.target_stock.max(1.0)).max(0.0);
+            let surplus =
+                ((state.stock - state.target_stock) / state.target_stock.max(1.0)).max(0.0);
+
+            if shortage > 0.0 {
+                shortage_count += 1;
+                if shortage > strongest_shortage.1 {
+                    strongest_shortage = (Some(commodity), shortage);
+                }
+            }
+            if surplus > 0.0 {
+                surplus_count += 1;
+                if surplus > strongest_surplus.1 {
+                    strongest_surplus = (Some(commodity), surplus);
+                }
+            }
+            if price_ratio < best_buy.1 {
+                best_buy = (Some(commodity), price_ratio);
+            }
+            if price_ratio > best_sell.1 {
+                best_sell = (Some(commodity), price_ratio);
+            }
+
+            price_index_sum += state.price / state.base_price.max(1e-9);
+            price_index_count += 1.0;
+            total_stock += state.stock;
+            total_target_stock += state.target_stock;
+            inflow += state.cycle_inflow;
+            outflow += state.cycle_outflow;
+
+            if galaxy_avg_price > 0.0 {
+                price_deviation_sum += ((state.price - galaxy_avg_price) / galaxy_avg_price).abs();
+                price_deviation_count += 1.0;
+            }
+
+            commodity_rows.push(StationCommodityDetailView {
+                commodity,
+                local_price: state.price,
+                galaxy_avg_price,
+                price_delta: state.price - galaxy_avg_price,
+                local_stock: state.stock,
+                local_target_stock: state.target_stock,
+                stock_coverage,
+                inflow: state.cycle_inflow,
+                outflow: state.cycle_outflow,
+                net_flow: state.cycle_inflow - state.cycle_outflow,
+                trend_delta,
+                forecast_next,
+                price_vs_base: if state.base_price <= 0.0 {
+                    0.0
+                } else {
+                    state.price / state.base_price
+                },
+            });
+        }
+
+        let price_index = if price_index_count <= 0.0 {
+            1.0
+        } else {
+            price_index_sum / price_index_count
+        };
+        let avg_price_deviation = if price_deviation_count <= 0.0 {
+            0.0
+        } else {
+            price_deviation_sum / price_deviation_count
+        };
+
+        Some(StationMarketDetailView {
+            station_id,
+            system_id,
+            price_index,
+            avg_price_deviation,
+            total_stock,
+            total_target_stock,
+            stock_coverage: if total_target_stock <= 0.0 {
+                0.0
+            } else {
+                total_stock / total_target_stock
+            },
+            inflow,
+            outflow,
+            net_flow: inflow - outflow,
+            shortage_count,
+            surplus_count,
+            strongest_shortage_commodity: strongest_shortage.0,
+            strongest_surplus_commodity: strongest_surplus.0,
+            best_buy_commodity: best_buy.0,
+            best_sell_commodity: best_sell.0,
+            commodity_rows,
+        })
+    }
+
+    fn station_system_id(&self, station_id: StationId) -> Option<SystemId> {
+        self.world
+            .stations
+            .iter()
+            .find(|station| station.id == station_id)
+            .map(|station| station.system_id)
+    }
+
+    fn previous_price_for(
+        &self,
+        station_id: StationId,
+        commodity: Commodity,
+        fallback: f64,
+    ) -> f64 {
+        self.previous_cycle_prices
+            .get(&(station_id, commodity))
+            .copied()
+            .unwrap_or(fallback)
+    }
+
+    fn market_forecast(&self, state: &MarketState) -> f64 {
+        let imbalance = (state.target_stock - state.stock) / state.target_stock.max(1.0);
+        let flow_pressure =
+            (state.cycle_outflow - state.cycle_inflow) / state.target_stock.max(1.0);
+        let raw_delta =
+            self.config.market.k_stock * imbalance + self.config.market.k_flow * flow_pressure;
+        let delta = raw_delta.clamp(-self.config.market.delta_cap, self.config.market.delta_cap);
+        let floor = state.base_price * self.config.market.floor_mult;
+        let ceil = state.base_price * self.config.market.ceiling_mult;
+        (state.price * (1.0 + delta)).clamp(floor, ceil)
     }
 
     fn ship_policy(&self, ship_id: ShipId) -> Option<&AutopilotPolicy> {
