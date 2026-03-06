@@ -16,7 +16,12 @@ stage_a = []
 [dependencies]
 bevy = "0.18.1"
 bevy_egui = "0.39.1"
-gatebound_core = { path = "../gatebound_core" }
+gatebound_domain = { path = "../gatebound_domain" }
+gatebound_sim = { path = "../gatebound_sim" }
+
+[dev-dependencies]
+gatebound_domain = { path = "../gatebound_domain" }
+gatebound_sim = { path = "../gatebound_sim", features = ["test-support"] }
 
 [lints]
 workspace = true

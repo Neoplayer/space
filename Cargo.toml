@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "crates/gatebound_core",
+    "crates/gatebound_domain",
+    "crates/gatebound_sim",
     "crates/gatebound_app",
 ]
 resolver = "2"

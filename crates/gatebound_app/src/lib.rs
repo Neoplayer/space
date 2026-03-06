@@ -3,29 +3,30 @@
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use gatebound_core::{RuntimeConfig, Simulation};
+use gatebound_domain::RuntimeConfig;
+use gatebound_sim::{config::load_runtime_config, Simulation};
 use std::path::Path;
 
-pub mod hud;
-pub mod render_world;
-pub mod sim_runtime;
-pub mod view_mode;
+pub mod input;
+pub mod render;
+pub mod runtime;
+pub mod ui;
 
-use hud::{draw_hud_panel, HudMessages};
-use render_world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
-use sim_runtime::{
+use input::camera::{
+    apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
+    station_select_input_system, sync_camera_transform, CameraUiState,
+};
+use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
+use runtime::sim::{
     apply_time_controls, drive_simulation, handle_lease_hotkeys, handle_panel_hotkeys,
     handle_risk_hotkeys, sync_selected_station, sync_selected_system, ContractsFilterState,
     LeaseSelection, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource,
     StationUiState, UiKpiTracker, UiPanelState,
 };
-use view_mode::{
-    apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
-    station_select_input_system, sync_camera_transform, CameraUiState,
-};
+use ui::hud::{draw_hud_panel, HudMessages};
 
 pub fn run() {
-    let config = RuntimeConfig::load_from_dir(Path::new("assets/config/stage_a"))
+    let config = load_runtime_config(Path::new("assets/config/stage_a"))
         .unwrap_or_else(|_| RuntimeConfig::default());
     let simulation = Simulation::new(config.clone(), config.galaxy.seed);
 

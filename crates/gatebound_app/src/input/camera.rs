@@ -1,9 +1,10 @@
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use gatebound_core::{Simulation, SystemId};
+use gatebound_domain::{StationId, SystemId};
+use gatebound_sim::CameraTopologyView;
 
-use crate::sim_runtime::{SelectedStation, SimResource, StationUiState};
+use crate::runtime::sim::{SelectedStation, SimResource, StationUiState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
@@ -114,7 +115,8 @@ pub fn camera_mode_input_system(
         return;
     };
 
-    if let Some(system_id) = pick_system(&sim.simulation, world_position) {
+    let topology = sim.simulation.camera_topology_view();
+    if let Some(system_id) = pick_system(&topology, world_position) {
         let double_clicked = apply_system_click(
             &mut ui_state.mode,
             &mut tracker,
@@ -156,7 +158,8 @@ pub fn station_select_input_system(
     let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
         return;
     };
-    if let Some(station_id) = pick_station(&sim.simulation, system_id, world_position) {
+    let topology = sim.simulation.camera_topology_view();
+    if let Some(station_id) = pick_station(&topology, system_id, world_position) {
         selected_station.station_id = Some(station_id);
         if right_click {
             apply_station_context_open(&mut station_ui, station_id);
@@ -169,7 +172,7 @@ pub fn station_select_input_system(
 
 pub fn apply_station_context_open(
     state: &mut StationUiState,
-    station_id: gatebound_core::StationId,
+    station_id: StationId,
 ) {
     state.context_station_id = Some(station_id);
     state.context_menu_open = true;
@@ -222,12 +225,11 @@ pub fn sync_camera_transform(
             transform.translation.y = 0.0;
         }
         CameraMode::System(system_id) => {
-            if let Some(system) = sim
-                .simulation
-                .world
+            let topology = sim.simulation.camera_topology_view();
+            if let Some(system) = topology
                 .systems
                 .iter()
-                .find(|system| system.id == system_id)
+                .find(|system| system.system_id == system_id)
             {
                 transform.translation.x = system.x as f32;
                 transform.translation.y = system.y as f32;
@@ -236,9 +238,8 @@ pub fn sync_camera_transform(
     }
 }
 
-fn pick_system(simulation: &Simulation, world_position: Vec2) -> Option<SystemId> {
-    simulation
-        .world
+fn pick_system(topology: &CameraTopologyView, world_position: Vec2) -> Option<SystemId> {
+    topology
         .systems
         .iter()
         .find(|system| {
@@ -247,33 +248,25 @@ fn pick_system(simulation: &Simulation, world_position: Vec2) -> Option<SystemId
             let distance_sq = dx * dx + dy * dy;
             distance_sq <= (system.radius as f32 * 0.4).powi(2)
         })
-        .map(|system| system.id)
+        .map(|system| system.system_id)
 }
 
 fn pick_station(
-    simulation: &Simulation,
+    topology: &CameraTopologyView,
     system_id: SystemId,
     world_position: Vec2,
-) -> Option<gatebound_core::StationId> {
-    simulation
-        .world
-        .stations_by_system
-        .get(&system_id)
+) -> Option<StationId> {
+    topology
+        .systems
+        .iter()
+        .find(|system| system.system_id == system_id)
         .into_iter()
-        .flatten()
-        .find(|station_id| {
-            simulation
-                .world
-                .stations
-                .iter()
-                .find(|station| station.id == **station_id)
-                .map(|station| {
-                    let dx = world_position.x - station.x as f32;
-                    let dy = world_position.y - station.y as f32;
-                    let distance_sq = dx * dx + dy * dy;
-                    distance_sq <= 9.0_f32.powi(2)
-                })
-                .unwrap_or(false)
+        .flat_map(|system| system.stations.iter())
+        .find(|station| {
+            let dx = world_position.x - station.x as f32;
+            let dy = world_position.y - station.y as f32;
+            let distance_sq = dx * dx + dy * dy;
+            distance_sq <= 9.0_f32.powi(2)
         })
-        .copied()
+        .map(|station| station.station_id)
 }

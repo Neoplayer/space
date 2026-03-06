@@ -1,12 +1,13 @@
 use bevy::prelude::*;
-use gatebound_core::{
-    Commodity, CompanyId, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag,
-    RiskEvent, ShipId, Simulation, SlotType, StationId, SystemId, TickReport,
+use gatebound_domain::{
+    Commodity, ContractOffer, CycleReport, GateId, LeaseError, OfferProblemTag, ShipId, SlotType,
+    StationId, SystemId, TickReport,
 };
+use gatebound_sim::Simulation;
 use std::collections::VecDeque;
 
-use crate::hud::HudMessages;
-use crate::view_mode::{CameraMode, CameraUiState};
+use crate::input::camera::{CameraMode, CameraUiState};
+use crate::ui::hud::HudMessages;
 
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct UiPanelState {
@@ -96,8 +97,8 @@ impl UiKpiTracker {
     }
 
     pub fn update(&mut self, simulation: &Simulation) {
-        let window = u64::from(simulation.config.time.cycle_ticks.max(1));
-        let min_tick = simulation.tick.saturating_sub(window);
+        let window = u64::from(simulation.time_settings_view().cycle_ticks.max(1));
+        let min_tick = simulation.tick().saturating_sub(window);
         while self
             .manual_action_ticks
             .front()
@@ -115,18 +116,7 @@ impl UiKpiTracker {
 
         self.manual_actions_per_min = self.manual_action_ticks.len() as f64;
         self.policy_edits_per_min = self.policy_edit_ticks.len() as f64;
-
-        let mut hops_sum = 0.0;
-        let mut ships = 0.0;
-        for ship in simulation
-            .ships
-            .values()
-            .filter(|ship| ship.company_id == CompanyId(0))
-        {
-            hops_sum += ship.planned_path.len() as f64;
-            ships += 1.0;
-        }
-        self.avg_route_hops_player = if ships > 0.0 { hops_sum / ships } else { 0.0 };
+        self.avg_route_hops_player = simulation.fleet_panel_view().avg_route_hops_player;
     }
 }
 
@@ -183,18 +173,15 @@ pub struct SimResource {
 
 impl SimResource {
     pub fn new(simulation: Simulation) -> Self {
+        let overview = simulation.hud_overview_view();
         Self {
             last_tick_report: TickReport {
                 tick: 0,
                 cycle: 0,
-                active_ships: simulation.ships.len(),
-                active_contracts: simulation
-                    .contracts
-                    .values()
-                    .filter(|contract| !contract.completed && !contract.failed)
-                    .count(),
+                active_ships: overview.active_ships,
+                active_contracts: overview.active_contracts,
                 total_queue_delay: 0,
-                avg_price_index: 1.0,
+                avg_price_index: overview.avg_price_index,
             },
             last_cycle_report: CycleReport {
                 cycle: 0,
@@ -294,14 +281,7 @@ pub fn selected_system_from_camera(mode: CameraMode) -> SystemId {
 }
 
 pub fn player_ship_ids(simulation: &Simulation) -> Vec<ShipId> {
-    let mut ids = simulation
-        .ships
-        .values()
-        .filter(|ship| ship.company_id == CompanyId(0))
-        .map(|ship| ship.id)
-        .collect::<Vec<_>>();
-    ids.sort_by_key(|id| id.0);
-    ids
+    simulation.fleet_panel_view().player_ship_ids
 }
 
 pub fn cycle_selected_ship(
@@ -404,22 +384,25 @@ pub fn sync_selected_station(
     mut selected_station: ResMut<SelectedStation>,
 ) {
     let system_id = selected_system.system_id;
+    let topology = sim.simulation.camera_topology_view();
+    let current_system = topology
+        .systems
+        .iter()
+        .find(|system| system.system_id == system_id);
     let in_system = |station_id: StationId| {
-        sim.simulation
-            .world
-            .stations
-            .iter()
-            .any(|station| station.id == station_id && station.system_id == system_id)
+        current_system.is_some_and(|system| {
+            system
+                .stations
+                .iter()
+                .any(|station| station.station_id == station_id)
+        })
     };
     if selected_station.station_id.is_some_and(in_system) {
         return;
     }
-    selected_station.station_id = sim
-        .simulation
-        .world
-        .stations_by_system
-        .get(&system_id)
-        .and_then(|stations| stations.first().copied());
+    selected_station.station_id = current_system
+        .and_then(|system| system.stations.first())
+        .map(|station| station.station_id);
 }
 
 pub fn handle_panel_hotkeys(
@@ -469,7 +452,7 @@ pub fn handle_panel_hotkeys(
     }
 
     if manual_action {
-        kpi.record_manual_action(sim.simulation.tick);
+        kpi.record_manual_action(sim.simulation.tick());
     }
 }
 
@@ -479,7 +462,7 @@ pub fn handle_risk_hotkeys(
     mut messages: ResMut<HudMessages>,
     mut kpi: ResMut<UiKpiTracker>,
 ) {
-    let cycle_ticks = sim.simulation.config.time.cycle_ticks;
+    let cycle_ticks = sim.simulation.time_settings_view().cycle_ticks;
     let action = if keys.just_pressed(KeyCode::KeyG) {
         hotkey_to_risk('g')
     } else if keys.just_pressed(KeyCode::KeyD) {
@@ -493,34 +476,31 @@ pub fn handle_risk_hotkeys(
     let Some(action) = action else {
         return;
     };
-    kpi.record_manual_action(sim.simulation.tick);
+    kpi.record_manual_action(sim.simulation.tick());
 
     match action {
         RiskHotkey::GateCongestion => {
-            if let Some(edge) = sim.simulation.world.edges.first().copied() {
-                sim.simulation.apply_event(RiskEvent::GateCongestion {
-                    edge: edge.id,
-                    capacity_factor: 0.5,
-                    duration_ticks: cycle_ticks * 5,
-                });
+            if let Some(edge) = sim
+                .simulation
+                .camera_topology_view()
+                .gate_ids
+                .first()
+                .copied()
+            {
+                sim.simulation
+                    .inject_gate_congestion(edge, 0.5, cycle_ticks * 5);
                 messages.push(format!(
                     "Risk event: Gate congestion on edge {} (capacity x0.5)",
-                    edge.id.0
+                    edge.0
                 ));
             }
         }
         RiskHotkey::DockCongestion => {
-            sim.simulation.apply_event(RiskEvent::DockCongestion {
-                delay_factor: 3.0,
-                duration_ticks: cycle_ticks * 4,
-            });
+            sim.simulation.inject_dock_congestion(3.0, cycle_ticks * 4);
             messages.push("Risk event: Dock congestion (delay x3.0)".to_string());
         }
         RiskHotkey::FuelShock => {
-            sim.simulation.apply_event(RiskEvent::FuelShock {
-                production_factor: 0.5,
-                duration_ticks: cycle_ticks * 6,
-            });
+            sim.simulation.inject_fuel_shock(0.5, cycle_ticks * 6);
             messages.push("Risk event: Fuel shock (production x0.5)".to_string());
         }
     }
@@ -551,7 +531,7 @@ pub fn handle_lease_hotkeys(
     let Some(action) = action else {
         return;
     };
-    kpi.record_manual_action(sim.simulation.tick);
+    kpi.record_manual_action(sim.simulation.tick());
 
     let selected_system = selected_system.system_id;
     const DEFAULT_LEASE_CYCLES: u32 = 3;
@@ -614,74 +594,21 @@ pub fn drive_simulation(
     mut sim: ResMut<SimResource>,
     mut kpi: ResMut<UiKpiTracker>,
 ) {
-    let tick_seconds = sim.simulation.config.time.tick_seconds;
+    let tick_seconds = sim.simulation.time_settings_view().tick_seconds;
     let ticks = consume_ticks(&mut clock, time.delta_secs_f64(), tick_seconds);
 
     for _ in 0..ticks {
-        let prev_cycle = sim.simulation.cycle;
+        let prev_cycle = sim.simulation.cycle();
         sim.last_tick_report = sim.simulation.step_tick();
-        if sim.simulation.cycle != prev_cycle {
-            sim.last_cycle_report = derive_cycle_report(&sim.simulation);
+        if sim.simulation.cycle() != prev_cycle {
+            sim.last_cycle_report = sim.simulation.cycle_report();
         }
     }
     kpi.update(&sim.simulation);
 }
 
 pub fn derive_cycle_report(simulation: &Simulation) -> CycleReport {
-    let total_sla = simulation.sla_successes + simulation.sla_failures;
-    let sla_success_rate = if total_sla == 0 {
-        1.0
-    } else {
-        simulation.sla_successes as f64 / total_sla as f64
-    };
-
-    let average_gate_load = if simulation.world.edges.is_empty() {
-        0.0
-    } else {
-        simulation
-            .world
-            .edges
-            .iter()
-            .map(|edge| {
-                let load = simulation
-                    .gate_queue_load
-                    .get(&edge.id)
-                    .copied()
-                    .unwrap_or(0.0);
-                let effective_capacity = (edge.base_capacity * edge.capacity_factor).max(1.0);
-                load / effective_capacity
-            })
-            .sum::<f64>()
-            / simulation.world.edges.len() as f64
-    };
-
-    let mut price_samples = 0_u64;
-    let mut total_price_index = 0.0_f64;
-    for market in simulation.markets.values() {
-        for state in market.goods.values() {
-            if state.base_price > 0.0 {
-                total_price_index += state.price / state.base_price;
-                price_samples += 1;
-            }
-        }
-    }
-    let average_price_index = if price_samples == 0 {
-        1.0
-    } else {
-        total_price_index / price_samples as f64
-    };
-
-    let economy_stress_index = (1.0 - sla_success_rate).clamp(0.0, 1.0)
-        + average_gate_load.clamp(0.0, 1.0)
-        + average_price_index.max(1.0)
-        - 1.0;
-
-    CycleReport {
-        cycle: simulation.cycle,
-        sla_success_rate,
-        reroute_count: simulation.reroute_count,
-        economy_stress_index,
-    }
+    simulation.cycle_report()
 }
 
 fn lease_slot(

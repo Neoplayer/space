@@ -1,23 +1,28 @@
-use bevy::prelude::*;
-use gatebound_core::{
-    CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId, OfferProblemTag,
-    PriorityMode, RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind, ShipId, Simulation,
-    SlotType, SystemId,
+use crate::input::camera::{
+    apply_escape, apply_station_context_open, apply_system_click, CameraMode, ClickTracker,
 };
-use std::collections::VecDeque;
-
-use crate::hud::build_hud_snapshot as build_hud_snapshot_v2;
-use crate::render_world::{
+use crate::render::world::{
     segment_from_point, ship_is_visible_in_current_view, system_objects_visible_in_current_view,
     update_ship_motion_cache, ShipMotionCache,
 };
-use crate::sim_runtime::{
+use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_lease, hotkey_to_risk,
     panel_hotkey_to_index, ContractsFilterState, LeaseHotkey, OfferSortMode, RiskHotkey,
     SimResource, StationUiState, UiKpiTracker,
 };
-use crate::view_mode::{
-    apply_escape, apply_station_context_open, apply_system_click, CameraMode, ClickTracker,
+use crate::ui::hud::build_hud_snapshot as build_hud_snapshot_v2;
+use bevy::prelude::*;
+use gatebound_domain::{
+    CargoLoad, CargoSource, Commodity, ContractOffer, ContractTypeStageA, GateId,
+    OfferProblemTag, PriorityMode, RecoveryAction, RouteSegment, RuntimeConfig, SegmentKind,
+    ShipId, ShipRole, SlotType, StationId, SystemId,
+};
+use gatebound_sim::{
+    test_support::{
+        FinanceStateFixture, MarketStatePatch, ShipCycleMetricsFixture, ShipPatch,
+        SimulationScenarioBuilder,
+    },
+    Simulation,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -30,12 +35,13 @@ fn build_hud_snapshot(
     selected_ship_id: Option<ShipId>,
     filters: ContractsFilterState,
     kpi: &UiKpiTracker,
-) -> crate::hud::HudSnapshot {
+) -> crate::ui::hud::HudSnapshot {
     let selected_station = simulation
-        .world
-        .stations_by_system
-        .get(&selected_system_id)
-        .and_then(|stations| stations.first().copied());
+        .camera_topology_view()
+        .systems
+        .iter()
+        .find(|system| system.system_id == selected_system_id)
+        .and_then(|system| system.stations.first().map(|station| station.station_id));
     build_hud_snapshot_v2(
         simulation,
         paused,
@@ -49,20 +55,26 @@ fn build_hud_snapshot(
     )
 }
 
+fn ship_docked_at(simulation: &Simulation, ship_id: ShipId, station_id: StationId) -> bool {
+    simulation
+        .station_ops_view(ship_id, station_id)
+        .is_some_and(|view| view.docked)
+}
+
 #[test]
 fn fixed_step_consumes_expected_ticks_for_speed_modes() {
-    let mut clock_1x = crate::sim_runtime::SimClock::default();
+    let mut clock_1x = crate::runtime::sim::SimClock::default();
     assert_eq!(consume_ticks(&mut clock_1x, 3.1, 1), 3);
 
-    let mut clock_2x = crate::sim_runtime::SimClock {
+    let mut clock_2x = crate::runtime::sim::SimClock {
         speed_multiplier: 2,
-        ..crate::sim_runtime::SimClock::default()
+        ..crate::runtime::sim::SimClock::default()
     };
     assert_eq!(consume_ticks(&mut clock_2x, 1.6, 1), 3);
 
-    let mut clock_4x = crate::sim_runtime::SimClock {
+    let mut clock_4x = crate::runtime::sim::SimClock {
         speed_multiplier: 4,
-        ..crate::sim_runtime::SimClock::default()
+        ..crate::runtime::sim::SimClock::default()
     };
     assert_eq!(consume_ticks(&mut clock_4x, 1.26, 1), 5);
 }
@@ -201,7 +213,7 @@ fn lease_hotkey_mapping_matches_expected_actions() {
 
 #[test]
 fn panel_hotkeys_toggle_expected_windows() {
-    let mut panels = crate::sim_runtime::UiPanelState::default();
+    let mut panels = crate::runtime::sim::UiPanelState::default();
     assert_eq!(panel_hotkey_to_index('1'), Some(1));
     apply_panel_toggle(&mut panels, 1);
     assert!(!panels.contracts);
@@ -227,8 +239,8 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
             commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(1),
-            origin_station: gatebound_core::StationId(0),
-            destination_station: gatebound_core::StationId(2),
+            origin_station: StationId(0),
+            destination_station: StationId(2),
             quantity: 10.0,
             payout: 30.0,
             penalty: 10.0,
@@ -247,8 +259,8 @@ fn contracts_filter_applies_route_gate_problem_and_premium() {
             commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(2),
-            origin_station: gatebound_core::StationId(0),
-            destination_station: gatebound_core::StationId(4),
+            origin_station: StationId(0),
+            destination_station: StationId(4),
             quantity: 10.0,
             payout: 30.0,
             penalty: 10.0,
@@ -286,8 +298,8 @@ fn contracts_filter_applies_commodity() {
             commodity: Commodity::Fuel,
             origin: SystemId(0),
             destination: SystemId(1),
-            origin_station: gatebound_core::StationId(0),
-            destination_station: gatebound_core::StationId(2),
+            origin_station: StationId(0),
+            destination_station: StationId(2),
             quantity: 8.0,
             payout: 20.0,
             penalty: 8.0,
@@ -306,8 +318,8 @@ fn contracts_filter_applies_commodity() {
             commodity: Commodity::Electronics,
             origin: SystemId(0),
             destination: SystemId(1),
-            origin_station: gatebound_core::StationId(0),
-            destination_station: gatebound_core::StationId(2),
+            origin_station: StationId(0),
+            destination_station: StationId(2),
             quantity: 8.0,
             payout: 20.0,
             penalty: 8.0,
@@ -339,30 +351,28 @@ fn contracts_filter_applies_commodity() {
 
 #[test]
 fn contracts_board_snapshot_includes_intel_and_problem_labels() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    sim.contract_offers.insert(
-        77,
-        ContractOffer {
-            id: 77,
-            kind: ContractTypeStageA::Delivery,
-            commodity: Commodity::Fuel,
-            origin: SystemId(0),
-            destination: SystemId(1),
-            origin_station: gatebound_core::StationId(0),
-            destination_station: gatebound_core::StationId(2),
-            quantity: 14.0,
-            payout: 50.0,
-            penalty: 15.0,
-            eta_ticks: 40,
-            risk_score: 1.1,
-            margin_estimate: 11.0,
-            route_gate_ids: vec![GateId(0)],
-            problem_tag: OfferProblemTag::HighRisk,
-            premium: true,
-            profit_per_ton: 0.78,
-            expires_cycle: 8,
-        },
-    );
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    builder.with_contract_offer(ContractOffer {
+        id: 77,
+        kind: ContractTypeStageA::Delivery,
+        commodity: Commodity::Fuel,
+        origin: SystemId(0),
+        destination: SystemId(1),
+        origin_station: StationId(0),
+        destination_station: StationId(2),
+        quantity: 14.0,
+        payout: 50.0,
+        penalty: 15.0,
+        eta_ticks: 40,
+        risk_score: 1.1,
+        margin_estimate: 11.0,
+        route_gate_ids: vec![GateId(0)],
+        problem_tag: OfferProblemTag::HighRisk,
+        premium: true,
+        profit_per_ton: 0.78,
+        expires_cycle: 8,
+    });
+    let sim = builder.build();
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -370,7 +380,7 @@ fn contracts_board_snapshot_includes_intel_and_problem_labels() {
         1,
         CameraMode::Galaxy,
         SystemId(0),
-        Some(gatebound_core::ShipId(0)),
+        Some(ShipId(0)),
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
@@ -378,10 +388,11 @@ fn contracts_board_snapshot_includes_intel_and_problem_labels() {
     let offer = snapshot
         .offers
         .iter()
-        .find(|offer| offer.id == 77)
+        .find(|offer| offer.offer.id == 77)
         .expect("offer should be visible");
-    assert_eq!(offer.problem_tag, OfferProblemTag::HighRisk);
-    assert!(!offer.route_gate_ids.is_empty());
+    assert_eq!(offer.offer.problem_tag, OfferProblemTag::HighRisk);
+    assert!(!offer.offer.route_gate_ids.is_empty());
+    assert!(offer.destination_intel.is_some());
 }
 
 #[test]
@@ -408,12 +419,18 @@ fn contracts_snapshot_renders_station_endpoints() {
 
 #[test]
 fn fleet_snapshot_contains_job_queue_idle_delay_profit() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    let ship_id = gatebound_core::ShipId(0);
-    sim.ship_idle_ticks_cycle.insert(ship_id, 9);
-    sim.ship_delay_ticks_cycle.insert(ship_id, 12);
-    sim.ship_runs_completed.insert(ship_id, 3);
-    sim.ship_profit_earned.insert(ship_id, 90.0);
+    let ship_id = ShipId(0);
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    builder.with_ship_cycle_metrics(
+        ship_id,
+        ShipCycleMetricsFixture {
+            idle_ticks_cycle: 9,
+            delay_ticks_cycle: 12,
+            runs_completed: 3,
+            profit_earned: 90.0,
+        },
+    );
+    let sim = builder.build();
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -438,19 +455,34 @@ fn fleet_snapshot_contains_job_queue_idle_delay_profit() {
 
 #[test]
 fn fleet_snapshot_renders_current_segment_kind() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    if let Some(ship) = sim.ships.get_mut(&gatebound_core::ShipId(0)) {
-        ship.current_segment_kind = Some(SegmentKind::GateQueue);
-        ship.segment_eta_remaining = 7;
-        ship.eta_ticks_remaining = 7;
-    }
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            current_segment_kind: Some(Some(SegmentKind::GateQueue)),
+            segment_eta_remaining: Some(7),
+            eta_ticks_remaining: Some(7),
+            movement_queue: Some(vec![RouteSegment {
+                from: SystemId(0),
+                to: SystemId(1),
+                from_anchor: None,
+                to_anchor: None,
+                edge: Some(GateId(0)),
+                kind: SegmentKind::GateQueue,
+                eta_ticks: 7,
+                risk: 0.0,
+            }]),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
     let snapshot = build_hud_snapshot(
         &sim,
         true,
         1,
         CameraMode::Galaxy,
         SystemId(0),
-        Some(gatebound_core::ShipId(0)),
+        Some(ShipId(0)),
         ContractsFilterState::default(),
         &UiKpiTracker::default(),
     );
@@ -459,26 +491,26 @@ fn fleet_snapshot_renders_current_segment_kind() {
             .ship_lines
             .iter()
             .any(|line| line.contains("seg=GateQueue")),
-        "fleet lines should render current segment kind"
+        "fleet snapshot should surface current segment kind"
     );
 }
 
 #[test]
 fn fleet_snapshot_exposes_role_and_cargo_metadata() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    let npc_id = sim
-        .ships
-        .iter()
-        .find(|(_, ship)| ship.role == gatebound_core::ShipRole::NpcTrade)
-        .map(|(ship_id, _)| *ship_id)
-        .expect("npc ship should exist");
-    if let Some(ship) = sim.ships.get_mut(&npc_id) {
-        ship.cargo = Some(gatebound_core::CargoLoad {
-            commodity: Commodity::Parts,
-            amount: 5.5,
-            source: gatebound_core::CargoSource::Spot,
-        });
-    }
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let npc_id = builder.first_npc_ship_id().expect("npc ship should exist");
+    builder.with_ship_patch(
+        npc_id,
+        ShipPatch {
+            cargo: Some(Some(CargoLoad {
+                commodity: Commodity::Parts,
+                amount: 5.5,
+                source: CargoSource::Spot,
+            })),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
     let snapshot = build_hud_snapshot(
         &sim,
         true,
@@ -494,46 +526,46 @@ fn fleet_snapshot_exposes_role_and_cargo_metadata() {
         .iter()
         .find(|row| row.ship_id == npc_id)
         .expect("npc row should exist");
-    assert_eq!(row.role, gatebound_core::ShipRole::NpcTrade);
+    assert_eq!(row.role, ShipRole::NpcTrade);
     assert_eq!(row.cargo_commodity, Some(Commodity::Parts));
     assert!((row.cargo_amount - 5.5).abs() < 1e-9);
 }
 
 #[test]
 fn render_world_uses_station_anchor_positions_for_ship_motion() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    let ship_id = gatebound_core::ShipId(0);
-    let stations = sim
-        .world
-        .stations_by_system
-        .get(&SystemId(0))
-        .cloned()
-        .expect("system stations should exist");
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let ship_id = ShipId(0);
+    let stations = builder.stations_in_system(SystemId(0));
     let from_station = stations[0];
     let to_station = stations[1];
-    let from = sim
-        .station_position(from_station)
+    let from = builder
+        .station_coords(from_station)
         .expect("from station coords should exist");
-    let to = sim
-        .station_position(to_station)
+    let to = builder
+        .station_coords(to_station)
         .expect("to station coords should exist");
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.location = SystemId(0);
-        ship.movement_queue = VecDeque::from([RouteSegment {
-            from: SystemId(0),
-            to: SystemId(0),
-            from_anchor: Some(from_station),
-            to_anchor: Some(to_station),
-            edge: None,
-            kind: SegmentKind::InSystem,
-            eta_ticks: 12,
-            risk: 0.0,
-        }]);
-        ship.current_segment_kind = Some(SegmentKind::InSystem);
-        ship.segment_progress_total = 12;
-        ship.segment_eta_remaining = 12;
-        ship.eta_ticks_remaining = 12;
-    }
+    builder.with_ship_patch(
+        ship_id,
+        ShipPatch {
+            location: Some(SystemId(0)),
+            movement_queue: Some(vec![RouteSegment {
+                from: SystemId(0),
+                to: SystemId(0),
+                from_anchor: Some(from_station),
+                to_anchor: Some(to_station),
+                edge: None,
+                kind: SegmentKind::InSystem,
+                eta_ticks: 12,
+                risk: 0.0,
+            }]),
+            current_segment_kind: Some(Some(SegmentKind::InSystem)),
+            segment_progress_total: Some(12),
+            segment_eta_remaining: Some(12),
+            eta_ticks_remaining: Some(12),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
 
     let mut app = App::new();
     app.insert_resource(SimResource::new(sim))
@@ -553,45 +585,45 @@ fn render_world_uses_station_anchor_positions_for_ship_motion() {
 
 #[test]
 fn ship_motion_after_warp_starts_at_entry_gate_not_center() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 52);
-    let Some(edge) = sim.world.edges.first().cloned() else {
+    let mut builder = SimulationScenarioBuilder::stage_a(52);
+    let Some(edge) = builder.first_edge() else {
         return;
     };
-    let ship_id = gatebound_core::ShipId(0);
-    let target_system = edge.b;
-    let destination_station = sim
-        .world
-        .first_station(target_system)
+    let ship_id = ShipId(0);
+    let target_system = edge.to_system;
+    let destination_station = builder
+        .first_station_in_system(target_system)
         .expect("destination station should exist");
-    let (entry_x, entry_y) = sim
-        .world
-        .gate_coords(target_system, edge.id)
+    let (entry_x, entry_y) = builder
+        .gate_position(target_system, edge.gate_id)
         .expect("entry gate coords should exist");
-    let center = sim
-        .world
-        .systems
-        .iter()
-        .find(|system| system.id == target_system)
-        .map(|system| Vec2::new(system.x as f32, system.y as f32))
+    let center = builder
+        .system_position(target_system)
+        .map(|(x, y)| Vec2::new(x as f32, y as f32))
         .expect("target system should exist");
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.location = target_system;
-        ship.last_gate_arrival = Some(edge.id);
-        ship.movement_queue = VecDeque::from([RouteSegment {
-            from: target_system,
-            to: target_system,
-            from_anchor: None,
-            to_anchor: Some(destination_station),
-            edge: None,
-            kind: SegmentKind::InSystem,
-            eta_ticks: 10,
-            risk: 0.0,
-        }]);
-        ship.current_segment_kind = Some(SegmentKind::InSystem);
-        ship.segment_progress_total = 10;
-        ship.segment_eta_remaining = 10;
-        ship.eta_ticks_remaining = 10;
-    }
+    builder.with_ship_patch(
+        ship_id,
+        ShipPatch {
+            location: Some(target_system),
+            last_gate_arrival: Some(Some(edge.gate_id)),
+            movement_queue: Some(vec![RouteSegment {
+                from: target_system,
+                to: target_system,
+                from_anchor: None,
+                to_anchor: Some(destination_station),
+                edge: None,
+                kind: SegmentKind::InSystem,
+                eta_ticks: 10,
+                risk: 0.0,
+            }]),
+            current_segment_kind: Some(Some(SegmentKind::InSystem)),
+            segment_progress_total: Some(10),
+            segment_eta_remaining: Some(10),
+            eta_ticks_remaining: Some(10),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
 
     let mut app = App::new();
     app.insert_resource(SimResource::new(sim))
@@ -611,44 +643,52 @@ fn ship_motion_after_warp_starts_at_entry_gate_not_center() {
 
 #[test]
 fn in_system_motion_entry_gate_to_station_interpolates_correctly() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 54);
-    let Some(edge) = sim.world.edges.first().cloned() else {
+    let mut builder = SimulationScenarioBuilder::stage_a(54);
+    let Some(edge) = builder.first_edge() else {
         return;
     };
-    let ship_id = gatebound_core::ShipId(0);
-    let target_system = edge.b;
-    let destination_station = sim
-        .world
-        .first_station(target_system)
+    let ship_id = ShipId(0);
+    let target_system = edge.to_system;
+    let destination_station = builder
+        .first_station_in_system(target_system)
         .expect("destination station should exist");
-    let destination = sim
-        .station_position(destination_station)
+    let destination = builder
+        .station_coords(destination_station)
         .expect("destination station coords should exist");
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.location = target_system;
-        ship.last_gate_arrival = Some(edge.id);
-        ship.movement_queue = VecDeque::from([RouteSegment {
-            from: target_system,
-            to: target_system,
-            from_anchor: None,
-            to_anchor: Some(destination_station),
-            edge: None,
-            kind: SegmentKind::InSystem,
-            eta_ticks: 8,
-            risk: 0.0,
-        }]);
-        ship.current_segment_kind = Some(SegmentKind::InSystem);
-        ship.segment_progress_total = 8;
-        ship.segment_eta_remaining = 4;
-        ship.eta_ticks_remaining = 4;
-    }
-
-    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    builder.with_ship_patch(
+        ship_id,
+        ShipPatch {
+            location: Some(target_system),
+            last_gate_arrival: Some(Some(edge.gate_id)),
+            movement_queue: Some(vec![RouteSegment {
+                from: target_system,
+                to: target_system,
+                from_anchor: None,
+                to_anchor: Some(destination_station),
+                edge: None,
+                kind: SegmentKind::InSystem,
+                eta_ticks: 8,
+                risk: 0.0,
+            }]),
+            current_segment_kind: Some(Some(SegmentKind::InSystem)),
+            segment_progress_total: Some(8),
+            segment_eta_remaining: Some(4),
+            eta_ticks_remaining: Some(4),
+            ..ShipPatch::default()
+        },
+    );
+    let sim = builder.build();
+    let snapshot = sim.world_render_snapshot();
+    let ship = snapshot
+        .ships
+        .iter()
+        .find(|ship| ship.ship_id == ship_id)
+        .expect("ship should exist");
     let segment = ship
-        .movement_queue
-        .front()
+        .front_segment
+        .as_ref()
         .expect("movement segment should exist");
-    let from = segment_from_point(&sim, ship, segment);
+    let from = segment_from_point(&snapshot, ship, segment);
     let to = Vec2::new(destination.0 as f32, destination.1 as f32);
     let t =
         ShipMotionCache::progress_ratio(ship.segment_progress_total, ship.segment_eta_remaining);
@@ -707,28 +747,30 @@ fn markets_panel_uses_selected_system_or_fallback() {
 
 #[test]
 fn markets_panel_uses_selected_station_market() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
     let system_id = SystemId(0);
-    let stations = sim
-        .world
-        .stations_by_system
-        .get(&system_id)
-        .cloned()
-        .expect("system stations should exist");
+    let stations = builder.stations_in_system(system_id);
     if stations.len() < 2 {
         return;
     }
     let selected_station = stations[1];
-    if let Some(first_market) = sim.markets.get_mut(&stations[0]) {
-        if let Some(fuel) = first_market.goods.get_mut(&Commodity::Fuel) {
-            fuel.stock = 9.0;
-        }
-    }
-    if let Some(selected_market) = sim.markets.get_mut(&selected_station) {
-        if let Some(fuel) = selected_market.goods.get_mut(&Commodity::Fuel) {
-            fuel.stock = 77.0;
-        }
-    }
+    builder.with_market_state_patch(
+        stations[0],
+        Commodity::Fuel,
+        MarketStatePatch {
+            stock: Some(9.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    builder.with_market_state_patch(
+        selected_station,
+        Commodity::Fuel,
+        MarketStatePatch {
+            stock: Some(77.0),
+            ..MarketStatePatch::default()
+        },
+    );
+    let sim = builder.build();
 
     let snapshot = build_hud_snapshot_v2(
         &sim,
@@ -752,28 +794,34 @@ fn markets_panel_uses_selected_station_market() {
 
 #[test]
 fn policy_edit_updates_ship_policy() {
-    let cfg = RuntimeConfig::default();
-    let mut sim = Simulation::new(cfg, 42);
-    let ship_id = gatebound_core::ShipId(0);
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.policy.min_margin = 3.5;
-        ship.policy.max_risk_score = 0.9;
-        ship.policy.max_hops = 3;
-        ship.policy.priority_mode = PriorityMode::Stability;
-    }
-    let ship = sim.ships.get(&ship_id).expect("ship should exist");
-    assert!((ship.policy.min_margin - 3.5).abs() < 1e-9);
-    assert!((ship.policy.max_risk_score - 0.9).abs() < 1e-9);
-    assert_eq!(ship.policy.max_hops, 3);
-    assert_eq!(ship.policy.priority_mode, PriorityMode::Stability);
+    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
+    let ship_id = ShipId(0);
+    let mut policy = sim
+        .ship_policy_view(ship_id)
+        .expect("ship policy view should exist")
+        .policy;
+    policy.min_margin = 3.5;
+    policy.max_risk_score = 0.9;
+    policy.max_hops = 3;
+    policy.priority_mode = PriorityMode::Stability;
+    sim.update_ship_policy(ship_id, policy)
+        .expect("policy update should succeed");
+    let policy = sim
+        .ship_policy_view(ship_id)
+        .expect("ship policy view should exist")
+        .policy;
+    assert!((policy.min_margin - 3.5).abs() < 1e-9);
+    assert!((policy.max_risk_score - 0.9).abs() < 1e-9);
+    assert_eq!(policy.max_hops, 3);
+    assert_eq!(policy.priority_mode, PriorityMode::Stability);
 }
 
 #[test]
 fn manual_vs_policy_kpi_updates_from_user_actions() {
     let sim = Simulation::new(RuntimeConfig::default(), 12);
     let mut kpi = UiKpiTracker::default();
-    kpi.record_manual_action(sim.tick);
-    kpi.record_policy_edit(sim.tick);
+    kpi.record_manual_action(sim.tick());
+    kpi.record_policy_edit(sim.tick());
     kpi.update(&sim);
     assert!(kpi.manual_actions_per_min >= 1.0);
     assert!(kpi.policy_edits_per_min >= 1.0);
@@ -782,12 +830,14 @@ fn manual_vs_policy_kpi_updates_from_user_actions() {
 
 #[test]
 fn hud_snapshot_includes_debt_reputation_and_recovery() {
-    let cfg = RuntimeConfig::default();
-    let mut sim = Simulation::new(cfg, 7);
-    sim.outstanding_debt = 123.0;
-    sim.reputation = 0.55;
-    sim.current_loan_interest_rate = 0.07;
-    sim.recovery_events = 3;
+    let mut builder = SimulationScenarioBuilder::stage_a(7);
+    builder.with_finance_state(FinanceStateFixture {
+        outstanding_debt: 123.0,
+        reputation: 0.55,
+        interest_rate: 0.07,
+        recovery_events: 3,
+    });
+    let mut sim = builder.build();
     sim.lease_slot(SystemId(0), SlotType::Dock, 2)
         .expect("lease should succeed");
 
@@ -810,13 +860,14 @@ fn hud_snapshot_includes_debt_reputation_and_recovery() {
 
 #[test]
 fn assets_snapshot_shows_recovery_actions() {
-    let mut sim = Simulation::new(RuntimeConfig::default(), 42);
-    sim.recovery_log.push(RecoveryAction {
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    builder.with_recovery_action(RecoveryAction {
         cycle: 4,
         released_leases: 2,
         capital_after: 40.0,
         debt_after: 180.0,
     });
+    let sim = builder.build();
 
     let snapshot = build_hud_snapshot(
         &sim,
@@ -863,9 +914,9 @@ fn hud_selected_system_lease_prices_rendered() {
 fn right_click_station_opens_context_menu_state() {
     let mut ui = StationUiState::default();
     assert!(!ui.context_menu_open);
-    apply_station_context_open(&mut ui, gatebound_core::StationId(7));
+    apply_station_context_open(&mut ui, StationId(7));
     assert!(ui.context_menu_open);
-    assert_eq!(ui.context_station_id, Some(gatebound_core::StationId(7)));
+    assert_eq!(ui.context_station_id, Some(StationId(7)));
 }
 
 #[test]
@@ -873,16 +924,30 @@ fn station_context_fly_command_sets_ship_route() {
     let mut sim = Simulation::new(RuntimeConfig::default(), 88);
     let ship_id = ShipId(0);
     let target_station = sim
-        .world
-        .first_station(SystemId(1))
-        .or_else(|| sim.world.first_station(SystemId(0)))
+        .camera_topology_view()
+        .systems
+        .iter()
+        .find(|system| system.system_id == SystemId(1))
+        .and_then(|system| system.stations.first().map(|station| station.station_id))
+        .or_else(|| {
+            sim.camera_topology_view()
+                .systems
+                .iter()
+                .find(|system| system.system_id == SystemId(0))
+                .and_then(|system| system.stations.first().map(|station| station.station_id))
+        })
         .expect("target station should exist");
 
     sim.command_fly_to_station(ship_id, target_station)
         .expect("fly command should succeed");
-    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    let snapshot = sim.world_render_snapshot();
+    let ship = snapshot
+        .ships
+        .iter()
+        .find(|ship| ship.ship_id == ship_id)
+        .expect("ship should exist");
     assert!(
-        ship.current_target.is_some() || !ship.movement_queue.is_empty(),
+        ship.current_target.is_some() || ship.front_segment.is_some(),
         "fly command should produce active movement state"
     );
 }
@@ -892,26 +957,35 @@ fn auto_dock_becomes_true_on_station_arrival() {
     let mut sim = Simulation::new(RuntimeConfig::default(), 91);
     let ship_id = ShipId(0);
     let target_station = sim
-        .world
-        .first_station(SystemId(1))
-        .or_else(|| sim.world.first_station(SystemId(0)))
+        .camera_topology_view()
+        .systems
+        .iter()
+        .find(|system| system.system_id == SystemId(1))
+        .and_then(|system| system.stations.first().map(|station| station.station_id))
+        .or_else(|| {
+            sim.camera_topology_view()
+                .systems
+                .iter()
+                .find(|system| system.system_id == SystemId(0))
+                .and_then(|system| system.stations.first().map(|station| station.station_id))
+        })
         .expect("target station should exist");
 
     sim.command_fly_to_station(ship_id, target_station)
         .expect("fly command should succeed");
     assert!(
-        !sim.is_ship_docked_at(ship_id, target_station),
+        !ship_docked_at(&sim, ship_id, target_station),
         "ship should not be docked immediately after command"
     );
 
     for _ in 0..400 {
         sim.step_tick();
-        if sim.is_ship_docked_at(ship_id, target_station) {
+        if ship_docked_at(&sim, ship_id, target_station) {
             break;
         }
     }
     assert!(
-        sim.is_ship_docked_at(ship_id, target_station),
+        ship_docked_at(&sim, ship_id, target_station),
         "ship should eventually auto-dock at destination station"
     );
 }
@@ -920,47 +994,45 @@ fn auto_dock_becomes_true_on_station_arrival() {
 fn station_trade_actions_change_market_and_cargo_state() {
     let mut cfg = RuntimeConfig::default();
     cfg.pressure.market_fee_rate = 0.1;
-    let mut sim = Simulation::new(cfg, 99);
+    let mut builder = SimulationScenarioBuilder::new(cfg, 99);
     let ship_id = ShipId(0);
-    let station_id = sim
-        .world
-        .first_station(SystemId(0))
+    let station_id = builder
+        .first_station_in_system(SystemId(0))
         .expect("station should exist");
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.current_station = Some(station_id);
-        ship.location = SystemId(0);
-        ship.eta_ticks_remaining = 0;
-        ship.segment_eta_remaining = 0;
-        ship.current_segment_kind = None;
-        ship.movement_queue.clear();
-    }
+    builder.dock_ship_at(ship_id, station_id);
+    let mut sim = builder.build();
 
     let stock_before = sim
-        .markets
-        .get(&station_id)
-        .and_then(|book| book.goods.get(&Commodity::Fuel))
-        .map(|state| state.stock)
+        .station_ops_view(ship_id, station_id)
+        .and_then(|view| {
+            view.market_rows
+                .into_iter()
+                .find(|row| row.commodity == Commodity::Fuel)
+                .map(|row| row.stock)
+        })
         .unwrap_or(0.0);
     sim.player_buy(ship_id, station_id, Commodity::Fuel, 6.0)
         .expect("buy should pass");
     sim.player_sell(ship_id, station_id, Commodity::Fuel, 2.0)
         .expect("sell should pass");
 
-    let ship = sim.ships.get(&ship_id).expect("ship should exist");
+    let ops_view = sim
+        .station_ops_view(ship_id, station_id)
+        .expect("ship station ops view should exist");
     assert!(
-        ship.cargo.is_some(),
+        ops_view.cargo.is_some(),
         "ship should retain partial cargo after sell"
     );
     assert_eq!(
-        ship.cargo.map(|cargo| cargo.source),
+        ops_view.cargo.map(|cargo| cargo.source),
         Some(CargoSource::Spot),
         "spot trading should keep spot cargo source"
     );
-    let stock_after = sim
-        .markets
-        .get(&station_id)
-        .and_then(|book| book.goods.get(&Commodity::Fuel))
-        .map(|state| state.stock)
+    let stock_after = ops_view
+        .market_rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .map(|row| row.stock)
         .unwrap_or(0.0);
     assert!(
         stock_after < stock_before,

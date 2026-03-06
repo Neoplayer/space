@@ -1,349 +1,28 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_core::{
-    CargoSource, CommandError, Commodity, ContractActionError, ContractOffer, ContractProgress,
-    ContractTypeStageA, FleetWarning, MarketInsightRow, MilestoneStatus, OfferError,
-    OfferProblemTag, PriorityMode, ShipId, Simulation, SlotType, StationId, StationProfile,
-    SystemId, TradeError,
+use gatebound_domain::{
+    CargoSource, Commodity, OfferProblemTag, PriorityMode,
 };
 
-use crate::sim_runtime::{
-    apply_offer_filters, derive_cycle_report, ContractsFilterState, OfferSortMode, SelectedShip,
-    SelectedStation, SelectedSystem, SimClock, SimResource, StationUiState, UiKpiTracker,
-    UiPanelState,
+use crate::runtime::sim::{
+    ContractsFilterState, OfferSortMode, SelectedShip, SelectedStation, SelectedSystem,
+    SimClock, SimResource, StationUiState, UiKpiTracker, UiPanelState,
 };
-use crate::view_mode::CameraMode;
 
-#[derive(Resource, Debug, Clone, Default)]
-pub struct HudMessages {
-    pub entries: Vec<String>,
-}
-
-impl HudMessages {
-    pub fn push(&mut self, message: String) {
-        self.entries.push(message);
-        if self.entries.len() > 8 {
-            let drain_len = self.entries.len() - 8;
-            self.entries.drain(0..drain_len);
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MarketRow {
-    pub commodity: Commodity,
-    pub price: f64,
-    pub stock: f64,
-    pub inflow: f64,
-    pub outflow: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HudSnapshot {
-    pub tick: u64,
-    pub cycle: u64,
-    pub capital: f64,
-    pub debt: f64,
-    pub interest_rate: f64,
-    pub reputation: f64,
-    pub recovery_events: u32,
-    pub active_contracts: usize,
-    pub active_ships: usize,
-    pub active_leases: usize,
-    pub selected_system_id: SystemId,
-    pub selected_station_id: Option<StationId>,
-    pub selected_station_profile: Option<StationProfile>,
-    pub selected_ship_id: Option<ShipId>,
-    pub paused: bool,
-    pub speed_multiplier: u32,
-    pub sla_success_rate: f64,
-    pub reroutes: u64,
-    pub avg_price_index: f64,
-    pub camera_mode: String,
-    pub intel_staleness_ticks: u64,
-    pub intel_confidence: f64,
-    pub contract_lines: Vec<String>,
-    pub ship_lines: Vec<String>,
-    pub lease_lines: Vec<String>,
-    pub lease_market_lines: Vec<String>,
-    pub offers: Vec<ContractOffer>,
-    pub fleet_rows: Vec<gatebound_core::FleetShipStatus>,
-    pub market_rows: Vec<MarketRow>,
-    pub system_market_rows: Vec<MarketRow>,
-    pub milestones: Vec<MilestoneStatus>,
-    pub throughput_rows: Vec<gatebound_core::GateThroughputSnapshot>,
-    pub market_share: f64,
-    pub market_insights: Vec<MarketInsightRow>,
-    pub recovery_actions: Vec<gatebound_core::RecoveryAction>,
-    pub manual_actions_per_min: f64,
-    pub policy_edits_per_min: f64,
-    pub avg_route_hops_player: f64,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_hud_snapshot(
-    simulation: &Simulation,
-    paused: bool,
-    speed_multiplier: u32,
-    camera_mode: CameraMode,
-    selected_system_id: SystemId,
-    selected_station_id: Option<StationId>,
-    selected_ship_id: Option<ShipId>,
-    filters: ContractsFilterState,
-    kpi: &UiKpiTracker,
-) -> HudSnapshot {
-    let cycle_report = derive_cycle_report(simulation);
-
-    let mut contracts: Vec<_> = simulation
-        .contracts
-        .values()
-        .filter(|contract| !contract.completed && !contract.failed)
-        .collect();
-    contracts.sort_by_key(|contract| contract.id.0);
-    let contract_lines = contracts
-        .iter()
-        .take(8)
-        .map(|contract| {
-            let kind = match contract.kind {
-                ContractTypeStageA::Delivery => "Delivery",
-                ContractTypeStageA::Supply => "Supply",
-            };
-            format!(
-                "#{} {kind} {} S{}:A{} -> S{}:A{} qty={:.1} deadline={} miss={}",
-                contract.id.0,
-                commodity_label(contract.commodity),
-                contract.origin.0,
-                contract.origin_station.0,
-                contract.destination.0,
-                contract.destination_station.0,
-                contract.quantity,
-                contract.deadline_tick,
-                contract.missed_cycles,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut ships: Vec<_> = simulation.ships.values().collect();
-    ships.sort_by_key(|ship| ship.id.0);
-    let ship_lines = ships
-        .iter()
-        .take(10)
-        .map(|ship| {
-            let target = ship
-                .current_target
-                .map(|target| target.0.to_string())
-                .unwrap_or_else(|| "-".to_string());
-            let segment = ship
-                .current_segment_kind
-                .map(|kind| format!("{kind:?}"))
-                .unwrap_or_else(|| "-".to_string());
-            format!(
-                "#{} c={} sys={} -> {} eta={} seg={} seg_eta={} risk={:.2} reroutes={}",
-                ship.id.0,
-                ship.company_id.0,
-                ship.location.0,
-                target,
-                ship.eta_ticks_remaining,
-                segment,
-                ship.segment_eta_remaining,
-                ship.last_risk_score,
-                ship.reroutes,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut leases: Vec<_> = simulation.active_leases.iter().collect();
-    leases.sort_by_key(|lease| (lease.system_id.0, lease.slot_type, lease.cycles_remaining));
-    let lease_lines = leases
-        .into_iter()
-        .take(10)
-        .map(|lease| {
-            format!(
-                "sys={} {:?} cycles={} price/cycle={:.1}",
-                lease.system_id.0, lease.slot_type, lease.cycles_remaining, lease.price_per_cycle
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let lease_market_lines = simulation
-        .lease_market_for_system(selected_system_id)
-        .into_iter()
-        .map(|entry| {
-            format!(
-                "{} {}/{} @ {:.1}/cycle",
-                slot_type_label(entry.slot_type),
-                entry.available,
-                entry.total,
-                entry.price_per_cycle
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let offers = apply_offer_filters(
-        simulation
-            .contract_offers
-            .values()
-            .cloned()
-            .collect::<Vec<_>>(),
-        filters,
-    );
-    let fleet_rows = simulation.fleet_status();
-
-    let selected_station_id = selected_station_id.or_else(|| {
-        simulation
-            .world
-            .stations_by_system
-            .get(&selected_system_id)
-            .and_then(|stations| stations.first().copied())
-    });
-    let selected_station_profile = selected_station_id.and_then(|station_id| {
-        simulation
-            .world
-            .stations
-            .iter()
-            .find(|station| station.id == station_id)
-            .map(|station| station.profile)
-    });
-
-    let market_rows = selected_station_id
-        .and_then(|station_id| simulation.markets.get(&station_id))
-        .map(|market| {
-            Commodity::ALL
-                .iter()
-                .filter_map(|commodity| {
-                    market.goods.get(commodity).map(|state| MarketRow {
-                        commodity: *commodity,
-                        price: state.price,
-                        stock: state.stock,
-                        inflow: state.cycle_inflow,
-                        outflow: state.cycle_outflow,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let system_market_rows = simulation
-        .world
-        .stations_by_system
-        .get(&selected_system_id)
-        .map(|stations| {
-            let mut rows = Vec::new();
-            for commodity in Commodity::ALL {
-                let mut price_sum = 0.0;
-                let mut stock_sum = 0.0;
-                let mut inflow_sum = 0.0;
-                let mut outflow_sum = 0.0;
-                let mut count = 0.0;
-                for station_id in stations {
-                    if let Some(state) = simulation
-                        .markets
-                        .get(station_id)
-                        .and_then(|book| book.goods.get(&commodity))
-                    {
-                        price_sum += state.price;
-                        stock_sum += state.stock;
-                        inflow_sum += state.cycle_inflow;
-                        outflow_sum += state.cycle_outflow;
-                        count += 1.0;
-                    }
-                }
-                if count > 0.0 {
-                    rows.push(MarketRow {
-                        commodity,
-                        price: price_sum / count,
-                        stock: stock_sum,
-                        inflow: inflow_sum,
-                        outflow: outflow_sum,
-                    });
-                }
-            }
-            rows
-        })
-        .unwrap_or_default();
-
-    let intel = simulation.market_intel(
-        selected_system_id,
-        matches!(camera_mode, CameraMode::System(system_id) if system_id == selected_system_id),
-    );
-
-    let mut throughput_rows = simulation.gate_throughput_view();
-    throughput_rows.sort_by(|a, b| b.player_share.total_cmp(&a.player_share));
-
-    let milestones = simulation.milestone_status().to_vec();
-    let market_share = simulation.market_share_view();
-    let market_insights = selected_station_id
-        .map(|station_id| simulation.market_insights(station_id))
-        .unwrap_or_default();
-    let recovery_actions = simulation.recent_recovery_actions().to_vec();
-
-    let mut price_samples = 0_u64;
-    let mut total_price_index = 0.0_f64;
-    for market in simulation.markets.values() {
-        for state in market.goods.values() {
-            if state.base_price > 0.0 {
-                total_price_index += state.price / state.base_price;
-                price_samples += 1;
-            }
-        }
-    }
-    let avg_price_index = if price_samples == 0 {
-        1.0
-    } else {
-        total_price_index / price_samples as f64
-    };
-
-    HudSnapshot {
-        tick: simulation.tick,
-        cycle: simulation.cycle,
-        capital: simulation.capital,
-        debt: simulation.outstanding_debt,
-        interest_rate: simulation.current_loan_interest_rate,
-        reputation: simulation.reputation,
-        recovery_events: simulation.recovery_events,
-        active_contracts: contracts.len(),
-        active_ships: simulation.ships.len(),
-        active_leases: simulation.active_leases.len(),
-        selected_system_id,
-        selected_station_id,
-        selected_station_profile,
-        selected_ship_id,
-        paused,
-        speed_multiplier,
-        sla_success_rate: cycle_report.sla_success_rate,
-        reroutes: simulation.reroute_count,
-        avg_price_index,
-        camera_mode: match camera_mode {
-            CameraMode::Galaxy => "Galaxy".to_string(),
-            CameraMode::System(system_id) => format!("System({})", system_id.0),
-        },
-        intel_staleness_ticks: intel.map_or(0, |info| info.staleness_ticks),
-        intel_confidence: intel.map_or(1.0, |info| info.confidence),
-        contract_lines,
-        ship_lines,
-        lease_lines,
-        lease_market_lines,
-        offers,
-        fleet_rows,
-        market_rows,
-        system_market_rows,
-        milestones,
-        throughput_rows,
-        market_share,
-        market_insights,
-        recovery_actions,
-        manual_actions_per_min: kpi.manual_actions_per_min,
-        policy_edits_per_min: kpi.policy_edits_per_min,
-        avg_route_hops_player: kpi.avg_route_hops_player,
-    }
-}
-
+use super::labels::{
+    cargo_source_label, command_error_label, commodity_label, contract_action_error_label,
+    contract_progress_label, job_kind_label, milestone_label, offer_error_label, problem_label,
+    priority_mode_label, ship_role_label, sort_mode_label, station_profile_label,
+    trade_error_label, warning_label,
+};
+use super::messages::HudMessages;
+use super::snapshot::build_hud_snapshot;
 #[allow(clippy::too_many_arguments)]
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
     mut sim: ResMut<SimResource>,
     clock: Res<SimClock>,
-    camera: Res<crate::view_mode::CameraUiState>,
+    camera: Res<crate::input::camera::CameraUiState>,
     selected_system: Res<SelectedSystem>,
     selected_station: Res<SelectedStation>,
     mut selected_ship: ResMut<SelectedShip>,
@@ -452,13 +131,7 @@ pub fn draw_hud_panel(
             .collapsible(false)
             .show(ctx, |ui| {
                 if selected_ship.ship_id.is_none() {
-                    selected_ship.ship_id = sim
-                        .simulation
-                        .ships
-                        .values()
-                        .filter(|ship| ship.company_id.0 == 0)
-                        .map(|ship| ship.id)
-                        .min_by_key(|ship_id| ship_id.0);
+                    selected_ship.ship_id = snapshot.default_player_ship_id;
                 }
                 let Some(station_id) = station_ui.context_station_id else {
                     ui.label("No station selected");
@@ -469,10 +142,14 @@ pub fn draw_hud_panel(
                     ui.label("No player ship available");
                     return;
                 };
-                let docked = sim.simulation.is_ship_docked_at(ship_id, station_id);
+                let docked = sim
+                    .simulation
+                    .station_ops_view(ship_id, station_id)
+                    .map(|view| view.docked)
+                    .unwrap_or(false);
                 ui.label(format!("Ship #{} docked={}", ship_id.0, docked));
                 if ui.button("Fly to station").clicked() {
-                    kpi.record_manual_action(sim.simulation.tick);
+                    kpi.record_manual_action(sim.simulation.tick());
                     match sim.simulation.command_fly_to_station(ship_id, station_id) {
                         Ok(()) => {
                             messages.push(format!(
@@ -536,11 +213,11 @@ pub fn draw_hud_panel(
                     )
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut filters.route_gate, None, "Any");
-                        for edge in &sim.simulation.world.edges {
+                        for gate_id in &snapshot.route_gate_options {
                             ui.selectable_value(
                                 &mut filters.route_gate,
-                                Some(edge.id),
-                                format!("Gate {}", edge.id.0),
+                                Some(*gate_id),
+                                format!("Gate {}", gate_id.0),
                             );
                         }
                     });
@@ -598,52 +275,55 @@ pub fn draw_hud_panel(
                 ui.separator();
                 ui.label(format!("Offers: {}", snapshot.offers.len()));
                 for offer in snapshot.offers.iter().take(16) {
-                    let gates = if offer.route_gate_ids.is_empty() {
+                    let gates = if offer.offer.route_gate_ids.is_empty() {
                         "-".to_string()
                     } else {
                         offer
+                            .offer
                             .route_gate_ids
                             .iter()
                             .map(|gate_id| gate_id.0.to_string())
                             .collect::<Vec<_>>()
                             .join(">")
                     };
-                    let intel = sim
-                        .simulation
-                        .market_intel(offer.destination, false)
+                    let intel = offer
+                        .destination_intel
                         .map(|info| format!("s={} c={:.2}", info.staleness_ticks, info.confidence))
                         .unwrap_or_else(|| "s=0 c=1.00".to_string());
                     ui.horizontal(|ui| {
                         ui.monospace(format!(
                             "#{:03} {:?} {} S{}:A{}->S{}:A{} qty={:.1} eta={} risk={:.2} margin={:.1} ppt={:.2} problem={} gates={} intel={}{}",
-                            offer.id,
-                            offer.kind,
-                            commodity_label(offer.commodity),
-                            offer.origin.0,
-                            offer.origin_station.0,
-                            offer.destination.0,
-                            offer.destination_station.0,
-                            offer.quantity,
-                            offer.eta_ticks,
-                            offer.risk_score,
-                            offer.margin_estimate,
-                            offer.profit_per_ton,
-                            problem_label(offer.problem_tag),
+                            offer.offer.id,
+                            offer.offer.kind,
+                            commodity_label(offer.offer.commodity),
+                            offer.offer.origin.0,
+                            offer.offer.origin_station.0,
+                            offer.offer.destination.0,
+                            offer.offer.destination_station.0,
+                            offer.offer.quantity,
+                            offer.offer.eta_ticks,
+                            offer.offer.risk_score,
+                            offer.offer.margin_estimate,
+                            offer.offer.profit_per_ton,
+                            problem_label(offer.offer.problem_tag),
                             gates,
                             intel,
-                            if offer.premium { " premium" } else { "" }
+                            if offer.offer.premium { " premium" } else { "" }
                         ));
                         if let Some(ship_id) = selected_ship.ship_id {
                             if ui.button("Accept").clicked() {
-                                kpi.record_manual_action(sim.simulation.tick);
-                                match sim.simulation.accept_contract_offer(offer.id, ship_id) {
+                                kpi.record_manual_action(sim.simulation.tick());
+                                match sim
+                                    .simulation
+                                    .accept_contract_offer(offer.offer.id, ship_id)
+                                {
                                     Ok(contract_id) => messages.push(format!(
                                         "Accepted offer {} as contract {} for ship {}",
-                                        offer.id, contract_id.0, ship_id.0
+                                        offer.offer.id, contract_id.0, ship_id.0
                                     )),
                                     Err(err) => messages.push(format!(
                                         "Accept offer {} failed: {}",
-                                        offer.id,
+                                        offer.offer.id,
                                         offer_error_label(err)
                                     )),
                                 }
@@ -798,13 +478,7 @@ pub fn draw_hud_panel(
             .open(&mut open)
             .show(ctx, |ui| {
                 if selected_ship.ship_id.is_none() {
-                    selected_ship.ship_id = sim
-                        .simulation
-                        .ships
-                        .values()
-                        .filter(|ship| ship.company_id.0 == 0)
-                        .map(|ship| ship.id)
-                        .min_by_key(|ship_id| ship_id.0);
+                    selected_ship.ship_id = snapshot.default_player_ship_id;
                 }
                 let Some(ship_id) = selected_ship.ship_id else {
                     ui.label("No player ship available");
@@ -820,42 +494,36 @@ pub fn draw_hud_panel(
                 };
                 station_ui.context_station_id = Some(station_id);
 
-                ui.label(format!("Station: {}", station_id.0));
-                let docked = sim.simulation.is_ship_docked_at(ship_id, station_id);
-                ui.label(format!("Ship #{} docked={}", ship_id.0, docked));
+                let Some(ops_view) = sim.simulation.station_ops_view(ship_id, station_id) else {
+                    ui.label("Selected ship not found");
+                    return;
+                };
 
-                if let Some(ship) = sim.simulation.ships.get(&ship_id) {
-                    let cargo_line = ship
-                        .cargo
-                        .map(|cargo| {
-                            format!(
-                                "{} {:.1} ({})",
-                                commodity_label(cargo.commodity),
-                                cargo.amount,
-                                cargo_source_label(cargo.source)
-                            )
-                        })
-                        .unwrap_or_else(|| "-".to_string());
-                    ui.label(format!("Cargo: {cargo_line}"));
-                    if let Some(contract_id) = ship.active_contract {
-                        let contract_line = sim
-                            .simulation
-                            .contracts
-                            .get(&contract_id)
-                            .map(|contract| {
-                                format!(
-                                    "#{} {:?} {} progress={}",
-                                    contract_id.0,
-                                    contract.kind,
-                                    commodity_label(contract.commodity),
-                                    contract_progress_label(contract.progress)
-                                )
-                            })
-                            .unwrap_or_else(|| format!("#{} <missing>", contract_id.0));
-                        ui.label(format!("Active contract: {contract_line}"));
-                    } else {
-                        ui.label("Active contract: -");
-                    }
+                ui.label(format!("Station: {}", station_id.0));
+                ui.label(format!("Ship #{} docked={}", ship_id.0, ops_view.docked));
+
+                let cargo_line = ops_view
+                    .cargo
+                    .map(|cargo| {
+                        format!(
+                            "{} {:.1} ({})",
+                            commodity_label(cargo.commodity),
+                            cargo.amount,
+                            cargo_source_label(cargo.source)
+                        )
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                ui.label(format!("Cargo: {cargo_line}"));
+                if let Some(contract) = ops_view.active_contract.as_ref() {
+                    ui.label(format!(
+                        "Active contract: #{} {:?} {} progress={}",
+                        contract.id.0,
+                        contract.kind,
+                        commodity_label(contract.commodity),
+                        contract_progress_label(contract.progress)
+                    ));
+                } else {
+                    ui.label("Active contract: -");
                 }
 
                 ui.separator();
@@ -880,37 +548,28 @@ pub fn draw_hud_panel(
                     );
                 });
 
-                let station_stock = sim
-                    .simulation
-                    .markets
-                    .get(&station_id)
-                    .and_then(|book| book.goods.get(&station_ui.trade_commodity))
-                    .map(|state| state.stock)
+                let station_stock = ops_view
+                    .market_rows
+                    .iter()
+                    .find(|row| row.commodity == station_ui.trade_commodity)
+                    .map(|row| row.stock)
                     .unwrap_or(0.0);
-                let mut free_capacity = sim
-                    .simulation
-                    .ships
-                    .get(&ship_id)
-                    .map(|ship| match ship.cargo {
-                        None => ship.cargo_capacity,
-                        Some(cargo)
-                            if cargo.source == CargoSource::Spot
-                                && cargo.commodity == station_ui.trade_commodity =>
-                        {
-                            (ship.cargo_capacity - cargo.amount).max(0.0)
-                        }
-                        _ => 0.0,
-                    })
-                    .unwrap_or(0.0);
+                let mut free_capacity = match ops_view.cargo {
+                    None => ops_view.cargo_capacity,
+                    Some(cargo)
+                        if cargo.source == CargoSource::Spot
+                            && cargo.commodity == station_ui.trade_commodity =>
+                    {
+                        (ops_view.cargo_capacity - cargo.amount).max(0.0)
+                    }
+                    _ => 0.0,
+                };
                 if free_capacity < 0.0 {
                     free_capacity = 0.0;
                 }
                 let buy_cap = station_stock.min(free_capacity).max(0.0);
-                let sell_cap = sim
-                    .simulation
-                    .ships
-                    .get(&ship_id)
-                    .and_then(|ship| ship.cargo)
+                let sell_cap = ops_view
+                    .cargo
                     .filter(|cargo| {
                         cargo.source == CargoSource::Spot
                             && cargo.commodity == station_ui.trade_commodity
@@ -931,8 +590,11 @@ pub fn draw_hud_panel(
                 });
 
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(docked, egui::Button::new("Buy")).clicked() {
-                        kpi.record_manual_action(sim.simulation.tick);
+                    if ui
+                        .add_enabled(ops_view.docked, egui::Button::new("Buy"))
+                        .clicked()
+                    {
+                        kpi.record_manual_action(sim.simulation.tick());
                         match sim.simulation.player_buy(
                             ship_id,
                             station_id,
@@ -952,8 +614,11 @@ pub fn draw_hud_panel(
                             }
                         }
                     }
-                    if ui.add_enabled(docked, egui::Button::new("Sell")).clicked() {
-                        kpi.record_manual_action(sim.simulation.tick);
+                    if ui
+                        .add_enabled(ops_view.docked, egui::Button::new("Sell"))
+                        .clicked()
+                    {
+                        kpi.record_manual_action(sim.simulation.tick());
                         match sim.simulation.player_sell(
                             ship_id,
                             station_id,
@@ -975,19 +640,21 @@ pub fn draw_hud_panel(
                     }
                 });
 
-                let active_contract = sim
-                    .simulation
-                    .ships
-                    .get(&ship_id)
-                    .and_then(|ship| ship.active_contract);
+                let active_contract = ops_view
+                    .active_contract
+                    .as_ref()
+                    .map(|contract| contract.id);
                 let has_contract = active_contract.is_some();
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(docked && has_contract, egui::Button::new("Load contract"))
+                        .add_enabled(
+                            ops_view.docked && has_contract,
+                            egui::Button::new("Load contract"),
+                        )
                         .clicked()
                     {
                         if let Some(contract_id) = active_contract {
-                            kpi.record_manual_action(sim.simulation.tick);
+                            kpi.record_manual_action(sim.simulation.tick());
                             match sim.simulation.player_contract_load(
                                 ship_id,
                                 contract_id,
@@ -1005,11 +672,14 @@ pub fn draw_hud_panel(
                         }
                     }
                     if ui
-                        .add_enabled(docked && has_contract, egui::Button::new("Unload contract"))
+                        .add_enabled(
+                            ops_view.docked && has_contract,
+                            egui::Button::new("Unload contract"),
+                        )
                         .clicked()
                     {
                         if let Some(contract_id) = active_contract {
-                            kpi.record_manual_action(sim.simulation.tick);
+                            kpi.record_manual_action(sim.simulation.tick());
                             match sim.simulation.player_contract_unload(
                                 ship_id,
                                 contract_id,
@@ -1049,26 +719,9 @@ pub fn draw_hud_panel(
                 ui.separator();
                 ui.heading("Leases");
                 ui.label(format!("Active leases: {}", snapshot.active_leases));
-                let lease_burden = sim
-                    .simulation
-                    .active_leases
-                    .iter()
-                    .map(|lease| lease.price_per_cycle)
-                    .sum::<f64>();
-                let offers_avg = if snapshot.offers.is_empty() {
-                    0.0
-                } else {
-                    snapshot
-                        .offers
-                        .iter()
-                        .map(|offer| offer.payout)
-                        .sum::<f64>()
-                        / snapshot.offers.len() as f64
-                };
-                let roi_proxy = offers_avg - lease_burden;
                 ui.label(format!(
                     "Lease burden/cycle: {:.1} | ROI proxy: {:.1}",
-                    lease_burden, roi_proxy
+                    snapshot.lease_burden, snapshot.roi_proxy
                 ));
                 for line in &snapshot.lease_lines {
                     ui.monospace(line);
@@ -1102,68 +755,68 @@ pub fn draw_hud_panel(
             .open(&mut open)
             .show(ctx, |ui| {
                 if selected_ship.ship_id.is_none() {
-                    selected_ship.ship_id = sim
-                        .simulation
-                        .ships
-                        .values()
-                        .filter(|ship| ship.company_id.0 == 0)
-                        .map(|ship| ship.id)
-                        .min_by_key(|ship_id| ship_id.0);
+                    selected_ship.ship_id = snapshot.default_player_ship_id;
                 }
                 let Some(ship_id) = selected_ship.ship_id else {
                     ui.label("No player ship available");
                     return;
                 };
                 ui.label(format!("Selected ship: #{}", ship_id.0));
-                let tick_now = sim.simulation.tick;
-                if let Some(ship) = sim.simulation.ships.get_mut(&ship_id) {
+                let tick_now = sim.simulation.tick();
+                if let Some(policy_view) = sim.simulation.ship_policy_view(ship_id) {
+                    let mut policy = policy_view.policy;
                     let mut policy_changed = false;
                     ui.horizontal(|ui| {
                         ui.label("min_margin");
                         policy_changed |= ui
-                            .add(egui::DragValue::new(&mut ship.policy.min_margin).speed(0.1))
+                            .add(egui::DragValue::new(&mut policy.min_margin).speed(0.1))
                             .changed();
                         ui.label("max_risk");
                         policy_changed |= ui
-                            .add(egui::DragValue::new(&mut ship.policy.max_risk_score).speed(0.1))
+                            .add(egui::DragValue::new(&mut policy.max_risk_score).speed(0.1))
                             .changed();
                         ui.label("max_hops");
                         policy_changed |= ui
-                            .add(egui::DragValue::new(&mut ship.policy.max_hops).speed(1.0))
+                            .add(egui::DragValue::new(&mut policy.max_hops).speed(1.0))
                             .changed();
                     });
                     egui::ComboBox::from_label("priority_mode")
-                        .selected_text(priority_mode_label(ship.policy.priority_mode))
+                        .selected_text(priority_mode_label(policy.priority_mode))
                         .show_ui(ui, |ui| {
                             policy_changed |= ui
                                 .selectable_value(
-                                    &mut ship.policy.priority_mode,
+                                    &mut policy.priority_mode,
                                     PriorityMode::Profit,
                                     priority_mode_label(PriorityMode::Profit),
                                 )
                                 .changed();
                             policy_changed |= ui
                                 .selectable_value(
-                                    &mut ship.policy.priority_mode,
+                                    &mut policy.priority_mode,
                                     PriorityMode::Stability,
                                     priority_mode_label(PriorityMode::Stability),
                                 )
                                 .changed();
                             policy_changed |= ui
                                 .selectable_value(
-                                    &mut ship.policy.priority_mode,
+                                    &mut policy.priority_mode,
                                     PriorityMode::Hybrid,
                                     priority_mode_label(PriorityMode::Hybrid),
                                 )
                                 .changed();
                         });
-                    if policy_changed {
+                    if policy_changed
+                        && sim
+                            .simulation
+                            .update_ship_policy(ship_id, policy.clone())
+                            .is_ok()
+                    {
                         kpi.record_manual_action(tick_now);
                         kpi.record_policy_edit(tick_now);
                     }
                     ui.label(format!(
                         "waypoints={}",
-                        ship.policy
+                        policy
                             .waypoints
                             .iter()
                             .map(|system_id| system_id.0.to_string())
@@ -1202,162 +855,4 @@ pub fn draw_hud_panel(
     }
 
     Ok(())
-}
-
-fn commodity_label(commodity: Commodity) -> &'static str {
-    match commodity {
-        Commodity::Ore => "Ore",
-        Commodity::Ice => "Ice",
-        Commodity::Gas => "Gas",
-        Commodity::Metal => "Metal",
-        Commodity::Fuel => "Fuel",
-        Commodity::Parts => "Parts",
-        Commodity::Electronics => "Electronics",
-    }
-}
-
-fn slot_type_label(slot_type: SlotType) -> &'static str {
-    match slot_type {
-        SlotType::Dock => "Dock",
-        SlotType::Storage => "Storage",
-        SlotType::Factory => "Factory",
-        SlotType::Market => "Market",
-    }
-}
-
-fn station_profile_label(profile: StationProfile) -> &'static str {
-    match profile {
-        StationProfile::Civilian => "Civilian",
-        StationProfile::Industrial => "Industrial",
-        StationProfile::Research => "Research",
-    }
-}
-
-fn warning_label(warning: FleetWarning) -> &'static str {
-    match warning {
-        FleetWarning::HighRisk => "HighRisk",
-        FleetWarning::HighQueueDelay => "HighQueueDelay",
-        FleetWarning::NoRoute => "NoRoute",
-        FleetWarning::ShipIdle => "ShipIdle",
-    }
-}
-
-fn ship_role_label(role: gatebound_core::ShipRole) -> &'static str {
-    match role {
-        gatebound_core::ShipRole::PlayerContract => "player_contract",
-        gatebound_core::ShipRole::NpcTrade => "npc_trade",
-    }
-}
-
-fn milestone_label(milestone: &MilestoneStatus) -> &'static str {
-    match milestone.id {
-        gatebound_core::MilestoneId::Capital => "Capital",
-        gatebound_core::MilestoneId::MarketShare => "MarketShare",
-        gatebound_core::MilestoneId::ThroughputControl => "ThroughputControl",
-        gatebound_core::MilestoneId::Reputation => "Reputation",
-    }
-}
-
-fn sort_mode_label(mode: OfferSortMode) -> &'static str {
-    match mode {
-        OfferSortMode::MarginDesc => "Margin desc",
-        OfferSortMode::RiskAsc => "Risk asc",
-        OfferSortMode::EtaAsc => "ETA asc",
-    }
-}
-
-fn priority_mode_label(mode: PriorityMode) -> &'static str {
-    match mode {
-        PriorityMode::Profit => "profit",
-        PriorityMode::Stability => "stability",
-        PriorityMode::Hybrid => "hybrid",
-    }
-}
-
-fn offer_error_label(err: OfferError) -> &'static str {
-    match err {
-        OfferError::UnknownOffer => "unknown_offer",
-        OfferError::ExpiredOffer => "expired_offer",
-        OfferError::ShipBusy => "ship_busy",
-        OfferError::InvalidAssignment => "invalid_assignment",
-        OfferError::InsufficientStock => "insufficient_stock",
-    }
-}
-
-fn command_error_label(err: CommandError) -> &'static str {
-    match err {
-        CommandError::UnknownShip => "unknown_ship",
-        CommandError::UnknownStation => "unknown_station",
-        CommandError::InvalidAssignment => "invalid_assignment",
-        CommandError::ShipBusy => "ship_busy",
-        CommandError::NoRoute => "no_route",
-    }
-}
-
-fn trade_error_label(err: TradeError) -> &'static str {
-    match err {
-        TradeError::UnknownShip => "unknown_ship",
-        TradeError::UnknownStation => "unknown_station",
-        TradeError::InvalidAssignment => "invalid_assignment",
-        TradeError::NotDocked => "not_docked",
-        TradeError::InvalidQuantity => "invalid_quantity",
-        TradeError::InsufficientStock => "insufficient_stock",
-        TradeError::InsufficientCapital => "insufficient_capital",
-        TradeError::InsufficientCargo => "insufficient_cargo",
-        TradeError::CargoCapacityExceeded => "cargo_capacity_exceeded",
-        TradeError::CommodityMismatch => "commodity_mismatch",
-        TradeError::ContractCargoLocked => "contract_cargo_locked",
-    }
-}
-
-fn contract_action_error_label(err: ContractActionError) -> &'static str {
-    match err {
-        ContractActionError::UnknownShip => "unknown_ship",
-        ContractActionError::UnknownContract => "unknown_contract",
-        ContractActionError::InvalidAssignment => "invalid_assignment",
-        ContractActionError::NotAssignedShip => "not_assigned_ship",
-        ContractActionError::NotDocked => "not_docked",
-        ContractActionError::InvalidQuantity => "invalid_quantity",
-        ContractActionError::ContractState => "contract_state",
-        ContractActionError::InsufficientStock => "insufficient_stock",
-        ContractActionError::InsufficientCargo => "insufficient_cargo",
-        ContractActionError::CargoCapacityExceeded => "cargo_capacity_exceeded",
-        ContractActionError::CommodityMismatch => "commodity_mismatch",
-    }
-}
-
-fn contract_progress_label(progress: ContractProgress) -> &'static str {
-    match progress {
-        ContractProgress::AwaitPickup => "await_pickup",
-        ContractProgress::InTransit => "in_transit",
-        ContractProgress::Completed => "completed",
-        ContractProgress::Failed => "failed",
-    }
-}
-
-fn cargo_source_label(source: CargoSource) -> &'static str {
-    match source {
-        CargoSource::Spot => "spot",
-        CargoSource::Contract { .. } => "contract",
-    }
-}
-
-fn problem_label(problem: OfferProblemTag) -> &'static str {
-    match problem {
-        OfferProblemTag::HighRisk => "high_risk",
-        OfferProblemTag::CongestedRoute => "congested_route",
-        OfferProblemTag::LowMargin => "low_margin",
-        OfferProblemTag::FuelVolatility => "fuel_volatility",
-    }
-}
-
-fn job_kind_label(kind: gatebound_core::FleetJobKind) -> &'static str {
-    match kind {
-        gatebound_core::FleetJobKind::Pickup => "pickup",
-        gatebound_core::FleetJobKind::Transit => "transit",
-        gatebound_core::FleetJobKind::GateQueue => "gate_queue",
-        gatebound_core::FleetJobKind::Warp => "warp",
-        gatebound_core::FleetJobKind::Unload => "unload",
-        gatebound_core::FleetJobKind::LoopReturn => "loop_return",
-    }
 }
