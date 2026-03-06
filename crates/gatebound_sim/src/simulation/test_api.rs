@@ -35,5 +35,4 @@ impl Simulation {
     pub(crate) fn test_support_ship_profit_earned_mut(&mut self) -> &mut BTreeMap<ShipId, f64> {
         &mut self.ship_profit_earned
     }
-
 }

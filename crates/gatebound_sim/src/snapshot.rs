@@ -1,7 +1,7 @@
 use crate::{simulation::SnapshotError, Simulation};
 use gatebound_domain::{
-    ActiveLoan, Commodity, Company, CompanyId, Contract, ContractOffer, GateId, MarketState, MilestoneStatus, RiskStageA, RuntimeConfig, Ship, ShipId,
-    StationId, TradeOrder,
+    ActiveLoan, Commodity, Company, CompanyId, Contract, ContractOffer, GateId, MarketState,
+    MilestoneStatus, RiskStageA, RuntimeConfig, Ship, ShipId, StationId, TradeOrder,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;

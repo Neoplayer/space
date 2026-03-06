@@ -1,4 +1,3 @@
-
 use super::*;
 use std::{fs, time::Instant};
 
@@ -607,7 +606,6 @@ fn multi_hop_route_follows_station_gate_gate_station_pattern() {
 #[test]
 fn delivery_requires_explicit_pickup_and_dropoff_actions() {
     let mut cfg = stage_a_config();
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     cfg.pressure.gate_fee_per_jump = 0.0;
     let mut sim = Simulation::new(cfg, 317);
     sim.ships.retain(|id, _| *id == ShipId(0));
@@ -709,7 +707,6 @@ fn delivery_requires_explicit_pickup_and_dropoff_actions() {
 #[test]
 fn gate_fee_and_traversal_count_apply_on_teleport_segment() {
     let mut cfg = stage_a_config();
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     cfg.pressure.gate_fee_per_jump = 4.0;
     let mut sim = Simulation::new(cfg, 331);
     sim.ships.retain(|id, _| *id == ShipId(0));
@@ -1208,7 +1205,6 @@ fn offer_expiration_and_refresh_work_by_cycle() {
 #[test]
 fn gate_fee_is_charged_per_warp_segment() {
     let mut cfg = stage_a_config();
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     cfg.pressure.gate_fee_per_jump = 3.5;
     let mut sim = Simulation::new(cfg, 109);
     sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
@@ -1238,7 +1234,6 @@ fn gate_fee_is_charged_per_warp_segment() {
 #[test]
 fn market_fee_applies_to_payouts() {
     let mut cfg = stage_a_config();
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     cfg.pressure.gate_fee_per_jump = 0.0;
     cfg.pressure.market_fee_rate = 0.2;
     let mut sim = Simulation::new(cfg, 113);
@@ -1307,7 +1302,6 @@ fn market_depth_caps_effective_supply_delivery() {
 #[test]
 fn explicit_supply_unload_drives_cycle_payout() {
     let mut cfg = stage_a_config();
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     cfg.pressure.gate_fee_per_jump = 0.0;
     cfg.pressure.market_fee_rate = 0.0;
     let mut sim = Simulation::new(cfg, 129);
@@ -1351,7 +1345,6 @@ fn explicit_supply_unload_drives_cycle_payout() {
 fn player_trade_enforces_docked_capacity_and_contract_lock() {
     let mut cfg = stage_a_config();
     cfg.pressure.market_fee_rate = 0.1;
-    cfg.pressure.ship_upkeep_per_tick = 0.0;
     let mut sim = Simulation::new(cfg, 133);
     sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
     let station_id = station_for_system(&sim, SystemId(0));

@@ -73,9 +73,6 @@ impl Default for MarketConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomyPressureConfig {
-    pub loan_interest_rate: f64,
-    pub ship_upkeep_per_tick: f64,
-    pub slot_lease_cost: f64,
     pub gate_fee_per_jump: f64,
     pub market_fee_rate: f64,
     pub market_depth_per_cycle: f64,
@@ -86,25 +83,12 @@ pub struct EconomyPressureConfig {
     pub milestone_throughput_target_share: f64,
     pub milestone_reputation_target: f64,
     pub premium_offer_reputation_min: f64,
-    pub lease_price_throughput_k: f64,
-    pub lease_price_gate_k: f64,
-    pub lease_price_congestion_k: f64,
-    pub lease_price_min_mult: f64,
-    pub lease_price_max_mult: f64,
-    pub recovery_loan_base: f64,
-    pub recovery_loan_buffer: f64,
-    pub recovery_reputation_penalty: f64,
-    pub recovery_rate_hike: f64,
-    pub recovery_rate_max: f64,
     pub sla_penalty_curve: Vec<f64>,
 }
 
 impl Default for EconomyPressureConfig {
     fn default() -> Self {
         Self {
-            loan_interest_rate: 0.02,
-            ship_upkeep_per_tick: 0.5,
-            slot_lease_cost: 2.0,
             gate_fee_per_jump: 0.4,
             market_fee_rate: 0.05,
             market_depth_per_cycle: 16.0,
@@ -115,16 +99,6 @@ impl Default for EconomyPressureConfig {
             milestone_throughput_target_share: 0.35,
             milestone_reputation_target: 0.85,
             premium_offer_reputation_min: 0.80,
-            lease_price_throughput_k: 0.60,
-            lease_price_gate_k: 0.35,
-            lease_price_congestion_k: 0.80,
-            lease_price_min_mult: 0.70,
-            lease_price_max_mult: 2.50,
-            recovery_loan_base: 120.0,
-            recovery_loan_buffer: 20.0,
-            recovery_reputation_penalty: 0.12,
-            recovery_rate_hike: 0.01,
-            recovery_rate_max: 0.12,
             sla_penalty_curve: vec![1.0, 1.3, 1.7, 2.2, 2.8],
         }
     }
@@ -218,20 +192,6 @@ impl RuntimeConfig {
         {
             return Err(ConfigError::Validation(
                 "premium_offer_reputation_min must be in [0,1]".to_string(),
-            ));
-        }
-        if self.pressure.lease_price_min_mult <= 0.0
-            || self.pressure.lease_price_max_mult < self.pressure.lease_price_min_mult
-        {
-            return Err(ConfigError::Validation(
-                "lease price multipliers invalid".to_string(),
-            ));
-        }
-        if self.pressure.recovery_rate_hike < 0.0
-            || self.pressure.recovery_rate_max < self.pressure.loan_interest_rate
-        {
-            return Err(ConfigError::Validation(
-                "recovery rate bounds invalid".to_string(),
             ));
         }
         Ok(())
