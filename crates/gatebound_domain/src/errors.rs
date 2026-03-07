@@ -59,6 +59,20 @@ pub enum TradeError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageTransferError {
+    UnknownShip,
+    UnknownStation,
+    InvalidAssignment,
+    NotDocked,
+    InvalidQuantity,
+    InsufficientStoredCargo,
+    InsufficientShipCargo,
+    CargoCapacityExceeded,
+    CommodityMismatch,
+    ContractCargoLocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractActionError {
     UnknownShip,
     UnknownContract,

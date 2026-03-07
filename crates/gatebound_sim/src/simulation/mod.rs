@@ -11,6 +11,7 @@ mod queries;
 mod risk;
 mod routing;
 mod state;
+mod storage;
 #[cfg(feature = "test-support")]
 mod test_api;
 #[cfg(test)]

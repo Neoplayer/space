@@ -309,6 +309,8 @@ fn loading_save_resets_runtime_ui_state_and_closes_menu() {
         card_tab: StationCardTab::Trade,
         trade_commodity: Commodity::Ore,
         trade_quantity: 42.0,
+        storage_commodity: Commodity::Fuel,
+        storage_quantity: 7.0,
     };
     let mut markets_ui = MarketsUiState {
         detail_station_id: Some(StationId(3)),
@@ -400,7 +402,31 @@ fn save_storage_create_overwrite_and_load_round_trip() {
     let save_dir = std::env::temp_dir().join(format!("gatebound_app_save_flow_{unique}"));
     let storage = SaveStorage::for_test_desktop_dir(save_dir);
 
-    let sim = Simulation::new(RuntimeConfig::default(), 91);
+    let mut builder = SimulationScenarioBuilder::stage_a(91);
+    let station_id = builder
+        .first_station_in_system(SystemId(0))
+        .expect("system 0 should have a station");
+    builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            location: Some(SystemId(0)),
+            current_station: Some(Some(station_id)),
+            eta_ticks_remaining: Some(0),
+            segment_eta_remaining: Some(0),
+            segment_progress_total: Some(0),
+            movement_queue: Some(Vec::new()),
+            active_contract: Some(None),
+            cargo: Some(Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 6.0,
+                source: CargoSource::Spot,
+            })),
+            ..ShipPatch::default()
+        },
+    );
+    let mut sim = builder.build();
+    sim.player_unload_to_station_storage(ShipId(0), station_id, 4.0)
+        .expect("station storage unload should pass");
     let original_payload = sim
         .snapshot_payload()
         .expect("snapshot payload should serialize");
@@ -421,9 +447,39 @@ fn save_storage_create_overwrite_and_load_round_trip() {
     assert_eq!(loaded.tick(), sim.tick());
     assert_eq!(loaded.cycle(), sim.cycle());
     assert!((loaded.capital() - sim.capital()).abs() < 1e-9);
+    let fuel_row = loaded
+        .station_storage_view(ShipId(0), station_id)
+        .expect("station storage view should exist")
+        .rows
+        .into_iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel storage row should persist");
+    assert!((fuel_row.stored_amount - 4.0).abs() < 1e-9);
 
-    let mut updated = Simulation::new(RuntimeConfig::default(), 91);
+    let mut updated_builder = SimulationScenarioBuilder::stage_a(91);
+    updated_builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            location: Some(SystemId(0)),
+            current_station: Some(Some(station_id)),
+            eta_ticks_remaining: Some(0),
+            segment_eta_remaining: Some(0),
+            segment_progress_total: Some(0),
+            movement_queue: Some(Vec::new()),
+            active_contract: Some(None),
+            cargo: Some(Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 8.0,
+                source: CargoSource::Spot,
+            })),
+            ..ShipPatch::default()
+        },
+    );
+    let mut updated = updated_builder.build();
     updated.step_tick();
+    updated
+        .player_unload_to_station_storage(ShipId(0), station_id, 5.0)
+        .expect("updated station storage unload should pass");
     let updated_payload = updated
         .snapshot_payload()
         .expect("snapshot payload should serialize");
@@ -446,6 +502,14 @@ fn save_storage_create_overwrite_and_load_round_trip() {
     assert_eq!(loaded.tick(), updated.tick());
     assert_eq!(loaded.cycle(), updated.cycle());
     assert!((loaded.capital() - updated.capital()).abs() < 1e-9);
+    let fuel_row = loaded
+        .station_storage_view(ShipId(0), station_id)
+        .expect("station storage view should exist")
+        .rows
+        .into_iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel storage row should persist");
+    assert!((fuel_row.stored_amount - 5.0).abs() < 1e-9);
 }
 
 #[test]
@@ -669,6 +733,8 @@ fn station_ui_state_defaults_include_info_tab() {
     assert_eq!(state.card_station_id, None);
     assert_eq!(state.trade_commodity, Commodity::Fuel);
     assert!(state.trade_quantity > 0.0);
+    assert_eq!(state.storage_commodity, Commodity::Fuel);
+    assert!(state.storage_quantity > 0.0);
 }
 
 #[test]
@@ -1796,7 +1862,7 @@ fn right_click_ship_opens_context_menu_state() {
 #[test]
 fn opening_station_card_resets_tab_and_prefers_supplied_commodity() {
     let mut ui = StationUiState {
-        card_tab: StationCardTab::Trade,
+        card_tab: StationCardTab::Storage,
         trade_commodity: Commodity::Ore,
         ..StationUiState::default()
     };
@@ -1975,7 +2041,29 @@ fn ship_card_snapshot_includes_owner_and_module_metadata() {
 
 #[test]
 fn station_card_snapshot_builds_generated_info_metadata() {
-    let sim = Simulation::new(RuntimeConfig::default(), 42);
+    let mut builder = SimulationScenarioBuilder::stage_a(42);
+    let station_id = StationId(0);
+    builder.with_ship_patch(
+        ShipId(0),
+        ShipPatch {
+            location: Some(SystemId(0)),
+            current_station: Some(Some(station_id)),
+            eta_ticks_remaining: Some(0),
+            segment_eta_remaining: Some(0),
+            segment_progress_total: Some(0),
+            movement_queue: Some(Vec::new()),
+            active_contract: Some(None),
+            cargo: Some(Some(CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 5.0,
+                source: CargoSource::Spot,
+            })),
+            ..ShipPatch::default()
+        },
+    );
+    let mut sim = builder.build();
+    sim.player_unload_to_station_storage(ShipId(0), station_id, 3.0)
+        .expect("station storage unload should pass");
     let snapshot = build_hud_snapshot(
         &sim,
         false,
@@ -2000,6 +2088,14 @@ fn station_card_snapshot_builds_generated_info_metadata() {
     assert!(card.profile_summary.len() > 20);
     assert!(!card.imports.is_empty());
     assert!(!card.exports.is_empty());
+    let fuel_row = card
+        .storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel storage row should be present");
+    assert!((fuel_row.stored_amount - 3.0).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 2.0).abs() < 1e-9);
 }
 
 #[test]

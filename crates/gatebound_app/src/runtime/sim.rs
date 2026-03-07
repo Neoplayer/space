@@ -256,6 +256,7 @@ impl Default for ShipUiState {
 pub enum StationCardTab {
     Info,
     Trade,
+    Storage,
 }
 
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
@@ -267,6 +268,8 @@ pub struct StationUiState {
     pub card_tab: StationCardTab,
     pub trade_commodity: Commodity,
     pub trade_quantity: f64,
+    pub storage_commodity: Commodity,
+    pub storage_quantity: f64,
 }
 
 impl Default for StationUiState {
@@ -279,6 +282,8 @@ impl Default for StationUiState {
             card_tab: StationCardTab::Info,
             trade_commodity: Commodity::Fuel,
             trade_quantity: 5.0,
+            storage_commodity: Commodity::Fuel,
+            storage_quantity: 5.0,
         }
     }
 }
@@ -501,6 +506,7 @@ pub fn open_station_card(
     state.card_tab = StationCardTab::Info;
     if let Some(commodity) = preferred_commodity {
         state.trade_commodity = commodity;
+        state.storage_commodity = commodity;
     }
 }
 

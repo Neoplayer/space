@@ -1573,17 +1573,17 @@ fn snapshot_round_trip_preserves_active_loan() {
 }
 
 #[test]
-fn snapshot_save_writes_v3_json_envelope() {
+fn snapshot_save_writes_v4_json_envelope() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 97);
-    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v3.json");
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v4.json");
 
     crate::snapshot::save_snapshot(&sim, &tmp).expect("snapshot save should pass");
     let payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
 
     assert!(
-        payload.contains("\"version\": 3"),
-        "snapshot payload should use v3 envelope"
+        payload.contains("\"version\": 4"),
+        "snapshot payload should use v4 envelope"
     );
     assert!(
         payload.contains("\"state\""),
@@ -1617,6 +1617,52 @@ fn snapshot_payload_round_trip_matches_file_api() {
     let loaded = Simulation::from_snapshot_payload(&payload, cfg)
         .expect("snapshot payload load should pass");
     assert_eq!(loaded.snapshot_hash(), sim.snapshot_hash());
+}
+
+#[test]
+fn snapshot_round_trip_preserves_player_station_storage() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 980);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.active_contract = None;
+        ship.cargo_capacity = 18.0;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 7.0,
+            source: CargoSource::Spot,
+        });
+    }
+    sim.player_unload_to_station_storage(ship_id, station_id, 4.0)
+        .expect("station unload should succeed");
+
+    let payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload serialization should pass");
+    assert!(
+        payload.contains("\"player_station_storage\""),
+        "snapshot payload should include station storage state"
+    );
+
+    let loaded = Simulation::from_snapshot_payload(&payload, cfg)
+        .expect("snapshot payload load should pass");
+    let storage = loaded
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel storage row should exist");
+    assert!((fuel_row.stored_amount - 4.0).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 3.0).abs() < 1e-9);
 }
 
 #[test]
@@ -1909,6 +1955,155 @@ fn player_trade_enforces_docked_capacity_and_contract_lock() {
     assert_eq!(
         sim.player_sell(ShipId(0), station_id, Commodity::Fuel, 1.0),
         Err(TradeError::ContractCargoLocked)
+    );
+}
+
+#[test]
+fn player_station_storage_transfers_spot_cargo_between_ship_and_local_station() {
+    let mut sim = Simulation::new(stage_a_config(), 244);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.active_contract = None;
+        ship.cargo_capacity = 18.0;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 6.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    sim.player_unload_to_station_storage(ship_id, station_id, 4.0)
+        .expect("station unload should work");
+
+    let storage = sim
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+    assert!((fuel_row.stored_amount - 4.0).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 2.0).abs() < 1e-9);
+    assert!((fuel_row.load_cap - 4.0).abs() < 1e-9);
+    assert!((fuel_row.unload_cap - 2.0).abs() < 1e-9);
+    assert!(fuel_row.can_load);
+    assert!(fuel_row.can_unload);
+
+    sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.5)
+        .expect("station load should work");
+
+    let storage = sim
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should still exist");
+    assert!((fuel_row.stored_amount - 2.5).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 3.5).abs() < 1e-9);
+}
+
+#[test]
+fn player_station_storage_rejects_contract_cargo_and_wrong_station_access() {
+    let mut sim = Simulation::new(stage_a_config(), 246);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let other_station = station_for_system(&sim, SystemId(1));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.active_contract = None;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 6.0,
+            source: CargoSource::Contract {
+                contract_id: ContractId(77),
+            },
+        });
+    }
+
+    assert_eq!(
+        sim.player_unload_to_station_storage(ship_id, station_id, 2.0),
+        Err(StorageTransferError::ContractCargoLocked)
+    );
+    assert_eq!(
+        sim.player_unload_to_station_storage(ship_id, other_station, 2.0),
+        Err(StorageTransferError::NotDocked)
+    );
+}
+
+#[test]
+fn player_station_storage_enforces_capacity_commodity_and_station_locality() {
+    let mut sim = Simulation::new(stage_a_config(), 248);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let other_station = station_for_system(&sim, SystemId(1));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.active_contract = None;
+        ship.cargo_capacity = 18.0;
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 5.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    sim.player_unload_to_station_storage(ship_id, station_id, 5.0)
+        .expect("initial unload should work");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Ore,
+            amount: 17.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    assert_eq!(
+        sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0),
+        Err(StorageTransferError::CommodityMismatch)
+    );
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = Some(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 17.5,
+            source: CargoSource::Spot,
+        });
+    }
+    assert_eq!(
+        sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0),
+        Err(StorageTransferError::CargoCapacityExceeded)
+    );
+    assert_eq!(
+        sim.player_load_from_station_storage(ship_id, other_station, Commodity::Fuel, 1.0),
+        Err(StorageTransferError::NotDocked)
+    );
+
+    let other_storage = sim
+        .station_storage_view(ship_id, other_station)
+        .expect("other station storage view should exist");
+    assert!(
+        other_storage.rows.is_empty(),
+        "storage should remain local to the station where cargo was unloaded"
     );
 }
 
@@ -2424,7 +2619,7 @@ fn legacy_snapshot_without_ship_card_fields_loads_and_backfills_metadata() {
     }
 
     let payload = serde_json::json!({
-        "version": 3,
+        "version": 4,
         "state": state,
     });
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_ship_card_legacy.json");

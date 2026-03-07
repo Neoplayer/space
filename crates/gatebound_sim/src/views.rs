@@ -434,6 +434,27 @@ pub struct StationTradeView {
     pub rows: Vec<StationTradeRowView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StationStorageRowView {
+    pub commodity: Commodity,
+    pub stored_amount: f64,
+    pub player_cargo: f64,
+    pub load_cap: f64,
+    pub unload_cap: f64,
+    pub can_load: bool,
+    pub can_unload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationStorageView {
+    pub ship_id: ShipId,
+    pub station_id: StationId,
+    pub docked: bool,
+    pub cargo: Option<CargoLoad>,
+    pub cargo_capacity: f64,
+    pub rows: Vec<StationStorageRowView>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipPolicyView {
     pub ship_id: ShipId,

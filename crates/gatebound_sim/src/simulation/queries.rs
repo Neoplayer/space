@@ -534,6 +534,87 @@ impl Simulation {
         })
     }
 
+    pub fn station_storage_view(
+        &self,
+        ship_id: ShipId,
+        station_id: StationId,
+    ) -> Option<StationStorageView> {
+        let ship = self.ships.get(&ship_id)?;
+        if !self
+            .world
+            .stations
+            .iter()
+            .any(|station| station.id == station_id)
+        {
+            return None;
+        }
+
+        let docked = self.is_ship_docked_at(ship_id, station_id);
+        let mut commodities = self
+            .player_station_storage
+            .get(&station_id)
+            .map(|goods| goods.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if docked {
+            if let Some(cargo) = ship.cargo {
+                if !commodities.contains(&cargo.commodity) {
+                    commodities.push(cargo.commodity);
+                }
+            }
+        }
+        commodities.sort_by_key(|commodity| *commodity as usize);
+
+        let rows = commodities
+            .into_iter()
+            .map(|commodity| {
+                let stored_amount = self
+                    .player_station_storage
+                    .get(&station_id)
+                    .and_then(|goods| goods.get(&commodity))
+                    .copied()
+                    .unwrap_or(0.0);
+                let player_cargo = ship
+                    .cargo
+                    .filter(|cargo| cargo.commodity == commodity)
+                    .map(|cargo| cargo.amount)
+                    .unwrap_or(0.0);
+                let load_cap = if docked {
+                    actionable_trade_cap(
+                        stored_amount
+                            .min(self.buy_capacity_for(ship, commodity))
+                            .max(0.0),
+                    )
+                } else {
+                    0.0
+                };
+                let unload_cap = if docked {
+                    actionable_trade_cap(self.sell_capacity_for(ship, commodity).max(0.0))
+                } else {
+                    0.0
+                };
+
+                StationStorageRowView {
+                    commodity,
+                    stored_amount,
+                    player_cargo,
+                    load_cap,
+                    unload_cap,
+                    can_load: load_cap > 0.0,
+                    can_unload: unload_cap > 0.0,
+                }
+            })
+            .collect();
+
+        Some(StationStorageView {
+            ship_id,
+            station_id,
+            docked,
+            cargo: ship.cargo,
+            cargo_capacity: ship.cargo_capacity,
+            rows,
+        })
+    }
+
     pub fn ship_card_view(&self, ship_id: ShipId) -> Option<ShipCardView> {
         let ship = self.ships.get(&ship_id)?;
         let owner = self.companies.get(&ship.company_id)?;

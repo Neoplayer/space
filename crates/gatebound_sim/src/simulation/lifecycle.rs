@@ -81,6 +81,7 @@ impl Simulation {
             companies,
             npc_company_runtimes,
             markets,
+            player_station_storage: BTreeMap::new(),
             contracts,
             contract_offers: BTreeMap::new(),
             next_offer_id: 0,
@@ -359,6 +360,20 @@ impl Simulation {
                         .collect(),
                 })
                 .collect(),
+            player_station_storage: self
+                .player_station_storage
+                .iter()
+                .map(|(station_id, goods)| crate::snapshot::StationStorageSnapshot {
+                    station_id: *station_id,
+                    goods: goods
+                        .iter()
+                        .map(|(commodity, amount)| crate::snapshot::StoredCommoditySnapshot {
+                            commodity: *commodity,
+                            amount: *amount,
+                        })
+                        .collect(),
+                })
+                .collect(),
             contracts: self.contracts.values().cloned().collect(),
             contract_offers: self.contract_offers.values().cloned().collect(),
             trade_orders: self.trade_orders.values().cloned().collect(),
@@ -484,6 +499,7 @@ impl Simulation {
             companies,
             company_runtimes,
             markets,
+            player_station_storage,
             contracts,
             contract_offers,
             trade_orders,
@@ -548,6 +564,21 @@ impl Simulation {
                     },
                 )
             })
+            .collect();
+        simulation.player_station_storage = player_station_storage
+            .into_iter()
+            .map(|station| {
+                (
+                    station.station_id,
+                    station
+                        .goods
+                        .into_iter()
+                        .filter(|entry| entry.amount > 1e-9)
+                        .map(|entry| (entry.commodity, entry.amount))
+                        .collect(),
+                )
+            })
+            .filter(|(_, goods): &(StationId, BTreeMap<Commodity, f64>)| !goods.is_empty())
             .collect();
         simulation.contracts = contracts
             .into_iter()

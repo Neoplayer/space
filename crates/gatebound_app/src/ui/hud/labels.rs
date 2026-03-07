@@ -1,7 +1,8 @@
 use gatebound_domain::{
     CargoSource, CommandError, Commodity, CompanyArchetype, ContractActionError, ContractProgress,
     CreditError, MilestoneId, MilestoneStatus, OfferError, OfferProblemTag, PriorityMode,
-    ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, TradeError,
+    ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, StorageTransferError,
+    TradeError,
 };
 
 use crate::runtime::sim::OfferSortMode;
@@ -150,6 +151,21 @@ pub(super) fn contract_action_error_label(err: ContractActionError) -> &'static 
         ContractActionError::InsufficientCargo => "insufficient_cargo",
         ContractActionError::CargoCapacityExceeded => "cargo_capacity_exceeded",
         ContractActionError::CommodityMismatch => "commodity_mismatch",
+    }
+}
+
+pub(super) fn storage_transfer_error_label(err: StorageTransferError) -> &'static str {
+    match err {
+        StorageTransferError::UnknownShip => "unknown_ship",
+        StorageTransferError::UnknownStation => "unknown_station",
+        StorageTransferError::InvalidAssignment => "invalid_assignment",
+        StorageTransferError::NotDocked => "not_docked",
+        StorageTransferError::InvalidQuantity => "invalid_quantity",
+        StorageTransferError::InsufficientStoredCargo => "insufficient_stored_cargo",
+        StorageTransferError::InsufficientShipCargo => "insufficient_ship_cargo",
+        StorageTransferError::CargoCapacityExceeded => "cargo_capacity_exceeded",
+        StorageTransferError::CommodityMismatch => "commodity_mismatch",
+        StorageTransferError::ContractCargoLocked => "contract_cargo_locked",
     }
 }
 

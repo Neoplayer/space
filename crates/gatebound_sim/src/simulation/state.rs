@@ -11,6 +11,7 @@ pub struct Simulation {
     pub(crate) companies: BTreeMap<CompanyId, Company>,
     pub(crate) npc_company_runtimes: BTreeMap<CompanyId, NpcCompanyRuntime>,
     pub(crate) markets: BTreeMap<StationId, MarketBook>,
+    pub(crate) player_station_storage: BTreeMap<StationId, BTreeMap<Commodity, f64>>,
     pub(crate) contracts: BTreeMap<ContractId, Contract>,
     pub(crate) contract_offers: BTreeMap<u64, ContractOffer>,
     pub(crate) next_offer_id: u64,

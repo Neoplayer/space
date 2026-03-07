@@ -7,9 +7,9 @@ use gatebound_sim::{
     ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, ContractOfferView,
     CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
     StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
-    StationMarketDetailView, StationTradeView, SystemCommodityHotspotView, SystemDetailsView,
-    SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView,
-    SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
+    StationMarketDetailView, StationStorageView, StationTradeView, SystemCommodityHotspotView,
+    SystemDetailsView, SystemMarketStressRowView, SystemShipSummaryView,
+    SystemStationSummaryView, SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -346,6 +346,7 @@ pub struct StationCardSnapshot {
     pub station_y: f64,
     pub docked: bool,
     pub trade: StationTradeView,
+    pub storage: StationStorageView,
 }
 
 fn format_time_label(tick: u64, time: TimeSettingsView) -> String {
@@ -1013,6 +1014,7 @@ pub(crate) fn build_station_card_snapshot_for_ui(
     station_id: StationId,
 ) -> Option<StationCardSnapshot> {
     let trade = simulation.station_trade_view(ship_id, station_id)?;
+    let storage = simulation.station_storage_view(ship_id, station_id)?;
     let topology = simulation.camera_topology_view();
     let (system, station) = topology.systems.iter().find_map(|system| {
         system
@@ -1046,6 +1048,7 @@ pub(crate) fn build_station_card_snapshot_for_ui(
         station_y: station.y,
         docked: trade.docked,
         trade,
+        storage,
     })
 }
 

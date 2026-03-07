@@ -22,7 +22,7 @@ use super::labels::{
     contract_action_error_label, contract_progress_label, credit_error_label, milestone_label,
     offer_error_label, priority_mode_label, problem_label, ship_class_label,
     ship_module_slot_label, ship_module_status_label, ship_role_label, sort_mode_label,
-    station_profile_label, trade_error_label,
+    station_profile_label, storage_transfer_error_label, trade_error_label,
 };
 use super::messages::HudMessages;
 use super::snapshot::{
@@ -724,17 +724,31 @@ pub fn draw_hud_panel(
                         station_ui.trade_commodity = row.commodity;
                     }
                 }
+                if !card
+                    .storage
+                    .rows
+                    .iter()
+                    .any(|row| row.commodity == station_ui.storage_commodity)
+                {
+                    if let Some(row) = card.storage.rows.first() {
+                        station_ui.storage_commodity = row.commodity;
+                    }
+                }
 
                 render_station_card_header(ui, card, selected_ship.ship_id);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let info_selected = station_ui.card_tab == StationCardTab::Info;
                     let trade_selected = station_ui.card_tab == StationCardTab::Trade;
+                    let storage_selected = station_ui.card_tab == StationCardTab::Storage;
                     if ui.add(tab_button("Info", info_selected)).clicked() {
                         station_ui.card_tab = StationCardTab::Info;
                     }
                     if ui.add(tab_button("Trade", trade_selected)).clicked() {
                         station_ui.card_tab = StationCardTab::Trade;
+                    }
+                    if ui.add(tab_button("Storage", storage_selected)).clicked() {
+                        station_ui.card_tab = StationCardTab::Storage;
                     }
                 });
                 ui.separator();
@@ -749,6 +763,23 @@ pub fn draw_hud_panel(
                             return;
                         };
                         render_station_trade_tab(
+                            ui,
+                            &mut sim,
+                            &mut kpi,
+                            &mut messages,
+                            &mut station_ui,
+                            ship_id,
+                            card,
+                        );
+                    }
+                    StationCardTab::Storage => {
+                        let Some(ship_id) =
+                            selected_ship.ship_id.or(snapshot.default_player_ship_id)
+                        else {
+                            ui.label("No player ship available");
+                            return;
+                        };
+                        render_station_storage_tab(
                             ui,
                             &mut sim,
                             &mut kpi,
@@ -1627,6 +1658,200 @@ fn render_station_trade_tab(
             if !contract_enabled {
                 ui.small("Contract actions unlock once the selected ship is docked with an active contract.");
             }
+        });
+}
+
+fn render_station_storage_tab(
+    ui: &mut egui::Ui,
+    sim: &mut ResMut<SimResource>,
+    kpi: &mut ResMut<UiKpiTracker>,
+    messages: &mut ResMut<HudMessages>,
+    station_ui: &mut ResMut<StationUiState>,
+    ship_id: ShipId,
+    card: &StationCardSnapshot,
+) {
+    let storage = &card.storage;
+    let total_stored = storage.rows.iter().map(|row| row.stored_amount).sum::<f64>();
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(14, 19, 24))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let cargo_line = storage
+                    .cargo
+                    .map(|cargo| {
+                        format!(
+                            "{} {:.1} ({})",
+                            commodity_label(cargo.commodity),
+                            cargo.amount,
+                            cargo_source_label(cargo.source)
+                        )
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                ui.monospace(format!("Ship cargo: {cargo_line}"));
+                ui.separator();
+                ui.monospace(format!("Stored total: {:.1}", total_stored));
+                ui.separator();
+                ui.monospace(format!("Capacity: {:.1}", storage.cargo_capacity));
+                ui.separator();
+                ui.monospace(format!(
+                    "Docked: {}",
+                    if storage.docked { "yes" } else { "no" }
+                ));
+            });
+        });
+
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical()
+        .max_height(240.0)
+        .show(ui, |ui| {
+            egui::Grid::new("station_storage_grid")
+                .striped(true)
+                .spacing([14.0, 6.0])
+                .show(ui, |ui| {
+                    ui.strong("Stored");
+                    ui.strong("Commodity");
+                    ui.strong("Ship");
+                    ui.strong("Load");
+                    ui.strong("Unload");
+                    ui.end_row();
+
+                    for row in &storage.rows {
+                        ui.monospace(format!("{:>6.1}", row.stored_amount));
+                        if ui
+                            .selectable_label(
+                                station_ui.storage_commodity == row.commodity,
+                                commodity_label(row.commodity),
+                            )
+                            .clicked()
+                        {
+                            station_ui.storage_commodity = row.commodity;
+                        }
+                        ui.monospace(format!("{:>6.1}", row.player_cargo));
+                        ui.monospace(format!("{:>6.1}", row.load_cap));
+                        ui.monospace(format!("{:>6.1}", row.unload_cap));
+                        ui.end_row();
+                    }
+                });
+        });
+
+    let selected_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == station_ui.storage_commodity)
+        .or_else(|| storage.rows.first());
+    let Some(selected_row) = selected_row else {
+        ui.label("No stored cargo at this station yet.");
+        return;
+    };
+
+    ui.add_space(8.0);
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(20, 24, 30))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(format!(
+                    "{} storage row",
+                    commodity_label(selected_row.commodity)
+                ));
+                ui.separator();
+                ui.monospace(format!("stored {:.1}", selected_row.stored_amount));
+                ui.separator();
+                ui.monospace(format!("load cap {:.1}", selected_row.load_cap));
+                ui.separator();
+                ui.monospace(format!("unload cap {:.1}", selected_row.unload_cap));
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Quantity");
+                ui.add(
+                    egui::DragValue::new(&mut station_ui.storage_quantity)
+                        .speed(0.5)
+                        .range(0.1..=10_000.0),
+                );
+                let preset_cap = selected_row.load_cap.max(selected_row.unload_cap).max(0.1);
+                if ui.button("25%").clicked() {
+                    station_ui.storage_quantity = (preset_cap * 0.25).max(0.1);
+                }
+                if ui.button("50%").clicked() {
+                    station_ui.storage_quantity = (preset_cap * 0.50).max(0.1);
+                }
+                if ui.button("100%").clicked() {
+                    station_ui.storage_quantity = preset_cap.max(0.1);
+                }
+            });
+
+            if let Some(reason) =
+                storage_load_disabled_reason(storage.docked, storage.cargo, selected_row)
+            {
+                ui.colored_label(
+                    egui::Color32::from_rgb(232, 194, 88),
+                    format!("Load unavailable: {reason}"),
+                );
+            }
+            if let Some(reason) =
+                storage_unload_disabled_reason(storage.docked, storage.cargo, selected_row)
+            {
+                ui.colored_label(
+                    egui::Color32::from_rgb(232, 194, 88),
+                    format!("Unload unavailable: {reason}"),
+                );
+            }
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(selected_row.can_load, egui::Button::new("Load from Storage"))
+                    .clicked()
+                {
+                    kpi.record_manual_action(sim.simulation.tick());
+                    match sim.simulation.player_load_from_station_storage(
+                        ship_id,
+                        card.station_id,
+                        selected_row.commodity,
+                        station_ui
+                            .storage_quantity
+                            .min(selected_row.load_cap.max(0.0)),
+                    ) {
+                        Ok(()) => messages.push(format!(
+                            "Loaded {:.1} {} from station storage",
+                            station_ui.storage_quantity.min(selected_row.load_cap.max(0.0)),
+                            commodity_label(selected_row.commodity)
+                        )),
+                        Err(err) => messages.push(format!(
+                            "Storage load failed: {}",
+                            storage_transfer_error_label(err)
+                        )),
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        selected_row.can_unload,
+                        egui::Button::new("Unload to Storage"),
+                    )
+                    .clicked()
+                {
+                    kpi.record_manual_action(sim.simulation.tick());
+                    match sim.simulation.player_unload_to_station_storage(
+                        ship_id,
+                        card.station_id,
+                        station_ui
+                            .storage_quantity
+                            .min(selected_row.unload_cap.max(0.0)),
+                    ) {
+                        Ok(()) => messages.push(format!(
+                            "Unloaded {:.1} {} to station storage",
+                            station_ui
+                                .storage_quantity
+                                .min(selected_row.unload_cap.max(0.0)),
+                            commodity_label(selected_row.commodity)
+                        )),
+                        Err(err) => messages.push(format!(
+                            "Storage unload failed: {}",
+                            storage_transfer_error_label(err)
+                        )),
+                    }
+                }
+            });
         });
 }
 
@@ -2531,5 +2756,55 @@ fn sell_disabled_reason(
             Some("matching spot cargo is below the minimum trade lot")
         }
         _ => Some("no matching spot cargo is loaded for this row"),
+    }
+}
+
+fn storage_load_disabled_reason(
+    docked: bool,
+    cargo: Option<gatebound_domain::CargoLoad>,
+    row: &gatebound_sim::StationStorageRowView,
+) -> Option<&'static str> {
+    if !docked {
+        return Some("ship must be docked at the station before storage transfer is available");
+    }
+    if row.can_load {
+        return None;
+    }
+    if row.stored_amount + 1e-9 < 0.1 {
+        return Some("this station storage row is below the minimum transferable lot");
+    }
+
+    match cargo {
+        Some(cargo) if cargo.source != CargoSource::Spot => {
+            Some("contract cargo occupies the hold until the active freight is cleared")
+        }
+        Some(cargo) if cargo.commodity != row.commodity => {
+            Some("the hold already carries another commodity")
+        }
+        _ => Some("the hold has no remaining capacity for this commodity"),
+    }
+}
+
+fn storage_unload_disabled_reason(
+    docked: bool,
+    cargo: Option<gatebound_domain::CargoLoad>,
+    row: &gatebound_sim::StationStorageRowView,
+) -> Option<&'static str> {
+    if !docked {
+        return Some("ship must be docked at the station before storage transfer is available");
+    }
+    if row.can_unload {
+        return None;
+    }
+
+    match cargo {
+        None => Some("ship has no cargo available for storage"),
+        Some(cargo) if cargo.source != CargoSource::Spot => {
+            Some("current cargo is locked to an active contract")
+        }
+        Some(cargo) if cargo.commodity != row.commodity => {
+            Some("selected storage row does not match the cargo in the hold")
+        }
+        _ => Some("matching spot cargo is below the minimum transferable lot"),
     }
 }
