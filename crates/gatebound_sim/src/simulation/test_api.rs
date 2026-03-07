@@ -2,8 +2,8 @@ use super::*;
 
 impl Simulation {
     #[cfg(feature = "test-support")]
-    pub(crate) fn test_support_contract_offers_mut(&mut self) -> &mut BTreeMap<u64, ContractOffer> {
-        &mut self.contract_offers
+    pub(crate) fn test_support_mission_offers_mut(&mut self) -> &mut BTreeMap<u64, MissionOffer> {
+        &mut self.mission_offers
     }
 
     #[cfg(feature = "test-support")]

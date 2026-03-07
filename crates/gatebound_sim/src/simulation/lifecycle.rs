@@ -33,45 +33,8 @@ impl Simulation {
         }
 
         let companies = seed_stage_a_companies();
-        let mut ships = seed_stage_a_ships(&world);
+        let ships = seed_stage_a_ships(&world);
         let npc_company_runtimes = seed_stage_a_npc_company_runtimes(&config);
-        let mut contracts = BTreeMap::new();
-        if ships.contains_key(&ShipId(0)) {
-            if let Some([(origin, origin_station), (destination, destination_station)]) =
-                super::stage_a_starter_route(&world)
-            {
-                contracts.insert(
-                    ContractId(0),
-                    Contract {
-                        id: ContractId(0),
-                        kind: ContractTypeStageA::Delivery,
-                        progress: ContractProgress::AwaitPickup,
-                        commodity: Commodity::Fuel,
-                        origin,
-                        destination,
-                        origin_station,
-                        destination_station,
-                        quantity: 10.0,
-                        deadline_tick: u64::from(config.time.cycle_ticks) * 3,
-                        per_cycle: 0.0,
-                        total_cycles: 0,
-                        payout: 50.0,
-                        penalty: 25.0,
-                        assigned_ship: Some(ShipId(0)),
-                        loaded_amount: 0.0,
-                        delivered_cycle_amount: 0.0,
-                        delivered_amount: 0.0,
-                        missed_cycles: 0,
-                        completed: false,
-                        failed: false,
-                        last_eval_cycle: 0,
-                    },
-                );
-                if let Some(player_ship) = ships.get_mut(&ShipId(0)) {
-                    player_ship.active_contract = Some(ContractId(0));
-                }
-            }
-        }
 
         let mut simulation = Self {
             config,
@@ -81,9 +44,10 @@ impl Simulation {
             companies,
             npc_company_runtimes,
             markets,
-            contracts,
-            contract_offers: BTreeMap::new(),
-            next_offer_id: 0,
+            player_station_storage: BTreeMap::new(),
+            missions: BTreeMap::new(),
+            mission_offers: BTreeMap::new(),
+            next_mission_offer_id: 0,
             trade_orders: BTreeMap::new(),
             next_trade_order_id: 0,
             ships,
@@ -138,7 +102,7 @@ impl Simulation {
             },
         ];
         simulation.normalize_player_ship_roster();
-        simulation.refresh_contract_offers();
+        simulation.refresh_mission_offers();
         simulation
     }
 
@@ -147,7 +111,6 @@ impl Simulation {
         self.run_economy_flow();
         self.dispatch_npc_trade_orders();
         self.update_ship_movements();
-        self.update_contracts_tick();
         self.expire_modifiers();
 
         if self
@@ -165,10 +128,15 @@ impl Simulation {
             tick: self.tick,
             cycle: self.cycle,
             active_ships: self.ships.len(),
-            active_contracts: self
-                .contracts
+            active_missions: self
+                .missions
                 .values()
-                .filter(|c| !c.completed && !c.failed)
+                .filter(|mission| {
+                    !matches!(
+                        mission.status,
+                        MissionStatus::Completed | MissionStatus::Cancelled
+                    )
+                })
                 .count(),
             total_queue_delay: self.queue_delay_accumulator,
             avg_price_index: self.average_price_index(),
@@ -179,14 +147,13 @@ impl Simulation {
         self.cycle = self.cycle.saturating_add(1);
         self.capture_previous_cycle_prices();
         self.update_market_prices();
-        self.evaluate_supply_contracts();
         self.roll_gate_traversal_window();
-        self.expire_contract_offers();
+        self.expire_mission_offers();
         if self
             .cycle
             .is_multiple_of(u64::from(self.config.pressure.offer_refresh_cycles.max(1)))
         {
-            self.refresh_contract_offers();
+            self.refresh_mission_offers();
         }
         self.update_milestones();
 
@@ -330,7 +297,7 @@ impl Simulation {
             reroute_count: self.reroute_count,
             sla_successes: self.sla_successes,
             sla_failures: self.sla_failures,
-            next_offer_id: self.next_offer_id,
+            next_mission_offer_id: self.next_mission_offer_id,
             next_trade_order_id: self.next_trade_order_id,
             edges: self
                 .world
@@ -359,8 +326,26 @@ impl Simulation {
                         .collect(),
                 })
                 .collect(),
-            contracts: self.contracts.values().cloned().collect(),
-            contract_offers: self.contract_offers.values().cloned().collect(),
+            player_station_storage: self
+                .player_station_storage
+                .iter()
+                .map(
+                    |(station_id, goods)| crate::snapshot::StationStorageSnapshot {
+                        station_id: *station_id,
+                        goods: goods
+                            .iter()
+                            .map(
+                                |(commodity, amount)| crate::snapshot::StoredCommoditySnapshot {
+                                    commodity: *commodity,
+                                    amount: *amount,
+                                },
+                            )
+                            .collect(),
+                    },
+                )
+                .collect(),
+            missions: self.missions.values().cloned().collect(),
+            mission_offers: self.mission_offers.values().cloned().collect(),
             trade_orders: self.trade_orders.values().cloned().collect(),
             ships: self.ships.values().cloned().collect(),
             milestones: self.milestones.clone(),
@@ -478,14 +463,15 @@ impl Simulation {
             reroute_count,
             sla_successes,
             sla_failures,
-            next_offer_id,
+            next_mission_offer_id,
             next_trade_order_id,
             edges,
             companies,
             company_runtimes,
             markets,
-            contracts,
-            contract_offers,
+            player_station_storage,
+            missions,
+            mission_offers,
             trade_orders,
             ships,
             milestones,
@@ -511,7 +497,7 @@ impl Simulation {
         simulation.reroute_count = reroute_count;
         simulation.sla_successes = sla_successes;
         simulation.sla_failures = sla_failures;
-        simulation.next_offer_id = next_offer_id;
+        simulation.next_mission_offer_id = next_mission_offer_id;
         simulation.next_trade_order_id = next_trade_order_id;
 
         for edge_state in edges {
@@ -549,11 +535,26 @@ impl Simulation {
                 )
             })
             .collect();
-        simulation.contracts = contracts
+        simulation.player_station_storage = player_station_storage
             .into_iter()
-            .map(|contract| (contract.id, contract))
+            .map(|station| {
+                (
+                    station.station_id,
+                    station
+                        .goods
+                        .into_iter()
+                        .filter(|entry| entry.amount > 1e-9)
+                        .map(|entry| (entry.commodity, entry.amount))
+                        .collect(),
+                )
+            })
+            .filter(|(_, goods): &(StationId, BTreeMap<Commodity, f64>)| !goods.is_empty())
             .collect();
-        simulation.contract_offers = contract_offers
+        simulation.missions = missions
+            .into_iter()
+            .map(|mission| (mission.id, mission))
+            .collect();
+        simulation.mission_offers = mission_offers
             .into_iter()
             .map(|offer| (offer.id, offer))
             .collect();

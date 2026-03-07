@@ -1,7 +1,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
+use gatebound_domain::{CargoLoad, CargoSource, Commodity, PriorityMode, ShipId};
 use gatebound_sim::TradePriceTone;
 
 use crate::runtime::save::{
@@ -9,44 +9,35 @@ use crate::runtime::save::{
     toggle_save_menu_with_storage, PendingSaveAction, SaveMenuState, SaveStorage,
 };
 use crate::runtime::sim::{
-    open_ship_card, open_station_card, open_system_ship_inspector_selection,
-    open_system_station_inspector_selection, open_system_view, panel_button_specs, panel_is_open,
-    preferred_trade_commodity, seed_markets_ui_state, set_time_speed, toggle_pause, track_ship,
-    ContractsFilterState, FinanceUiState, MarketsUiState, OfferSortMode, SelectedShip,
-    SelectedStation, SelectedSystem, ShipCardTab, ShipUiState, SimClock, SimResource,
-    StationCardTab, StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
+    open_active_mission, open_mission_offer, open_ship_card, open_station_card,
+    open_system_ship_inspector_selection, open_system_station_inspector_selection,
+    open_system_view, panel_button_specs, panel_is_open, preferred_trade_commodity,
+    seed_markets_ui_state, set_time_speed, toggle_pause, track_ship, FinanceUiState,
+    MarketsUiState, MissionsPanelState, SelectedShip, SelectedStation, SelectedSystem, ShipCardTab,
+    ShipUiState, SimClock, SimResource, StationCardTab, StationUiState, TrackedShip, UiKpiTracker,
+    UiPanelState,
 };
 
 use super::labels::{
     cargo_source_label, command_error_label, commodity_label, company_archetype_label,
-    contract_action_error_label, contract_progress_label, credit_error_label, milestone_label,
-    offer_error_label, priority_mode_label, problem_label, ship_class_label,
-    ship_module_slot_label, ship_module_status_label, ship_role_label, sort_mode_label,
-    station_profile_label, trade_error_label,
+    credit_error_label, milestone_label, mission_action_error_label, mission_offer_error_label,
+    priority_mode_label, ship_class_label, ship_module_slot_label, ship_module_status_label,
+    ship_role_label, station_profile_label, storage_transfer_error_label, trade_error_label,
 };
 use super::messages::HudMessages;
 use super::snapshot::{
     build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
-    MarketsDashboardSnapshot, MarketsStationDetailSnapshot, ShipCardSnapshot, StationCardSnapshot,
-    StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot, SystemShipSnapshot,
-    SystemStationSnapshot, SystemsListRowSnapshot,
+    MarketsDashboardSnapshot, MarketsStationDetailSnapshot, MissionModalKind, ShipCardSnapshot,
+    StationCardSnapshot, StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot,
+    SystemShipSnapshot, SystemStationSnapshot, SystemsListRowSnapshot,
 };
-
-#[cfg(test)]
-pub(crate) fn player_fleet_rows(
-    rows: &[gatebound_domain::FleetShipStatus],
-) -> Vec<&gatebound_domain::FleetShipStatus> {
-    rows.iter()
-        .filter(|row| row.company_id == gatebound_domain::CompanyId(0))
-        .collect()
-}
 
 #[derive(SystemParam)]
 pub struct HudUiState<'w> {
     selected_system: ResMut<'w, SelectedSystem>,
     selected_station: ResMut<'w, SelectedStation>,
     selected_ship: ResMut<'w, SelectedShip>,
-    filters: ResMut<'w, ContractsFilterState>,
+    missions_panel: ResMut<'w, MissionsPanelState>,
     panels: ResMut<'w, UiPanelState>,
     kpi: ResMut<'w, UiKpiTracker>,
     messages: ResMut<'w, HudMessages>,
@@ -71,7 +62,7 @@ pub fn draw_hud_panel(
         mut selected_system,
         mut selected_station,
         mut selected_ship,
-        mut filters,
+        mut missions_panel,
         mut panels,
         mut kpi,
         mut messages,
@@ -108,7 +99,7 @@ pub fn draw_hud_panel(
             .or(selected_station.station_id),
         ship_ui.card_ship_id.filter(|_| ship_ui.card_open),
         selected_ship.ship_id,
-        *filters,
+        missions_panel.modal_selection,
         &kpi,
     );
 
@@ -372,165 +363,215 @@ pub fn draw_hud_panel(
         station_ui.context_menu_open = open && station_ui.context_menu_open;
     }
 
-    if !save_menu_open && panels.contracts {
-        let mut open = panels.contracts;
-        egui::Window::new("Contracts Board")
+    if !save_menu_open && panels.missions {
+        let mut open = panels.missions;
+        egui::Window::new("Missions")
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 56.0))
+            .default_width(520.0)
+            .default_height(560.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Min margin");
-                    ui.add(egui::DragValue::new(&mut filters.min_margin).speed(0.5));
-                    ui.label("Max risk");
-                    ui.add(egui::DragValue::new(&mut filters.max_risk).speed(0.05));
-                    ui.label("Max ETA");
-                    ui.add(egui::DragValue::new(&mut filters.max_eta).speed(1.0));
-                });
-                egui::ComboBox::from_label("Commodity")
-                    .selected_text(
-                        filters
-                            .commodity
-                            .map(commodity_label)
-                            .unwrap_or("Any"),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filters.commodity, None, "Any");
-                        for commodity in Commodity::ALL {
-                            ui.selectable_value(
-                                &mut filters.commodity,
-                                Some(commodity),
-                                commodity_label(commodity),
-                            );
-                        }
-                    });
-                egui::ComboBox::from_label("Route gate")
-                    .selected_text(
-                        filters
-                            .route_gate
-                            .map(|gate_id| format!("Gate {}", gate_id.0))
-                            .unwrap_or_else(|| "Any".to_string()),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filters.route_gate, None, "Any");
-                        for gate_id in &snapshot.route_gate_options {
-                            ui.selectable_value(
-                                &mut filters.route_gate,
-                                Some(*gate_id),
-                                format!("Gate {}", gate_id.0),
-                            );
-                        }
-                    });
-                egui::ComboBox::from_label("Problem")
-                    .selected_text(
-                        filters
-                            .problem
-                            .map(problem_label)
-                            .unwrap_or("Any"),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filters.problem, None, "Any");
-                        ui.selectable_value(
-                            &mut filters.problem,
-                            Some(OfferProblemTag::HighRisk),
-                            problem_label(OfferProblemTag::HighRisk),
-                        );
-                        ui.selectable_value(
-                            &mut filters.problem,
-                            Some(OfferProblemTag::CongestedRoute),
-                            problem_label(OfferProblemTag::CongestedRoute),
-                        );
-                        ui.selectable_value(
-                            &mut filters.problem,
-                            Some(OfferProblemTag::LowMargin),
-                            problem_label(OfferProblemTag::LowMargin),
-                        );
-                        ui.selectable_value(
-                            &mut filters.problem,
-                            Some(OfferProblemTag::FuelVolatility),
-                            problem_label(OfferProblemTag::FuelVolatility),
-                        );
-                    });
-                ui.checkbox(&mut filters.premium_only, "Premium only");
-                egui::ComboBox::from_label("Sort")
-                    .selected_text(sort_mode_label(filters.sort_mode))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut filters.sort_mode,
-                            OfferSortMode::MarginDesc,
-                            sort_mode_label(OfferSortMode::MarginDesc),
-                        );
-                        ui.selectable_value(
-                            &mut filters.sort_mode,
-                            OfferSortMode::RiskAsc,
-                            sort_mode_label(OfferSortMode::RiskAsc),
-                        );
-                        ui.selectable_value(
-                            &mut filters.sort_mode,
-                            OfferSortMode::EtaAsc,
-                            sort_mode_label(OfferSortMode::EtaAsc),
-                        );
-                    });
+                if missions_panel.selected_mission_id.is_none() {
+                    missions_panel.selected_mission_id = snapshot
+                        .active_mission_rows
+                        .first()
+                        .map(|row| row.mission_id);
+                }
 
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Active: {}", snapshot.active_mission_rows.len()));
+                    ui.separator();
+                    ui.label(format!(
+                        "Selected ship: {}",
+                        selected_ship
+                            .ship_id
+                            .map(|ship_id| format!("#{}", ship_id.0))
+                            .unwrap_or_else(|| "none".to_string())
+                    ));
+                });
                 ui.separator();
-                ui.label(format!("Offers: {}", snapshot.offers.len()));
-                for offer in snapshot.offers.iter().take(16) {
-                    let gates = if offer.offer.route_gate_ids.is_empty() {
-                        "-".to_string()
-                    } else {
-                        offer
-                            .offer
-                            .route_gate_ids
-                            .iter()
-                            .map(|gate_id| gate_id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(">")
-                    };
-                    let intel = offer
-                        .destination_intel
-                        .map(|info| format!("s={} c={:.2}", info.staleness_ticks, info.confidence))
-                        .unwrap_or_else(|| "s=0 c=1.00".to_string());
-                    ui.horizontal(|ui| {
-                        ui.monospace(format!(
-                            "#{:03} {:?} {} S{}:A{}->S{}:A{} qty={:.1} eta={} risk={:.2} margin={:.1} ppt={:.2} problem={} gates={} intel={}{}",
-                            offer.offer.id,
-                            offer.offer.kind,
-                            commodity_label(offer.offer.commodity),
-                            offer.offer.origin.0,
-                            offer.offer.origin_station.0,
-                            offer.offer.destination.0,
-                            offer.offer.destination_station.0,
-                            offer.offer.quantity,
-                            offer.offer.eta_ticks,
-                            offer.offer.risk_score,
-                            offer.offer.margin_estimate,
-                            offer.offer.profit_per_ton,
-                            problem_label(offer.offer.problem_tag),
-                            gates,
-                            intel,
-                            if offer.offer.premium { " premium" } else { "" }
+
+                ui.heading("Active Missions");
+                ui.add_space(6.0);
+                if snapshot.active_mission_rows.is_empty() {
+                    ui.small("No active missions");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("missions_board_active")
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            for row in &snapshot.active_mission_rows {
+                                let selected =
+                                    missions_panel.selected_mission_id == Some(row.mission_id);
+                                egui::Frame::group(ui.style())
+                                    .fill(if selected {
+                                        egui::Color32::from_rgb(28, 38, 46)
+                                    } else {
+                                        egui::Color32::from_rgb(16, 21, 28)
+                                    })
+                                    .show(ui, |ui| {
+                                        if ui
+                                            .selectable_label(selected, &row.summary.summary_line)
+                                            .clicked()
+                                        {
+                                            missions_panel.selected_mission_id =
+                                                Some(row.mission_id);
+                                        }
+                                        ui.small(format!(
+                                            "{} • {} {:.1} • penalty {:.1}",
+                                            row.status_label,
+                                            commodity_label(row.commodity),
+                                            row.quantity,
+                                            row.penalty
+                                        ));
+                                        if ui.button("Открыть").clicked() {
+                                            open_active_mission(
+                                                &mut missions_panel,
+                                                row.mission_id,
+                                            );
+                                        }
+                                    });
+                                ui.add_space(6.0);
+                            }
+                        });
+                }
+            });
+        panels.missions = open;
+    }
+
+    if !save_menu_open && missions_panel.modal_selection.is_some() {
+        let mut open = true;
+        if let Some(modal) = snapshot.mission_modal.as_ref() {
+            egui::Window::new("Mission")
+                .default_width(420.0)
+                .resizable(false)
+                .collapsible(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.heading(&modal.title);
+                    ui.add_space(4.0);
+                    ui.monospace(&modal.summary.summary_line);
+                    ui.small(format!(
+                        "{} {:.1} • reward {:.1} • penalty {:.1}",
+                        commodity_label(modal.commodity),
+                        modal.quantity,
+                        modal.reward,
+                        modal.penalty
+                    ));
+                    if let Some(status_label) = modal.status_label.as_ref() {
+                        ui.small(format!("Status: {status_label}"));
+                    }
+                    if let (Some(stored), Some(required)) =
+                        (modal.destination_storage_amount, modal.required_quantity)
+                    {
+                        ui.small(format!(
+                            "Destination storage: {:.1} / {:.1}",
+                            stored, required
                         ));
-                        if let Some(ship_id) = selected_ship.ship_id {
-                            if ui.button("Accept").clicked() {
+                    }
+                    if let Some(reason) = modal.complete_disabled_reason.as_ref() {
+                        if !modal.can_complete {
+                            ui.colored_label(egui::Color32::from_rgb(232, 194, 88), reason);
+                        }
+                    }
+
+                    ui.add_space(10.0);
+                    match modal.kind {
+                        MissionModalKind::Offer => {
+                            if ui.button("Принять миссию").clicked() {
                                 kpi.record_manual_action(sim.simulation.tick());
-                                match sim
-                                    .simulation
-                                    .accept_contract_offer(offer.offer.id, ship_id)
-                                {
-                                    Ok(contract_id) => messages.push(format!(
-                                        "Accepted offer {} as contract {} for ship {}",
-                                        offer.offer.id, contract_id.0, ship_id.0
-                                    )),
+                                let offer_id = match modal.selection {
+                                    crate::runtime::sim::MissionModalSelection::Offer(offer_id) => {
+                                        offer_id
+                                    }
+                                    crate::runtime::sim::MissionModalSelection::Active(_) => {
+                                        unreachable!(
+                                            "offer modal should always carry offer selection"
+                                        )
+                                    }
+                                };
+                                match sim.simulation.accept_mission_offer(offer_id) {
+                                    Ok(mission_id) => {
+                                        open_active_mission(&mut missions_panel, mission_id);
+                                        panels.missions = true;
+                                        messages.push(format!(
+                                            "Accepted mission offer {} as mission {}",
+                                            offer_id, mission_id.0
+                                        ));
+                                    }
                                     Err(err) => messages.push(format!(
-                                        "Accept offer {} failed: {}",
-                                        offer.offer.id,
-                                        offer_error_label(err)
+                                        "Mission accept failed: {}",
+                                        mission_offer_error_label(err)
                                     )),
                                 }
                             }
                         }
-                    });
-                }
-            });
-        panels.contracts = open;
+                        MissionModalKind::Active => {
+                            let action_ship_id =
+                                selected_ship.ship_id.or(snapshot.default_player_ship_id);
+                            if ui
+                                .add_enabled(
+                                    modal.can_complete,
+                                    egui::Button::new("Завершить миссию"),
+                                )
+                                .clicked()
+                            {
+                                if let Some(ship_id) = action_ship_id {
+                                    let mission_id = match modal.selection {
+                                        crate::runtime::sim::MissionModalSelection::Active(
+                                            mission_id,
+                                        ) => mission_id,
+                                        crate::runtime::sim::MissionModalSelection::Offer(_) => {
+                                            unreachable!(
+                                                "active modal should carry mission selection"
+                                            )
+                                        }
+                                    };
+                                    kpi.record_manual_action(sim.simulation.tick());
+                                    match sim.simulation.complete_mission(ship_id, mission_id) {
+                                        Ok(()) => {
+                                            messages.push(format!(
+                                                "Completed mission {}",
+                                                mission_id.0
+                                            ));
+                                            missions_panel.modal_selection = None;
+                                        }
+                                        Err(err) => messages.push(format!(
+                                            "Mission completion failed: {}",
+                                            mission_action_error_label(err)
+                                        )),
+                                    }
+                                }
+                            }
+                            if ui.button("Отменить миссию").clicked() {
+                                let mission_id = match modal.selection {
+                                    crate::runtime::sim::MissionModalSelection::Active(
+                                        mission_id,
+                                    ) => mission_id,
+                                    crate::runtime::sim::MissionModalSelection::Offer(_) => {
+                                        unreachable!("active modal should carry mission selection")
+                                    }
+                                };
+                                kpi.record_manual_action(sim.simulation.tick());
+                                match sim.simulation.cancel_mission(mission_id) {
+                                    Ok(()) => {
+                                        messages
+                                            .push(format!("Cancelled mission {}", mission_id.0));
+                                        missions_panel.modal_selection = None;
+                                    }
+                                    Err(err) => messages.push(format!(
+                                        "Mission cancel failed: {}",
+                                        mission_action_error_label(err)
+                                    )),
+                                }
+                            }
+                        }
+                    }
+                });
+        }
+        if !open {
+            missions_panel.modal_selection = None;
+        }
     }
 
     if !save_menu_open && panels.fleet {
@@ -724,17 +765,35 @@ pub fn draw_hud_panel(
                         station_ui.trade_commodity = row.commodity;
                     }
                 }
+                if !card
+                    .storage
+                    .rows
+                    .iter()
+                    .any(|row| row.commodity == station_ui.storage_commodity)
+                {
+                    if let Some(row) = card.storage.rows.first() {
+                        station_ui.storage_commodity = row.commodity;
+                    }
+                }
 
                 render_station_card_header(ui, card, selected_ship.ship_id);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let info_selected = station_ui.card_tab == StationCardTab::Info;
                     let trade_selected = station_ui.card_tab == StationCardTab::Trade;
+                    let storage_selected = station_ui.card_tab == StationCardTab::Storage;
+                    let missions_selected = station_ui.card_tab == StationCardTab::Missions;
                     if ui.add(tab_button("Info", info_selected)).clicked() {
                         station_ui.card_tab = StationCardTab::Info;
                     }
                     if ui.add(tab_button("Trade", trade_selected)).clicked() {
                         station_ui.card_tab = StationCardTab::Trade;
+                    }
+                    if ui.add(tab_button("Storage", storage_selected)).clicked() {
+                        station_ui.card_tab = StationCardTab::Storage;
+                    }
+                    if ui.add(tab_button("Missions", missions_selected)).clicked() {
+                        station_ui.card_tab = StationCardTab::Missions;
                     }
                 });
                 ui.separator();
@@ -753,6 +812,42 @@ pub fn draw_hud_panel(
                             &mut sim,
                             &mut kpi,
                             &mut messages,
+                            &mut station_ui,
+                            ship_id,
+                            card,
+                        );
+                    }
+                    StationCardTab::Storage => {
+                        let Some(ship_id) =
+                            selected_ship.ship_id.or(snapshot.default_player_ship_id)
+                        else {
+                            ui.label("No player ship available");
+                            return;
+                        };
+                        render_station_storage_tab(
+                            ui,
+                            &mut sim,
+                            &mut kpi,
+                            &mut messages,
+                            &mut station_ui,
+                            ship_id,
+                            card,
+                        );
+                    }
+                    StationCardTab::Missions => {
+                        let Some(ship_id) =
+                            selected_ship.ship_id.or(snapshot.default_player_ship_id)
+                        else {
+                            ui.label("No player ship available");
+                            return;
+                        };
+                        render_station_missions_tab(
+                            ui,
+                            &mut sim,
+                            &mut kpi,
+                            &mut messages,
+                            &mut panels,
+                            &mut missions_panel,
                             &mut station_ui,
                             ship_id,
                             card,
@@ -1029,7 +1124,7 @@ pub fn draw_hud_panel(
         &mut selected_station,
         &mut selected_ship,
         &mut panels,
-        &mut filters,
+        &mut missions_panel,
         &mut tracked_ship,
         &mut ship_ui,
         &mut station_ui,
@@ -1054,7 +1149,7 @@ fn render_save_menu(
     selected_station: &mut SelectedStation,
     selected_ship: &mut SelectedShip,
     panels: &mut UiPanelState,
-    filters: &mut ContractsFilterState,
+    missions_panel: &mut MissionsPanelState,
     tracked_ship: &mut TrackedShip,
     ship_ui: &mut ShipUiState,
     station_ui: &mut StationUiState,
@@ -1243,7 +1338,7 @@ fn render_save_menu(
                                                 selected_station,
                                                 selected_ship,
                                                 panels,
-                                                filters,
+                                                missions_panel,
                                                 tracked_ship,
                                                 ship_ui,
                                                 station_ui,
@@ -1400,18 +1495,13 @@ fn render_station_trade_tab(
         .fill(egui::Color32::from_rgb(14, 19, 24))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let cargo_line = trade
-                    .cargo
-                    .map(|cargo| {
-                        format!(
-                            "{} {:.1} ({})",
-                            commodity_label(cargo.commodity),
-                            cargo.amount,
-                            cargo_source_label(cargo.source)
-                        )
-                    })
-                    .unwrap_or_else(|| "-".to_string());
+                let cargo_line = cargo_summary_line(&trade.cargo_lots);
                 ui.monospace(format!("Cargo: {cargo_line}"));
+                ui.separator();
+                ui.monospace(format!(
+                    "Usage: {:.1} / {:.1}",
+                    trade.cargo_total_amount, trade.cargo_capacity
+                ));
                 ui.separator();
                 ui.monospace(format!("Fee: {:.1}%", trade.market_fee_rate * 100.0));
                 ui.separator();
@@ -1477,7 +1567,10 @@ fn render_station_trade_tab(
         .fill(egui::Color32::from_rgb(20, 24, 30))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.heading(format!("{} market row", commodity_label(selected_row.commodity)));
+                ui.heading(format!(
+                    "{} market row",
+                    commodity_label(selected_row.commodity)
+                ));
                 ui.separator();
                 ui.monospace(format!("galaxy avg {:.2}", selected_row.market_avg_price));
                 ui.separator();
@@ -1506,13 +1599,16 @@ fn render_station_trade_tab(
                 }
             });
 
-            if let Some(reason) = buy_disabled_reason(trade.docked, trade.cargo, selected_row) {
+            if let Some(reason) = buy_disabled_reason(trade.docked, &trade.cargo_lots, selected_row)
+            {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
                     format!("Buy unavailable: {reason}"),
                 );
             }
-            if let Some(reason) = sell_disabled_reason(trade.docked, trade.cargo, selected_row) {
+            if let Some(reason) =
+                sell_disabled_reason(trade.docked, &trade.cargo_lots, selected_row)
+            {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
                     format!("Sell unavailable: {reason}"),
@@ -1539,7 +1635,9 @@ fn render_station_trade_tab(
                             receipt.fee,
                             receipt.net_cash_delta
                         )),
-                        Err(err) => messages.push(format!("Buy failed: {}", trade_error_label(err))),
+                        Err(err) => {
+                            messages.push(format!("Buy failed: {}", trade_error_label(err)))
+                        }
                     }
                 }
                 if ui
@@ -1551,7 +1649,9 @@ fn render_station_trade_tab(
                         ship_id,
                         card.station_id,
                         selected_row.commodity,
-                        station_ui.trade_quantity.min(selected_row.sell_cap.max(0.0)),
+                        station_ui
+                            .trade_quantity
+                            .min(selected_row.sell_cap.max(0.0)),
                     ) {
                         Ok(receipt) => messages.push(format!(
                             "Sold {:.1} {} @ {:.2} fee={:.2} cash_delta={:.2}",
@@ -1561,73 +1661,262 @@ fn render_station_trade_tab(
                             receipt.fee,
                             receipt.net_cash_delta
                         )),
-                        Err(err) => messages.push(format!("Sell failed: {}", trade_error_label(err))),
+                        Err(err) => {
+                            messages.push(format!("Sell failed: {}", trade_error_label(err)))
+                        }
                     }
+                }
+            });
+        });
+}
+
+fn render_station_storage_tab(
+    ui: &mut egui::Ui,
+    sim: &mut ResMut<SimResource>,
+    kpi: &mut ResMut<UiKpiTracker>,
+    messages: &mut ResMut<HudMessages>,
+    station_ui: &mut ResMut<StationUiState>,
+    ship_id: ShipId,
+    card: &StationCardSnapshot,
+) {
+    let storage = &card.storage;
+    let total_stored = storage
+        .rows
+        .iter()
+        .map(|row| row.stored_amount)
+        .sum::<f64>();
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(14, 19, 24))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let cargo_line = cargo_summary_line(&storage.cargo_lots);
+                ui.monospace(format!("Ship cargo: {cargo_line}"));
+                ui.separator();
+                ui.monospace(format!(
+                    "Usage: {:.1} / {:.1}",
+                    storage.cargo_total_amount, storage.cargo_capacity
+                ));
+                ui.separator();
+                ui.monospace(format!("Stored total: {:.1}", total_stored));
+                ui.separator();
+                ui.monospace(format!(
+                    "Docked: {}",
+                    if storage.docked { "yes" } else { "no" }
+                ));
+            });
+        });
+
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical()
+        .max_height(240.0)
+        .show(ui, |ui| {
+            egui::Grid::new("station_storage_grid")
+                .striped(true)
+                .spacing([14.0, 6.0])
+                .show(ui, |ui| {
+                    ui.strong("Stored");
+                    ui.strong("Commodity");
+                    ui.strong("Ship");
+                    ui.strong("Load");
+                    ui.strong("Unload");
+                    ui.end_row();
+
+                    for row in &storage.rows {
+                        ui.monospace(format!("{:>6.1}", row.stored_amount));
+                        if ui
+                            .selectable_label(
+                                station_ui.storage_commodity == row.commodity,
+                                commodity_label(row.commodity),
+                            )
+                            .clicked()
+                        {
+                            station_ui.storage_commodity = row.commodity;
+                        }
+                        ui.monospace(format!("{:>6.1}", row.player_cargo));
+                        ui.monospace(format!("{:>6.1}", row.load_cap));
+                        ui.monospace(format!("{:>6.1}", row.unload_cap));
+                        ui.end_row();
+                    }
+                });
+        });
+
+    let selected_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == station_ui.storage_commodity)
+        .or_else(|| storage.rows.first());
+    let Some(selected_row) = selected_row else {
+        ui.label("No stored cargo at this station yet.");
+        return;
+    };
+
+    ui.add_space(8.0);
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(20, 24, 30))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(format!(
+                    "{} storage row",
+                    commodity_label(selected_row.commodity)
+                ));
+                ui.separator();
+                ui.monospace(format!("stored {:.1}", selected_row.stored_amount));
+                ui.separator();
+                ui.monospace(format!("load cap {:.1}", selected_row.load_cap));
+                ui.separator();
+                ui.monospace(format!("unload cap {:.1}", selected_row.unload_cap));
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Quantity");
+                ui.add(
+                    egui::DragValue::new(&mut station_ui.storage_quantity)
+                        .speed(0.5)
+                        .range(0.1..=10_000.0),
+                );
+                let preset_cap = selected_row.load_cap.max(selected_row.unload_cap).max(0.1);
+                if ui.button("25%").clicked() {
+                    station_ui.storage_quantity = (preset_cap * 0.25).max(0.1);
+                }
+                if ui.button("50%").clicked() {
+                    station_ui.storage_quantity = (preset_cap * 0.50).max(0.1);
+                }
+                if ui.button("100%").clicked() {
+                    station_ui.storage_quantity = preset_cap.max(0.1);
                 }
             });
 
-            let active_contract = trade.active_contract.as_ref().map(|contract| contract.id);
-            let contract_enabled = trade.docked && active_contract.is_some();
-            if let Some(contract) = trade.active_contract.as_ref() {
-                ui.add_space(6.0);
-                ui.monospace(format!(
-                    "Contract #{} {:?} {} progress={}",
-                    contract.id.0,
-                    contract.kind,
-                    commodity_label(contract.commodity),
-                    contract_progress_label(contract.progress)
-                ));
+            if let Some(reason) =
+                storage_load_disabled_reason(storage.docked, &storage.cargo_lots, selected_row)
+            {
+                ui.colored_label(
+                    egui::Color32::from_rgb(232, 194, 88),
+                    format!("Load unavailable: {reason}"),
+                );
             }
+            if let Some(reason) =
+                storage_unload_disabled_reason(storage.docked, &storage.cargo_lots, selected_row)
+            {
+                ui.colored_label(
+                    egui::Color32::from_rgb(232, 194, 88),
+                    format!("Unload unavailable: {reason}"),
+                );
+            }
+
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(contract_enabled, egui::Button::new("Load contract"))
+                    .add_enabled(
+                        selected_row.can_load,
+                        egui::Button::new("Load from Storage"),
+                    )
                     .clicked()
                 {
-                    if let Some(contract_id) = active_contract {
-                        kpi.record_manual_action(sim.simulation.tick());
-                        match sim.simulation.player_contract_load(
-                            ship_id,
-                            contract_id,
-                            station_ui.trade_quantity,
-                        ) {
-                            Ok(()) => messages.push(format!(
-                                "Loaded {:.1} to contract {}",
-                                station_ui.trade_quantity, contract_id.0
-                            )),
-                            Err(err) => messages.push(format!(
-                                "Load failed: {}",
-                                contract_action_error_label(err)
-                            )),
-                        }
+                    kpi.record_manual_action(sim.simulation.tick());
+                    match sim.simulation.player_load_from_station_storage(
+                        ship_id,
+                        card.station_id,
+                        selected_row.commodity,
+                        station_ui
+                            .storage_quantity
+                            .min(selected_row.load_cap.max(0.0)),
+                    ) {
+                        Ok(()) => messages.push(format!(
+                            "Loaded {:.1} {} from station storage",
+                            station_ui
+                                .storage_quantity
+                                .min(selected_row.load_cap.max(0.0)),
+                            commodity_label(selected_row.commodity)
+                        )),
+                        Err(err) => messages.push(format!(
+                            "Storage load failed: {}",
+                            storage_transfer_error_label(err)
+                        )),
                     }
                 }
                 if ui
-                    .add_enabled(contract_enabled, egui::Button::new("Unload contract"))
+                    .add_enabled(
+                        selected_row.can_unload,
+                        egui::Button::new("Unload to Storage"),
+                    )
                     .clicked()
                 {
-                    if let Some(contract_id) = active_contract {
-                        kpi.record_manual_action(sim.simulation.tick());
-                        match sim.simulation.player_contract_unload(
-                            ship_id,
-                            contract_id,
-                            station_ui.trade_quantity,
-                        ) {
-                            Ok(()) => messages.push(format!(
-                                "Unloaded {:.1} from contract {}",
-                                station_ui.trade_quantity, contract_id.0
-                            )),
-                            Err(err) => messages.push(format!(
-                                "Unload failed: {}",
-                                contract_action_error_label(err)
-                            )),
-                        }
+                    kpi.record_manual_action(sim.simulation.tick());
+                    match sim.simulation.player_unload_to_station_storage(
+                        ship_id,
+                        card.station_id,
+                        selected_row.commodity,
+                        station_ui
+                            .storage_quantity
+                            .min(selected_row.unload_cap.max(0.0)),
+                    ) {
+                        Ok(()) => messages.push(format!(
+                            "Unloaded {:.1} {} to station storage",
+                            station_ui
+                                .storage_quantity
+                                .min(selected_row.unload_cap.max(0.0)),
+                            commodity_label(selected_row.commodity)
+                        )),
+                        Err(err) => messages.push(format!(
+                            "Storage unload failed: {}",
+                            storage_transfer_error_label(err)
+                        )),
                     }
                 }
             });
-            if !contract_enabled {
-                ui.small("Contract actions unlock once the selected ship is docked with an active contract.");
-            }
         });
+}
+
+fn render_station_missions_tab(
+    ui: &mut egui::Ui,
+    _sim: &mut ResMut<SimResource>,
+    _kpi: &mut ResMut<UiKpiTracker>,
+    _messages: &mut ResMut<HudMessages>,
+    _panels: &mut ResMut<UiPanelState>,
+    mut missions_panel: &mut ResMut<MissionsPanelState>,
+    _station_ui: &mut ResMut<StationUiState>,
+    _ship_id: ShipId,
+    card: &StationCardSnapshot,
+) {
+    let missions = &card.missions;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.monospace(format!(
+            "Docked: {}",
+            if missions.docked { "yes" } else { "no" }
+        ));
+        ui.separator();
+        ui.monospace(format!("Offers: {}", missions.offers.len()));
+    });
+
+    ui.add_space(8.0);
+    ui.heading("Available Offers");
+    if missions.offers.is_empty() {
+        ui.small("No mission offers for this station right now.");
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("station_mission_offers")
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for row in &missions.offers {
+                    egui::Frame::group(ui.style())
+                        .fill(egui::Color32::from_rgb(16, 21, 28))
+                        .show(ui, |ui| {
+                            ui.monospace(&row.summary.summary_line);
+                            ui.small(format!(
+                                "{} {:.1} • penalty {:.1}",
+                                commodity_label(row.commodity),
+                                row.quantity,
+                                row.penalty
+                            ));
+                            if ui.button("Открыть").clicked() {
+                                open_mission_offer(&mut missions_panel, row.offer_id);
+                            }
+                        });
+                    ui.add_space(6.0);
+                }
+            });
+    }
 }
 
 fn render_ship_card_header(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
@@ -1983,38 +2272,32 @@ fn render_ship_cargo_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
     egui::Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(14, 19, 24))
         .show(ui, |ui| {
-            let cargo_amount = card.cargo.map(|cargo| cargo.amount).unwrap_or(0.0);
             ui.heading("Cargo Hold");
             ui.monospace(format!(
                 "Usage: {:.1} / {:.1}",
-                cargo_amount, card.cargo_capacity
+                card.cargo_total_amount, card.cargo_capacity
             ));
-            if let Some(cargo) = card.cargo {
-                ui.monospace(format!(
-                    "Load: {} {:.1} ({})",
-                    commodity_label(cargo.commodity),
-                    cargo.amount,
-                    cargo_source_label(cargo.source)
-                ));
-            } else {
+            ui.monospace(format!("Summary: {}", cargo_summary_line(&card.cargo_lots)));
+            if card.cargo_lots.is_empty() {
                 ui.monospace("Load: empty");
-            }
-            ui.add_space(8.0);
-            if let Some(contract) = &card.active_contract {
-                ui.heading("Active Contract");
-                ui.monospace(format!("Contract #{}", contract.id.0));
-                ui.monospace(format!(
-                    "Flow: S{} -> S{}",
-                    contract.origin_station.0, contract.destination_station.0
-                ));
-                ui.monospace(format!(
-                    "Commodity: {} {:.1}",
-                    commodity_label(contract.commodity),
-                    contract.quantity
-                ));
             } else {
-                ui.heading("Active Contract");
-                ui.monospace("No active contract assigned");
+                ui.add_space(6.0);
+                egui::Grid::new("ship_cargo_grid")
+                    .num_columns(3)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Commodity");
+                        ui.strong("Amount");
+                        ui.strong("Source");
+                        ui.end_row();
+
+                        for cargo in sorted_cargo_lots(&card.cargo_lots) {
+                            ui.monospace(commodity_label(cargo.commodity));
+                            ui.monospace(format!("{:.1}", cargo.amount));
+                            ui.monospace(cargo_source_label(cargo.source));
+                            ui.end_row();
+                        }
+                    });
             }
         });
 }
@@ -2482,9 +2765,51 @@ fn price_tone_color(tone: TradePriceTone) -> egui::Color32 {
     }
 }
 
+fn sorted_cargo_lots(cargo_lots: &[CargoLoad]) -> Vec<CargoLoad> {
+    let mut lots = cargo_lots.to_vec();
+    lots.sort_by(|left, right| {
+        right
+            .amount
+            .total_cmp(&left.amount)
+            .then_with(|| left.commodity.cmp(&right.commodity))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    lots
+}
+
+fn cargo_summary_line(cargo_lots: &[CargoLoad]) -> String {
+    if cargo_lots.is_empty() {
+        return "-".to_string();
+    }
+
+    let lots = sorted_cargo_lots(cargo_lots);
+    let mut parts = lots
+        .iter()
+        .take(3)
+        .map(|cargo| {
+            format!(
+                "{} {:.1} ({})",
+                commodity_label(cargo.commodity),
+                cargo.amount,
+                cargo_source_label(cargo.source)
+            )
+        })
+        .collect::<Vec<_>>();
+    if lots.len() > 3 {
+        parts.push(format!("+{} more", lots.len() - 3));
+    }
+    parts.join(", ")
+}
+
+fn has_matching_spot_cargo(cargo_lots: &[CargoLoad], commodity: Commodity) -> bool {
+    cargo_lots.iter().any(|cargo| {
+        cargo.source == CargoSource::Spot && cargo.commodity == commodity && cargo.amount > 0.0
+    })
+}
+
 fn buy_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    _cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationTradeRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2499,21 +2824,12 @@ fn buy_disabled_reason(
     if row.insufficient_capital {
         return Some("insufficient capital for the minimum trade lot");
     }
-
-    match cargo {
-        Some(cargo) if cargo.commodity != row.commodity && cargo.source == CargoSource::Spot => {
-            Some("the hold already carries another commodity")
-        }
-        Some(cargo) if cargo.source != CargoSource::Spot => {
-            Some("contract cargo occupies the hold until the active freight is cleared")
-        }
-        _ => None,
-    }
+    Some("the hold has no remaining capacity for this commodity")
 }
 
 fn sell_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationTradeRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2522,14 +2838,45 @@ fn sell_disabled_reason(
     if row.can_sell {
         return None;
     }
-
-    match cargo {
-        Some(cargo) if cargo.commodity == row.commodity && cargo.source != CargoSource::Spot => {
-            Some("current cargo is locked to an active contract")
-        }
-        Some(cargo) if cargo.commodity == row.commodity && cargo.source == CargoSource::Spot => {
-            Some("matching spot cargo is below the minimum trade lot")
-        }
-        _ => Some("no matching spot cargo is loaded for this row"),
+    if has_matching_spot_cargo(cargo_lots, row.commodity) {
+        return Some("matching spot cargo is below the minimum trade lot");
     }
+    Some("no matching spot cargo is loaded for this row")
+}
+
+fn storage_load_disabled_reason(
+    docked: bool,
+    _cargo_lots: &[CargoLoad],
+    row: &gatebound_sim::StationStorageRowView,
+) -> Option<&'static str> {
+    if !docked {
+        return Some("ship must be docked at the station before storage transfer is available");
+    }
+    if row.can_load {
+        return None;
+    }
+    if row.stored_amount + 1e-9 < 0.1 {
+        return Some("this station storage row is below the minimum transferable lot");
+    }
+    Some("the hold has no remaining capacity for this commodity")
+}
+
+fn storage_unload_disabled_reason(
+    docked: bool,
+    cargo_lots: &[CargoLoad],
+    row: &gatebound_sim::StationStorageRowView,
+) -> Option<&'static str> {
+    if !docked {
+        return Some("ship must be docked at the station before storage transfer is available");
+    }
+    if row.can_unload {
+        return None;
+    }
+    if cargo_lots.is_empty() {
+        return Some("ship has no cargo available for storage");
+    }
+    if has_matching_spot_cargo(cargo_lots, row.commodity) {
+        return Some("matching spot cargo is below the minimum transferable lot");
+    }
+    Some("selected storage row does not match any spot cargo loaded")
 }

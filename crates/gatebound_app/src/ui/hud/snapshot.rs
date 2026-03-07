@@ -1,23 +1,21 @@
 use gatebound_domain::{
-    AutopilotPolicy, CargoLoad, Commodity, CompanyArchetype, Contract, ContractTypeStageA,
-    FleetShipStatus, GateId, MilestoneStatus, SegmentKind, ShipClass, ShipId, ShipModule, ShipRole,
+    AutopilotPolicy, CargoLoad, Commodity, CompanyArchetype, FleetShipStatus, MilestoneStatus,
+    Mission, MissionId, MissionOffer, SegmentKind, ShipClass, ShipId, ShipModule, ShipRole,
     ShipTechnicalState, StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
-    ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, ContractOfferView,
-    CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
-    StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
-    StationMarketDetailView, StationTradeView, SystemCommodityHotspotView, SystemDetailsView,
+    ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, CorporationRowView,
+    LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation, StationCommodityDetailView,
+    StationCommodityHotspotView, StationMarketAnomalyRowView, StationMarketDetailView,
+    StationStorageView, StationTradeView, SystemCommodityHotspotView, SystemDetailsView,
     SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView,
     SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
-use crate::runtime::sim::{
-    apply_offer_filters, derive_cycle_report, ContractsFilterState, UiKpiTracker,
-};
+use crate::runtime::sim::{derive_cycle_report, MissionModalSelection, UiKpiTracker};
 
-use super::labels::commodity_label;
+use super::labels::{commodity_label, mission_status_label};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HudSnapshot {
@@ -27,7 +25,7 @@ pub struct HudSnapshot {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub active_contracts: usize,
+    pub active_missions: usize,
     pub active_ships: usize,
     pub selected_system_id: SystemId,
     pub selected_station_id: Option<StationId>,
@@ -39,12 +37,12 @@ pub struct HudSnapshot {
     pub sla_success_rate: f64,
     pub reroutes: u64,
     pub camera_mode: String,
-    pub route_gate_options: Vec<GateId>,
-    pub contract_lines: Vec<String>,
+    pub mission_lines: Vec<String>,
     pub ship_lines: Vec<String>,
     pub active_loan: Option<ActiveLoanView>,
     pub loan_offers: Vec<LoanOfferView>,
-    pub offers: Vec<ContractOfferView>,
+    pub active_mission_rows: Vec<ActiveMissionRowSnapshot>,
+    pub mission_modal: Option<MissionModalSnapshot>,
     pub fleet_rows: Vec<FleetShipStatus>,
     pub fleet_list_rows: Vec<FleetListRowSnapshot>,
     pub systems_list_rows: Vec<SystemsListRowSnapshot>,
@@ -72,6 +70,68 @@ pub struct StationRefSnapshot {
     pub system_id: SystemId,
     pub system_name: String,
     pub profile: StationProfile,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionSummarySnapshot {
+    pub summary_line: String,
+    pub route_line: String,
+    pub reward: f64,
+    pub gate_jumps: usize,
+    pub origin: StationRefSnapshot,
+    pub destination: StationRefSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionOfferRowSnapshot {
+    pub offer_id: u64,
+    pub commodity: Commodity,
+    pub quantity: f64,
+    pub penalty: f64,
+    pub summary: MissionSummarySnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveMissionRowSnapshot {
+    pub mission_id: MissionId,
+    pub commodity: Commodity,
+    pub quantity: f64,
+    pub reward: f64,
+    pub penalty: f64,
+    pub status_label: String,
+    pub summary: MissionSummarySnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissionModalKind {
+    Offer,
+    Active,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionModalSnapshot {
+    pub selection: MissionModalSelection,
+    pub kind: MissionModalKind,
+    pub title: String,
+    pub commodity: Commodity,
+    pub quantity: f64,
+    pub reward: f64,
+    pub penalty: f64,
+    pub gate_jumps: usize,
+    pub summary: MissionSummarySnapshot,
+    pub status_label: Option<String>,
+    pub destination_storage_amount: Option<f64>,
+    pub required_quantity: Option<f64>,
+    pub can_accept: bool,
+    pub can_complete: bool,
+    pub can_cancel: bool,
+    pub complete_disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMissionsSnapshot {
+    pub docked: bool,
+    pub offers: Vec<MissionOfferRowSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,8 +307,8 @@ pub struct ShipCardSnapshot {
     pub eta_ticks_remaining: u32,
     pub current_segment_kind: Option<SegmentKind>,
     pub cargo_capacity: f64,
-    pub cargo: Option<CargoLoad>,
-    pub active_contract: Option<Contract>,
+    pub cargo_lots: Vec<CargoLoad>,
+    pub cargo_total_amount: f64,
     pub policy: AutopilotPolicy,
     pub route_len: usize,
     pub reroutes: u64,
@@ -346,6 +406,8 @@ pub struct StationCardSnapshot {
     pub station_y: f64,
     pub docked: bool,
     pub trade: StationTradeView,
+    pub storage: StationStorageView,
+    pub missions: StationMissionsSnapshot,
 }
 
 fn format_time_label(tick: u64, time: TimeSettingsView) -> String {
@@ -379,13 +441,13 @@ pub fn build_hud_snapshot(
     station_card_station_id: Option<StationId>,
     ship_card_ship_id: Option<ShipId>,
     selected_ship_id: Option<ShipId>,
-    filters: ContractsFilterState,
+    mission_modal_selection: Option<MissionModalSelection>,
     kpi: &UiKpiTracker,
 ) -> HudSnapshot {
     let cycle_report = derive_cycle_report(simulation);
     let overview = simulation.hud_overview_view();
     let time_settings = simulation.time_settings_view();
-    let contracts_board = simulation.contracts_board_view();
+    let missions_board = simulation.missions_board_view();
     let fleet_panel = simulation.fleet_panel_view();
     let render_snapshot = simulation.world_render_snapshot();
     let market_panel = simulation.market_panel_view(
@@ -413,29 +475,19 @@ pub fn build_hud_snapshot(
     let ship_card =
         ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot_for_ui(simulation, ship_id));
 
-    let contract_lines = contracts_board
-        .active_contracts
+    let active_mission_rows = missions_board
+        .active_missions
+        .iter()
+        .filter_map(|detail| build_active_mission_row_snapshot(simulation, &detail.mission))
+        .collect::<Vec<_>>();
+    let mission_lines = active_mission_rows
         .iter()
         .take(8)
-        .map(|contract| {
-            let kind = match contract.kind {
-                ContractTypeStageA::Delivery => "Delivery",
-                ContractTypeStageA::Supply => "Supply",
-            };
-            format!(
-                "#{} {kind} {} S{}:A{} -> S{}:A{} qty={:.1} deadline={} miss={}",
-                contract.id.0,
-                commodity_label(contract.commodity),
-                contract.origin.0,
-                contract.origin_station.0,
-                contract.destination.0,
-                contract.destination_station.0,
-                contract.quantity,
-                contract.deadline_tick,
-                contract.missed_cycles,
-            )
-        })
+        .map(|row| row.summary.summary_line.clone())
         .collect::<Vec<_>>();
+    let mission_modal = mission_modal_selection.and_then(|selection| {
+        build_mission_modal_snapshot(simulation, selection, &missions_board, resolved_ship_id)
+    });
 
     let mut render_ships = render_snapshot.ships;
     render_ships.sort_by_key(|ship| ship.ship_id.0);
@@ -466,24 +518,6 @@ pub fn build_hud_snapshot(
         })
         .collect::<Vec<_>>();
 
-    let offers = apply_offer_filters(
-        contracts_board
-            .offers
-            .iter()
-            .map(|entry| entry.offer.clone())
-            .collect::<Vec<_>>(),
-        filters,
-    )
-    .into_iter()
-    .filter_map(|offer| {
-        contracts_board
-            .offers
-            .iter()
-            .find(|entry| entry.offer.id == offer.id)
-            .cloned()
-    })
-    .collect::<Vec<_>>();
-
     HudSnapshot {
         tick: overview.tick,
         cycle: overview.cycle,
@@ -491,7 +525,7 @@ pub fn build_hud_snapshot(
         debt: overview.debt,
         interest_rate: overview.interest_rate,
         reputation: overview.reputation,
-        active_contracts: overview.active_contracts,
+        active_missions: overview.active_missions,
         active_ships: overview.active_ships,
         selected_system_id,
         selected_station_id,
@@ -506,12 +540,12 @@ pub fn build_hud_snapshot(
             CameraMode::Galaxy => "Galaxy".to_string(),
             CameraMode::System(system_id) => format!("System({})", system_id.0),
         },
-        route_gate_options: contracts_board.route_gates,
-        contract_lines,
+        mission_lines,
         ship_lines,
         active_loan: finance_panel.active_loan,
         loan_offers: finance_panel.loan_offers,
-        offers,
+        active_mission_rows,
+        mission_modal,
         fleet_rows: fleet_panel.rows,
         fleet_list_rows,
         systems_list_rows,
@@ -889,6 +923,182 @@ fn station_ref_snapshot(
         })
 }
 
+fn build_mission_summary_snapshot(
+    simulation: &Simulation,
+    reward: f64,
+    origin_station_id: StationId,
+    destination_station_id: StationId,
+    gate_jumps: usize,
+) -> Option<MissionSummarySnapshot> {
+    let origin = station_ref_snapshot(simulation, origin_station_id)?;
+    let destination = station_ref_snapshot(simulation, destination_station_id)?;
+    let route_line = format!(
+        "{} / {} -> {} / {}",
+        origin.station_name, origin.system_name, destination.station_name, destination.system_name
+    );
+    Some(MissionSummarySnapshot {
+        summary_line: format!("+{reward:.1} cr • {gate_jumps} jumps • {route_line}"),
+        route_line,
+        reward,
+        gate_jumps,
+        origin,
+        destination,
+    })
+}
+
+fn build_offer_row_snapshot(
+    simulation: &Simulation,
+    offer: &MissionOffer,
+) -> Option<MissionOfferRowSnapshot> {
+    let summary = build_mission_summary_snapshot(
+        simulation,
+        offer.reward,
+        offer.origin_station,
+        offer.destination_station,
+        offer.route_gate_ids.len(),
+    )?;
+    Some(MissionOfferRowSnapshot {
+        offer_id: offer.id,
+        commodity: offer.commodity,
+        quantity: offer.quantity,
+        penalty: offer.penalty,
+        summary,
+    })
+}
+
+fn build_active_mission_row_snapshot(
+    simulation: &Simulation,
+    mission: &Mission,
+) -> Option<ActiveMissionRowSnapshot> {
+    let summary = build_mission_summary_snapshot(
+        simulation,
+        mission.reward,
+        mission.origin_station,
+        mission.destination_station,
+        mission.route_gate_ids.len(),
+    )?;
+    Some(ActiveMissionRowSnapshot {
+        mission_id: mission.id,
+        commodity: mission.commodity,
+        quantity: mission.quantity,
+        reward: mission.reward,
+        penalty: mission.penalty,
+        status_label: mission_status_label(mission.status).to_string(),
+        summary,
+    })
+}
+
+fn build_station_missions_snapshot(
+    simulation: &Simulation,
+    view: &gatebound_sim::StationMissionView,
+) -> StationMissionsSnapshot {
+    let mut offers = view
+        .offers
+        .iter()
+        .filter_map(|row| build_offer_row_snapshot(simulation, &row.offer))
+        .collect::<Vec<_>>();
+    offers.sort_by(|left, right| {
+        right
+            .summary
+            .reward
+            .total_cmp(&left.summary.reward)
+            .then_with(|| left.offer_id.cmp(&right.offer_id))
+    });
+    StationMissionsSnapshot {
+        docked: view.docked,
+        offers,
+    }
+}
+
+fn build_mission_modal_snapshot(
+    simulation: &Simulation,
+    selection: MissionModalSelection,
+    missions_board: &gatebound_sim::MissionsBoardView,
+    selected_ship_id: Option<ShipId>,
+) -> Option<MissionModalSnapshot> {
+    match selection {
+        MissionModalSelection::Offer(offer_id) => {
+            let offer = missions_board
+                .offers
+                .iter()
+                .find(|offer| offer.offer.id == offer_id)?
+                .offer
+                .clone();
+            let summary = build_mission_summary_snapshot(
+                simulation,
+                offer.reward,
+                offer.origin_station,
+                offer.destination_station,
+                offer.route_gate_ids.len(),
+            )?;
+            Some(MissionModalSnapshot {
+                selection,
+                kind: MissionModalKind::Offer,
+                title: format!("Mission Offer #{}", offer.id),
+                commodity: offer.commodity,
+                quantity: offer.quantity,
+                reward: offer.reward,
+                penalty: offer.penalty,
+                gate_jumps: offer.route_gate_ids.len(),
+                summary,
+                status_label: None,
+                destination_storage_amount: None,
+                required_quantity: None,
+                can_accept: true,
+                can_complete: false,
+                can_cancel: false,
+                complete_disabled_reason: None,
+            })
+        }
+        MissionModalSelection::Active(mission_id) => {
+            let detail = missions_board
+                .active_missions
+                .iter()
+                .find(|detail| detail.mission.id == mission_id)?;
+            let mission = &detail.mission;
+            let summary = build_mission_summary_snapshot(
+                simulation,
+                mission.reward,
+                mission.origin_station,
+                mission.destination_station,
+                mission.route_gate_ids.len(),
+            )?;
+            let can_complete = selected_ship_id.is_some_and(|ship_id| {
+                simulation.is_ship_docked_at(ship_id, mission.destination_station)
+            }) && detail.destination_storage_amount + 1e-9 >= mission.quantity;
+            let complete_disabled_reason = if can_complete {
+                None
+            } else if selected_ship_id.is_none() {
+                Some("Select a player ship to complete the mission.".to_string())
+            } else if !selected_ship_id.is_some_and(|ship_id| {
+                simulation.is_ship_docked_at(ship_id, mission.destination_station)
+            }) {
+                Some("Dock the selected ship at the destination station.".to_string())
+            } else {
+                Some("Not enough cargo in destination storage yet.".to_string())
+            };
+            Some(MissionModalSnapshot {
+                selection,
+                kind: MissionModalKind::Active,
+                title: format!("Mission #{}", mission.id.0),
+                commodity: mission.commodity,
+                quantity: mission.quantity,
+                reward: mission.reward,
+                penalty: mission.penalty,
+                gate_jumps: mission.route_gate_ids.len(),
+                summary,
+                status_label: Some(mission_status_label(mission.status).to_string()),
+                destination_storage_amount: Some(detail.destination_storage_amount),
+                required_quantity: Some(mission.quantity),
+                can_accept: false,
+                can_complete,
+                can_cancel: true,
+                complete_disabled_reason,
+            })
+        }
+    }
+}
+
 fn build_fleet_list_rows(
     simulation: &Simulation,
     player_ship_ids: &[ShipId],
@@ -996,8 +1206,8 @@ pub(crate) fn build_ship_card_snapshot_for_ui(
         eta_ticks_remaining: view.eta_ticks_remaining,
         current_segment_kind: view.current_segment_kind,
         cargo_capacity: view.cargo_capacity,
-        cargo: view.cargo,
-        active_contract: view.active_contract,
+        cargo_lots: view.cargo_lots,
+        cargo_total_amount: view.cargo_total_amount,
         policy: view.policy,
         route_len: view.route_len,
         reroutes: view.reroutes,
@@ -1013,6 +1223,8 @@ pub(crate) fn build_station_card_snapshot_for_ui(
     station_id: StationId,
 ) -> Option<StationCardSnapshot> {
     let trade = simulation.station_trade_view(ship_id, station_id)?;
+    let storage = simulation.station_storage_view(ship_id, station_id)?;
+    let missions_view = simulation.station_mission_view(ship_id, station_id)?;
     let topology = simulation.camera_topology_view();
     let (system, station) = topology.systems.iter().find_map(|system| {
         system
@@ -1030,6 +1242,7 @@ pub(crate) fn build_station_card_snapshot_for_ui(
         generated_host_body_name(system.system_id, station.station_id, orbit_ratio);
     let profile_summary = profile_summary(station.profile).to_string();
     let (imports, exports) = trade_flow_notes(&trade);
+    let missions = build_station_missions_snapshot(simulation, &missions_view);
 
     Some(StationCardSnapshot {
         station_id,
@@ -1046,6 +1259,8 @@ pub(crate) fn build_station_card_snapshot_for_ui(
         station_y: station.y,
         docked: trade.docked,
         trade,
+        storage,
+        missions,
     })
 }
 

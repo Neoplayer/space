@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::input::camera::CameraUiState;
 use crate::runtime::sim::{
-    ContractsFilterState, FinanceUiState, MarketsUiState, SelectedShip, SelectedStation,
+    FinanceUiState, MarketsUiState, MissionsPanelState, SelectedShip, SelectedStation,
     SelectedSystem, ShipUiState, SimClock, SimResource, StationUiState, TrackedShip, UiKpiTracker,
     UiPanelState,
 };
@@ -632,7 +632,7 @@ pub fn apply_loaded_simulation(
     selected_station: &mut SelectedStation,
     selected_ship: &mut SelectedShip,
     panels: &mut UiPanelState,
-    filters: &mut ContractsFilterState,
+    missions_panel: &mut MissionsPanelState,
     tracked_ship: &mut TrackedShip,
     ship_ui: &mut ShipUiState,
     station_ui: &mut StationUiState,
@@ -650,7 +650,7 @@ pub fn apply_loaded_simulation(
     *selected_station = SelectedStation::default();
     *selected_ship = SelectedShip::default();
     *panels = UiPanelState::default();
-    *filters = ContractsFilterState::default();
+    *missions_panel = MissionsPanelState::default();
     *tracked_ship = TrackedShip::default();
     *ship_ui = ShipUiState::default();
     *station_ui = StationUiState::default();

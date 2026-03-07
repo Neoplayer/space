@@ -557,65 +557,6 @@ fn reroute_happens_when_edge_blocked() {
 }
 
 #[test]
-fn delivery_penalty_curve_applies_without_hard_fail() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.sla_penalty_curve = vec![1.0, 2.0, 3.0, 4.0];
-    let mut sim = Simulation::new(cfg, 11);
-    let start_capital = sim.capital;
-
-    if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
-        contract.deadline_tick = 1;
-        contract.assigned_ship = Some(ShipId(0));
-        contract.destination = SystemId(sim.world.system_count() - 1);
-    }
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.location = SystemId(0);
-        ship.policy.waypoints = vec![SystemId(0)];
-    }
-
-    for _ in 0..5 {
-        sim.step_tick();
-    }
-
-    let after_first_fail = sim.capital;
-    assert!(
-        after_first_fail < start_capital,
-        "penalty should reduce capital"
-    );
-
-    // No hard run fail: simulation continues ticking.
-    let tick_before = sim.tick;
-    sim.step_tick();
-    assert!(
-        sim.tick > tick_before,
-        "simulation should continue after SLA fail"
-    );
-}
-
-#[test]
-fn supply_contract_tracks_cycle_shortfall_and_progressive_penalty() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.sla_penalty_curve = vec![1.0, 1.5, 2.0];
-    let mut sim = Simulation::new(cfg, 13);
-    let cid = sim.create_supply_contract(SystemId(0), SystemId(1), 20.0, 3);
-    let initial_capital = sim.capital;
-
-    for _ in 0..(sim.config.time.cycle_ticks * 2) {
-        sim.step_tick();
-    }
-
-    let contract = sim
-        .contracts
-        .get(&cid)
-        .expect("supply contract should exist");
-    assert!(contract.missed_cycles >= 1, "supply misses must accumulate");
-    assert!(
-        sim.capital < initial_capital,
-        "misses should apply penalties"
-    );
-}
-
-#[test]
 fn price_update_respects_delta_cap_and_floor_ceiling() {
     let cfg = stage_a_config();
     let mut sim = Simulation::new(cfg, 17);
@@ -903,7 +844,6 @@ fn last_gate_arrival_cleared_on_new_station_route() {
     let ship_id = ShipId(0);
     let fallback_gate = sim.world.edges.first().map(|edge| edge.id);
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.active_contract = None;
         ship.location = SystemId(0);
         ship.movement_queue.clear();
         ship.segment_eta_remaining = 0;
@@ -1046,107 +986,6 @@ fn multi_hop_route_follows_station_gate_gate_station_pattern() {
 }
 
 #[test]
-fn delivery_requires_explicit_pickup_and_dropoff_actions() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.gate_fee_per_jump = 0.0;
-    let mut sim = Simulation::new(cfg, 317);
-    sim.ships.retain(|id, _| *id == ShipId(0));
-    let destination_system = if sim.world.system_count() > 1 {
-        SystemId(1)
-    } else {
-        SystemId(0)
-    };
-    let destination_station = sim
-        .world
-        .stations_by_system
-        .get(&destination_system)
-        .and_then(|stations| stations.last().copied())
-        .unwrap_or_else(|| {
-            sim.world
-                .first_station(destination_system)
-                .unwrap_or(StationId(0))
-        });
-    if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
-        contract.completed = false;
-        contract.failed = false;
-        contract.destination = destination_system;
-        contract.destination_station = destination_station;
-        contract.assigned_ship = Some(ShipId(0));
-        contract.deadline_tick = 10_000;
-        contract.progress = ContractProgress::AwaitPickup;
-        contract.loaded_amount = 0.0;
-        contract.delivered_amount = 0.0;
-    }
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.location = SystemId(0);
-        ship.current_station = sim.world.first_station(SystemId(0));
-        ship.active_contract = Some(ContractId(0));
-        ship.policy.max_hops = 16;
-    }
-
-    for _ in 0..40 {
-        sim.step_tick();
-    }
-    assert!(
-        !sim.contracts
-            .get(&ContractId(0))
-            .expect("contract should exist")
-            .completed,
-        "delivery must not complete without explicit load/unload"
-    );
-
-    let load_amount = sim
-        .contracts
-        .get(&ContractId(0))
-        .map(|contract| contract.quantity)
-        .unwrap_or(0.0);
-    sim.player_contract_load(ShipId(0), ContractId(0), load_amount)
-        .expect("load should work at origin station");
-
-    let origin_station = sim
-        .ships
-        .get(&ShipId(0))
-        .and_then(|ship| ship.current_station)
-        .expect("ship should stay at origin station after load");
-    if origin_station != destination_station {
-        for _ in 0..40 {
-            sim.step_tick();
-        }
-        assert_eq!(
-            sim.ships
-                .get(&ShipId(0))
-                .and_then(|ship| ship.current_station),
-            Some(origin_station),
-            "player ship must stay idle until explicit fly command"
-        );
-    }
-
-    sim.command_fly_to_station(ShipId(0), destination_station)
-        .expect("player flight command should start route");
-
-    for _ in 0..200 {
-        sim.step_tick();
-        if sim
-            .ships
-            .get(&ShipId(0))
-            .is_some_and(|ship| ship.current_station == Some(destination_station))
-        {
-            break;
-        }
-    }
-
-    sim.player_contract_unload(ShipId(0), ContractId(0), load_amount)
-        .expect("unload should complete contract");
-    assert!(
-        sim.contracts
-            .get(&ContractId(0))
-            .expect("contract should exist")
-            .completed,
-        "delivery should complete after explicit unload"
-    );
-}
-
-#[test]
 fn gate_fee_and_traversal_count_apply_on_teleport_segment() {
     let mut cfg = stage_a_config();
     cfg.pressure.gate_fee_per_jump = 4.0;
@@ -1156,7 +995,6 @@ fn gate_fee_and_traversal_count_apply_on_teleport_segment() {
         return;
     }
     if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.active_contract = None;
         ship.location = SystemId(0);
     }
     let destination_station = station_for_system(&sim, SystemId(1));
@@ -1227,7 +1065,7 @@ fn snapshot_round_trip_restores_future_ticks() {
         assert_eq!(base_report.tick, loaded_report.tick);
         assert_eq!(base_report.cycle, loaded_report.cycle);
         assert_eq!(base_report.active_ships, loaded_report.active_ships);
-        assert_eq!(base_report.active_contracts, loaded_report.active_contracts);
+        assert_eq!(base_report.active_missions, loaded_report.active_missions);
         assert!(
             (base_report.total_queue_delay as i64 - loaded_report.total_queue_delay as i64).abs()
                 <= 8,
@@ -1250,7 +1088,6 @@ fn snapshot_round_trip_preserves_station_and_ship_segment_state() {
     }
     let gate_id = sim.world.edges.first().map(|edge| edge.id);
     if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.active_contract = None;
         ship.location = SystemId(0);
         ship.current_station = sim.world.first_station(SystemId(0));
         ship.segment_eta_remaining = 0;
@@ -1292,19 +1129,6 @@ fn snapshot_round_trip_preserves_station_and_ship_segment_state() {
         ship_before.segment_eta_remaining
     );
     assert_eq!(ship_after.last_gate_arrival, ship_before.last_gate_arrival);
-    let loaded_contract = loaded
-        .contracts
-        .get(&ContractId(0))
-        .expect("contract should exist");
-    let base_contract = sim
-        .contracts
-        .get(&ContractId(0))
-        .expect("contract should exist");
-    assert_eq!(loaded_contract.origin_station, base_contract.origin_station);
-    assert_eq!(
-        loaded_contract.destination_station,
-        base_contract.destination_station
-    );
 }
 
 #[test]
@@ -1339,15 +1163,10 @@ fn stage_a_scope_guards_are_locked() {
     );
 
     let sim = Simulation::new(cfg, 41);
-    for contract in sim.contracts.values() {
-        assert!(
-            matches!(
-                contract.kind,
-                ContractTypeStageA::Delivery | ContractTypeStageA::Supply
-            ),
-            "stage A must contain delivery/supply only"
-        );
-    }
+    assert!(
+        sim.missions.is_empty(),
+        "stage A should not seed accepted missions"
+    );
 }
 
 #[test]
@@ -1403,12 +1222,7 @@ fn idle_ticks_do_not_change_capital_without_transactions() {
     let mut sim = Simulation::new(stage_a_config(), 71);
     let start_capital = sim.capital;
 
-    if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
-        contract.assigned_ship = None;
-        contract.completed = true;
-    }
     if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.active_contract = None;
         ship.policy.waypoints = vec![ship.location];
     }
 
@@ -1573,17 +1387,17 @@ fn snapshot_round_trip_preserves_active_loan() {
 }
 
 #[test]
-fn snapshot_save_writes_v3_json_envelope() {
+fn snapshot_save_writes_v6_json_envelope() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 97);
-    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v3.json");
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v6.json");
 
     crate::snapshot::save_snapshot(&sim, &tmp).expect("snapshot save should pass");
     let payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
 
     assert!(
-        payload.contains("\"version\": 3"),
-        "snapshot payload should use v3 envelope"
+        payload.contains("\"version\": 6"),
+        "snapshot payload should use v6 envelope"
     );
     assert!(
         payload.contains("\"state\""),
@@ -1620,6 +1434,51 @@ fn snapshot_payload_round_trip_matches_file_api() {
 }
 
 #[test]
+fn snapshot_round_trip_preserves_player_station_storage() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 980);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo_capacity = 18.0;
+        ship.cargo = CargoManifest::from(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 7.0,
+            source: CargoSource::Spot,
+        });
+    }
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 4.0)
+        .expect("station unload should succeed");
+
+    let payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload serialization should pass");
+    assert!(
+        payload.contains("\"player_station_storage\""),
+        "snapshot payload should include station storage state"
+    );
+
+    let loaded = Simulation::from_snapshot_payload(&payload, cfg)
+        .expect("snapshot payload load should pass");
+    let storage = loaded
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel storage row should exist");
+    assert!((fuel_row.stored_amount - 4.0).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 3.0).abs() < 1e-9);
+}
+
+#[test]
 fn legacy_snapshot_versions_are_rejected() {
     let cfg = stage_a_config();
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_legacy.json");
@@ -1634,82 +1493,6 @@ fn legacy_snapshot_versions_are_rejected() {
 }
 
 #[test]
-fn offer_generation_reflects_market_imbalance_and_risk() {
-    let mut sim = Simulation::new(stage_a_config(), 101);
-    sim.refresh_contract_offers();
-    let baseline = sim
-        .contract_offers
-        .values()
-        .next()
-        .expect("offer must exist")
-        .quantity;
-
-    let station_id = station_for_system(&sim, SystemId(1));
-    if let Some(market) = sim.markets.get_mut(&station_id) {
-        for state in market.goods.values_mut() {
-            state.stock = 10.0;
-            state.target_stock = 200.0;
-            state.cycle_outflow = 70.0;
-            state.cycle_inflow = 10.0;
-        }
-    }
-    sim.refresh_contract_offers();
-    let stressed = sim
-        .contract_offers
-        .values()
-        .next()
-        .expect("offer must exist")
-        .quantity;
-    assert!(
-        stressed >= baseline,
-        "higher imbalance should increase offer size"
-    );
-}
-
-#[test]
-fn accept_offer_creates_contract_and_removes_offer() {
-    let mut sim = Simulation::new(stage_a_config(), 103);
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.active_contract = None;
-    }
-    if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
-        contract.completed = true;
-    }
-    sim.refresh_contract_offers();
-    let offer_id = *sim
-        .contract_offers
-        .keys()
-        .next()
-        .expect("offer must exist for acceptance");
-    let cid = sim
-        .accept_contract_offer(offer_id, ShipId(0))
-        .expect("offer acceptance should pass");
-    assert!(sim.contracts.contains_key(&cid));
-    assert!(
-        !sim.contract_offers.contains_key(&offer_id),
-        "accepted offer should be removed"
-    );
-}
-
-#[test]
-fn offer_expiration_and_refresh_work_by_cycle() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.offer_refresh_cycles = 1;
-    cfg.pressure.offer_ttl_cycles = 1;
-    let mut sim = Simulation::new(cfg, 107);
-    sim.refresh_contract_offers();
-    let first_offer_ids = sim.contract_offers.keys().copied().collect::<Vec<_>>();
-
-    sim.step_cycle();
-    sim.step_cycle();
-
-    let has_old = first_offer_ids
-        .iter()
-        .any(|offer_id| sim.contract_offers.contains_key(offer_id));
-    assert!(!has_old, "expired offers should be replaced on refresh");
-}
-
-#[test]
 fn gate_fee_is_charged_per_warp_segment() {
     let mut cfg = stage_a_config();
     cfg.pressure.gate_fee_per_jump = 3.5;
@@ -1719,7 +1502,6 @@ fn gate_fee_is_charged_per_warp_segment() {
         return;
     }
     if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.active_contract = None;
         ship.location = SystemId(0);
     }
     let destination_station = station_for_system(&sim, SystemId(1));
@@ -1739,117 +1521,7 @@ fn gate_fee_is_charged_per_warp_segment() {
 }
 
 #[test]
-fn market_fee_applies_to_payouts() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.gate_fee_per_jump = 0.0;
-    cfg.pressure.market_fee_rate = 0.2;
-    let mut sim = Simulation::new(cfg, 113);
-    sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
-    let destination_station = station_for_system(&sim, SystemId(0));
-    if let Some(contract) = sim.contracts.get_mut(&ContractId(0)) {
-        contract.completed = false;
-        contract.failed = false;
-        contract.destination = SystemId(0);
-        contract.destination_station = destination_station;
-        contract.assigned_ship = Some(ShipId(0));
-        contract.payout = 100.0;
-        contract.deadline_tick = 1_000;
-        contract.progress = ContractProgress::InTransit;
-        contract.quantity = 10.0;
-        contract.loaded_amount = 10.0;
-        contract.delivered_amount = 0.0;
-    }
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.location = SystemId(0);
-        ship.current_station = Some(destination_station);
-        ship.eta_ticks_remaining = 0;
-        ship.segment_eta_remaining = 0;
-        ship.current_segment_kind = None;
-        ship.movement_queue.clear();
-        ship.active_contract = Some(ContractId(0));
-        ship.cargo = Some(CargoLoad {
-            commodity: Commodity::Fuel,
-            amount: 10.0,
-            source: CargoSource::Contract {
-                contract_id: ContractId(0),
-            },
-        });
-    }
-
-    let before = sim.capital;
-    sim.player_contract_unload(ShipId(0), ContractId(0), 10.0)
-        .expect("explicit unload should settle payout");
-    let delta = sim.capital - before;
-    assert!(
-        (delta - 80.0).abs() < 1e-6,
-        "payout should include market fee deduction"
-    );
-}
-
-#[test]
-fn market_depth_caps_effective_supply_delivery() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.market_depth_per_cycle = 5.0;
-    let mut sim = Simulation::new(cfg, 127);
-    let cid = sim.create_supply_contract(SystemId(0), SystemId(1), 10.0, 3);
-    if let Some(contract) = sim.contracts.get_mut(&cid) {
-        contract.delivered_amount = 10.0;
-        contract.per_cycle = 10.0;
-        contract.payout = 40.0;
-        contract.penalty = 12.0;
-    }
-    let before = sim.capital;
-    sim.step_cycle();
-    assert!(
-        sim.capital < before,
-        "depth cap should turn apparent full delivery into shortfall penalty"
-    );
-}
-
-#[test]
-fn explicit_supply_unload_drives_cycle_payout() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.gate_fee_per_jump = 0.0;
-    cfg.pressure.market_fee_rate = 0.0;
-    let mut sim = Simulation::new(cfg, 129);
-    sim.ships.retain(|ship_id, _| *ship_id == ShipId(0));
-    let cid = sim.create_supply_contract(SystemId(0), SystemId(1), 5.0, 3);
-    let destination_station = station_for_system(&sim, SystemId(1));
-    if let Some(contract) = sim.contracts.get_mut(&cid) {
-        contract.assigned_ship = Some(ShipId(0));
-        contract.progress = ContractProgress::InTransit;
-        contract.payout = 40.0;
-        contract.penalty = 10.0;
-        contract.loaded_amount = 5.0;
-        contract.delivered_cycle_amount = 0.0;
-    }
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.current_station = Some(destination_station);
-        ship.location = SystemId(1);
-        ship.eta_ticks_remaining = 0;
-        ship.segment_eta_remaining = 0;
-        ship.current_segment_kind = None;
-        ship.movement_queue.clear();
-        ship.active_contract = Some(cid);
-        ship.cargo = Some(CargoLoad {
-            commodity: Commodity::Fuel,
-            amount: 5.0,
-            source: CargoSource::Contract { contract_id: cid },
-        });
-    }
-
-    sim.player_contract_unload(ShipId(0), cid, 5.0)
-        .expect("supply unload should succeed");
-    let before = sim.capital;
-    sim.step_cycle();
-    assert!(
-        sim.capital > before,
-        "cycle payout should require explicit unload contribution"
-    );
-}
-
-#[test]
-fn player_trade_enforces_docked_capacity_and_contract_lock() {
+fn player_trade_enforces_docked_capacity_and_market_fees() {
     let mut cfg = stage_a_config();
     cfg.pressure.market_fee_rate = 0.1;
     let mut sim = Simulation::new(cfg, 133);
@@ -1869,7 +1541,6 @@ fn player_trade_enforces_docked_capacity_and_contract_lock() {
         ship.segment_eta_remaining = 0;
         ship.current_segment_kind = None;
         ship.movement_queue.clear();
-        ship.active_contract = None;
     }
 
     assert_eq!(
@@ -1896,19 +1567,205 @@ fn player_trade_enforces_docked_capacity_and_contract_lock() {
         "sell should apply fee to proceeds"
     );
     assert!(sim.capital > before_sell);
+}
 
-    if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.cargo = Some(CargoLoad {
+#[test]
+fn player_trade_allows_multiple_spot_commodities_in_hold() {
+    let mut cfg = stage_a_config();
+    cfg.pressure.market_fee_rate = 0.1;
+    let mut sim = Simulation::new(cfg, 244);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo_capacity = 18.0;
+    }
+    if let Some(book) = sim.markets.get_mut(&station_id) {
+        if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+            fuel.stock = 100.0;
+        }
+        if let Some(ore) = book.goods.get_mut(&Commodity::Ore) {
+            ore.stock = 100.0;
+        }
+    }
+
+    sim.player_buy(ship_id, station_id, Commodity::Fuel, 6.0)
+        .expect("fuel buy should work");
+    sim.player_buy(ship_id, station_id, Commodity::Ore, 4.0)
+        .expect("ore buy should also work");
+    sim.player_sell(ship_id, station_id, Commodity::Fuel, 2.0)
+        .expect("fuel sell should only reduce the matching lot");
+
+    let trade = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("trade view should exist");
+    let fuel_row = trade
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+    let ore_row = trade
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Ore)
+        .expect("ore row should exist");
+
+    assert!((fuel_row.player_cargo - 4.0).abs() < 1e-9);
+    assert!((ore_row.player_cargo - 4.0).abs() < 1e-9);
+    assert!((fuel_row.buy_cap - 10.0).abs() < 1e-9);
+    assert!((ore_row.buy_cap - 10.0).abs() < 1e-9);
+    assert!((fuel_row.sell_cap - 4.0).abs() < 1e-9);
+    assert!((ore_row.sell_cap - 4.0).abs() < 1e-9);
+}
+
+#[test]
+fn player_station_storage_transfers_spot_cargo_between_ship_and_local_station() {
+    let mut sim = Simulation::new(stage_a_config(), 244);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo_capacity = 18.0;
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
-            amount: 2.0,
-            source: CargoSource::Contract {
-                contract_id: ContractId(99),
-            },
+            amount: 6.0,
+            source: CargoSource::Spot,
         });
     }
+
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 4.0)
+        .expect("station unload should work");
+
+    let storage = sim
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+    assert!((fuel_row.stored_amount - 4.0).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 2.0).abs() < 1e-9);
+    assert!((fuel_row.load_cap - 4.0).abs() < 1e-9);
+    assert!((fuel_row.unload_cap - 2.0).abs() < 1e-9);
+    assert!(fuel_row.can_load);
+    assert!(fuel_row.can_unload);
+
+    sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.5)
+        .expect("station load should work");
+
+    let storage = sim
+        .station_storage_view(ship_id, station_id)
+        .expect("storage view should exist");
+    let fuel_row = storage
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should still exist");
+    assert!((fuel_row.stored_amount - 2.5).abs() < 1e-9);
+    assert!((fuel_row.player_cargo - 3.5).abs() < 1e-9);
+}
+
+#[test]
+fn player_station_storage_rejects_wrong_station_access() {
+    let mut sim = Simulation::new(stage_a_config(), 246);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let other_station = station_for_system(&sim, SystemId(1));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo = CargoManifest::from(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 6.0,
+            source: CargoSource::Spot,
+        });
+    }
+
     assert_eq!(
-        sim.player_sell(ShipId(0), station_id, Commodity::Fuel, 1.0),
-        Err(TradeError::ContractCargoLocked)
+        sim.player_unload_to_station_storage(ship_id, other_station, Commodity::Fuel, 2.0),
+        Err(StorageTransferError::NotDocked)
+    );
+}
+
+#[test]
+fn player_station_storage_enforces_capacity_commodity_and_station_locality() {
+    let mut sim = Simulation::new(stage_a_config(), 248);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let other_station = station_for_system(&sim, SystemId(1));
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.cargo_capacity = 18.0;
+        ship.cargo = CargoManifest::from(CargoLoad {
+            commodity: Commodity::Fuel,
+            amount: 5.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 5.0)
+        .expect("initial unload should work");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = CargoManifest::from(CargoLoad {
+            commodity: Commodity::Ore,
+            amount: 17.0,
+            source: CargoSource::Spot,
+        });
+    }
+
+    sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0)
+        .expect("loading a second commodity should work while capacity remains");
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = CargoManifest::from(vec![
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 0.5,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 17.0,
+                source: CargoSource::Spot,
+            },
+        ]);
+    }
+    assert_eq!(
+        sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0),
+        Err(StorageTransferError::CargoCapacityExceeded)
+    );
+    assert_eq!(
+        sim.player_load_from_station_storage(ship_id, other_station, Commodity::Fuel, 1.0),
+        Err(StorageTransferError::NotDocked)
+    );
+
+    let other_storage = sim
+        .station_storage_view(ship_id, other_station)
+        .expect("other station storage view should exist");
+    assert!(
+        other_storage.rows.is_empty(),
+        "storage should remain local to the station where cargo was unloaded"
     );
 }
 
@@ -1924,7 +1781,7 @@ fn snapshot_load_normalizes_to_single_player_ship() {
         .expect("npc ship should exist");
     if let Some(ship) = sim.ships.get_mut(&extra_npc_id) {
         ship.company_id = CompanyId(0);
-        ship.role = ShipRole::PlayerContract;
+        ship.role = ShipRole::Player;
     }
 
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_player_norm.json");
@@ -1962,7 +1819,7 @@ fn npc_stage_a_baseline_roster_is_created() {
     assert_eq!(
         sim.ships
             .values()
-            .filter(|ship| ship.role == ShipRole::PlayerContract)
+            .filter(|ship| ship.role == ShipRole::Player)
             .count(),
         1
     );
@@ -2308,7 +2165,7 @@ fn snapshot_round_trip_preserves_npc_company_runtime_and_trade_orders() {
     );
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.trade_order_id = Some(order_id);
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Parts,
             amount: 4.0,
             source: CargoSource::Spot,
@@ -2379,8 +2236,7 @@ fn ship_card_view_exposes_owner_route_and_display_metadata() {
         ship.current_target = Some(SystemId(2));
         ship.eta_ticks_remaining = 17;
         ship.current_segment_kind = Some(SegmentKind::InSystem);
-        ship.active_contract = Some(ContractId(0));
-        ship.cargo = Some(cargo);
+        ship.cargo = CargoManifest::from(cargo);
     }
 
     let view = sim
@@ -2395,17 +2251,101 @@ fn ship_card_view_exposes_owner_route_and_display_metadata() {
     assert_eq!(view.current_target, Some(SystemId(2)));
     assert_eq!(view.eta_ticks_remaining, 17);
     assert_eq!(view.current_segment_kind, Some(SegmentKind::InSystem));
-    assert_eq!(view.cargo, Some(cargo));
-    assert_eq!(
-        view.active_contract.map(|contract| contract.id),
-        Some(ContractId(0))
-    );
+    assert_eq!(view.cargo_lots, vec![cargo]);
+    assert!((view.cargo_total_amount - cargo.amount).abs() < 1e-9);
+    assert!(view.mission_cargo.is_empty());
     assert!(!view.description.is_empty());
     assert!(!view.modules.is_empty());
     assert!(view.technical_state.cargo_bay > 0.0);
 }
 
 #[test]
+fn snapshot_round_trip_preserves_multi_cargo_manifest() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 161);
+    let ship_id = ShipId(0);
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = CargoManifest::from(vec![
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 6.0,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 4.5,
+                source: CargoSource::Spot,
+            },
+        ]);
+    }
+
+    let payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload serialization should pass");
+    let loaded = Simulation::from_snapshot_payload(&payload, cfg)
+        .expect("snapshot payload load should pass");
+    let ship = loaded
+        .ships
+        .get(&ship_id)
+        .expect("ship should exist after load");
+
+    assert_eq!(
+        ship.cargo_lots(),
+        &[
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 4.5,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 6.0,
+                source: CargoSource::Spot,
+            },
+        ]
+    );
+    assert!((ship.cargo_total_amount() - 10.5).abs() < 1e-9);
+}
+
+#[test]
+#[cfg(any())]
+fn legacy_snapshot_with_single_cargo_object_loads_into_manifest() {
+    let cfg = stage_a_config();
+    let sim = Simulation::new(cfg.clone(), 162);
+    let mut state =
+        serde_json::to_value(sim.snapshot_state()).expect("snapshot state should serialize");
+    let cargo = CargoLoad {
+        commodity: Commodity::Fuel,
+        amount: 5.0,
+        source: CargoSource::Spot,
+    };
+    state["ships"]
+        .as_array_mut()
+        .expect("snapshot ships should serialize as an array")[0]["cargo"] =
+        serde_json::to_value(cargo).expect("cargo should serialize");
+
+    let payload = serde_json::json!({
+        "version": 3,
+        "state": state,
+    });
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_legacy_single_cargo.json");
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&payload).expect("payload serialization should succeed"),
+    )
+    .expect("legacy snapshot write should succeed");
+
+    let loaded = Simulation::load_snapshot(&tmp, cfg).expect("legacy snapshot should load");
+    let ship = loaded
+        .ships
+        .get(&ShipId(0))
+        .expect("player ship should exist after load");
+
+    assert_eq!(ship.cargo_lots(), &[cargo]);
+}
+
+#[test]
+#[cfg(any())]
 fn legacy_snapshot_without_ship_card_fields_loads_and_backfills_metadata() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 163);
@@ -2508,42 +2448,424 @@ fn market_share_milestone_completes_on_window_share() {
 }
 
 #[test]
-fn offer_generation_populates_route_gates_problem_and_profit_per_ton() {
+fn mission_offer_generation_populates_route_gates_and_score() {
     let mut sim = Simulation::new(stage_a_config(), 223);
-    sim.refresh_contract_offers();
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+                state.cycle_inflow = 0.0;
+                state.cycle_outflow = 0.0;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 180.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 20.0;
+    sim.refresh_mission_offers();
     let offer = sim
-        .contract_offers
+        .mission_offers
         .values()
-        .next()
+        .find(|offer| {
+            offer.origin_station == source_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Fuel
+        })
         .expect("offer should exist");
-    assert!(offer.profit_per_ton.is_finite());
-    assert!(offer.profit_per_ton.abs() < 1_000.0);
-    assert!(matches!(
-        offer.problem_tag,
-        OfferProblemTag::HighRisk
-            | OfferProblemTag::CongestedRoute
-            | OfferProblemTag::LowMargin
-            | OfferProblemTag::FuelVolatility
-    ));
+    assert!(offer.score.is_finite());
+    assert!(offer.score.abs() < 10_000.0);
+    assert!(offer.risk_score.is_finite());
+    assert!(offer.penalty > 0.0);
+    assert!(offer.eta_ticks > 0);
+    assert!(!offer.route_gate_ids.is_empty());
 }
 
 #[test]
-fn premium_offer_requires_reputation_threshold() {
-    let mut cfg = stage_a_config();
-    cfg.pressure.premium_offer_reputation_min = 0.9;
-    let mut sim = Simulation::new(cfg, 227);
-    sim.reputation = 0.5;
-    sim.refresh_contract_offers();
-    assert!(
-        sim.contract_offers.values().all(|offer| !offer.premium),
-        "low reputation should suppress premium offers"
-    );
-    sim.reputation = 0.95;
-    sim.refresh_contract_offers();
-    assert!(
-        sim.contract_offers.values().all(|offer| offer.premium),
-        "high reputation should enable premium offers"
-    );
+fn accepting_mission_offer_moves_goods_into_player_station_storage_and_fixes_penalty() {
+    let mut sim = Simulation::new(stage_a_config(), 224);
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+                state.cycle_inflow = 0.0;
+                state.cycle_outflow = 0.0;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 180.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 20.0;
+
+    sim.refresh_mission_offers();
+    let offer = sim
+        .mission_offers
+        .values()
+        .find(|offer| {
+            offer.origin_station == source_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Fuel
+        })
+        .cloned()
+        .expect("mission offer should exist");
+    let (before_stock, before_price) = sim
+        .markets
+        .get(&source_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| (state.stock, state.price))
+        .expect("source stock should exist");
+
+    let mission_id = sim
+        .accept_mission_offer(offer.id)
+        .expect("accepting mission should succeed");
+
+    let stored_amount = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("player station storage should exist at source station");
+    let mission = sim
+        .missions
+        .get(&mission_id)
+        .expect("mission should exist after acceptance");
+    let after_stock = sim
+        .markets
+        .get(&source_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .expect("source stock should still exist");
+
+    assert!((offer.quantity - stored_amount).abs() < 1e-9);
+    assert!((before_stock - after_stock - offer.quantity).abs() < 1e-9);
+    assert!((mission.penalty - offer.quantity * before_price * 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn accepted_mission_goods_flow_through_regular_storage_and_trade_api() {
+    let mut sim = Simulation::new(stage_a_config(), 225);
+    let ship_id = ShipId(0);
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 170.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 25.0;
+
+    sim.refresh_mission_offers();
+    let mission_id = sim
+        .accept_mission_offer(
+            sim.mission_offers
+                .values()
+                .find(|offer| {
+                    offer.origin_station == source_station
+                        && offer.destination_station == destination_station
+                        && offer.commodity == Commodity::Fuel
+                })
+                .map(|offer| offer.id)
+                .expect("mission offer should exist"),
+        )
+        .expect("accepting mission should succeed");
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(source_station);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.current_segment_kind = None;
+        ship.movement_queue.clear();
+    }
+
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("accepted goods should load via ordinary storage");
+    sim.player_sell(ship_id, source_station, Commodity::Fuel, 1.0)
+        .expect("accepted goods should be sellable");
+    sim.player_buy(ship_id, source_station, Commodity::Fuel, 1.0)
+        .expect("player should be able to buy matching goods again");
+    sim.player_unload_to_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("ordinary storage should accept the goods back");
+
+    let stored_amount = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("player storage should still contain fuel");
+    let mission = sim
+        .missions
+        .get(&mission_id)
+        .expect("mission should still exist");
+    assert!((stored_amount - mission.quantity).abs() < 1e-9);
+}
+
+#[test]
+fn completing_mission_consumes_destination_storage_and_pays_reward() {
+    let mut sim = Simulation::new(stage_a_config(), 226);
+    let ship_id = ShipId(0);
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 180.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 20.0;
+
+    sim.refresh_mission_offers();
+    let offer = sim
+        .mission_offers
+        .values()
+        .find(|offer| {
+            offer.origin_station == source_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Fuel
+        })
+        .cloned()
+        .expect("mission offer should exist");
+    let mission_id = sim
+        .accept_mission_offer(offer.id)
+        .expect("accepting mission should succeed");
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(source_station);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.current_segment_kind = None;
+        ship.movement_queue.clear();
+    }
+
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, offer.quantity)
+        .expect("loading accepted goods should use ordinary storage");
+    let destination_system = last_station_system(&sim);
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = destination_system;
+        ship.current_station = Some(destination_station);
+    }
+    sim.player_unload_to_station_storage(
+        ship_id,
+        destination_station,
+        Commodity::Fuel,
+        offer.quantity,
+    )
+    .expect("delivered goods should unload through ordinary storage");
+
+    let before_capital = sim.capital;
+    let before_destination_stock = sim
+        .markets
+        .get(&destination_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .expect("destination stock should exist");
+    sim.complete_mission(ship_id, mission_id)
+        .expect("completing the mission should succeed");
+
+    let mission = sim
+        .missions
+        .get(&mission_id)
+        .expect("mission should still exist after completion");
+    let destination_storage_amount = sim
+        .player_station_storage
+        .get(&destination_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .unwrap_or(0.0);
+    let after_destination_stock = sim
+        .markets
+        .get(&destination_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .expect("destination stock should exist");
+    assert_eq!(mission.status, MissionStatus::Completed);
+    assert!((sim.capital - before_capital - offer.reward).abs() < 1e-9);
+    assert!(destination_storage_amount.abs() < 1e-9);
+    assert!((after_destination_stock - before_destination_stock - offer.quantity).abs() < 1e-9);
+}
+
+#[test]
+fn cancelling_mission_applies_penalty_without_touching_player_storage() {
+    let mut sim = Simulation::new(stage_a_config(), 227);
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 170.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 30.0;
+
+    sim.refresh_mission_offers();
+    let fuel_offer_id = sim
+        .mission_offers
+        .values()
+        .find(|offer| {
+            offer.origin_station == source_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Fuel
+        })
+        .map(|offer| offer.id)
+        .expect("fuel mission offer should exist");
+    let fuel_mission = sim
+        .accept_mission_offer(fuel_offer_id)
+        .expect("fuel mission should be accepted");
+
+    let mission = sim
+        .missions
+        .get(&fuel_mission)
+        .cloned()
+        .expect("mission should exist");
+    let before_storage = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("accepted goods should be in ordinary storage");
+    sim.capital = mission.penalty / 2.0;
+
+    sim.cancel_mission(fuel_mission)
+        .expect("cancelling should always be allowed");
+
+    let after_storage = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("cancelling should not remove player goods");
+    let cancelled = sim
+        .missions
+        .get(&fuel_mission)
+        .expect("mission should still exist");
+    assert_eq!(cancelled.status, MissionStatus::Cancelled);
+    assert!((after_storage - before_storage).abs() < 1e-9);
+    assert!((sim.capital + mission.penalty / 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn missions_board_reports_destination_storage_readiness() {
+    let mut sim = Simulation::new(stage_a_config(), 228);
+    let ship_id = ShipId(0);
+    let source_station = station_for_system(&sim, SystemId(0));
+    let destination_system = last_station_system(&sim);
+    let destination_station = station_for_system(&sim, destination_system);
+
+    for station_id in all_station_ids(&sim) {
+        if let Some(book) = sim.markets.get_mut(&station_id) {
+            for state in book.goods.values_mut() {
+                state.stock = state.target_stock;
+            }
+        }
+    }
+    sim.markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("source fuel should exist")
+        .stock = 175.0;
+    sim.markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+        .expect("destination fuel should exist")
+        .stock = 25.0;
+
+    sim.refresh_mission_offers();
+    let offer = sim
+        .mission_offers
+        .values()
+        .find(|offer| {
+            offer.origin_station == source_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Fuel
+        })
+        .cloned()
+        .expect("mission offer should exist");
+    let mission_id = sim
+        .accept_mission_offer(offer.id)
+        .expect("accepting mission should succeed");
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(source_station);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.current_segment_kind = None;
+        ship.movement_queue.clear();
+    }
+
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("accepted goods should load through ordinary storage");
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = destination_system;
+        ship.current_station = Some(destination_station);
+    }
+    sim.player_unload_to_station_storage(ship_id, destination_station, Commodity::Fuel, 1.5)
+        .expect("partial unload should use ordinary storage");
+
+    let board = sim.missions_board_view();
+    let detail = board
+        .active_missions
+        .iter()
+        .find(|entry| entry.mission.id == mission_id)
+        .expect("mission detail should be visible");
+    assert!((detail.destination_storage_amount - 1.5).abs() < 1e-9);
+    assert_eq!(detail.mission.status, MissionStatus::Accepted);
 }
 
 #[test]
@@ -2556,7 +2878,6 @@ fn fleet_status_exposes_job_queue_and_kpis() {
     sim.ship_profit_earned.insert(ship_id, 90.0);
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.planned_path = vec![SystemId(1), SystemId(2)];
-        ship.active_contract = Some(ContractId(0));
     }
 
     let row = sim
@@ -2901,7 +3222,7 @@ fn station_trade_view_reports_effective_prices_caps_and_market_tones() {
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
         ship.cargo_capacity = 18.0;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 4.0,
             source: CargoSource::Spot,
@@ -2944,42 +3265,6 @@ fn station_trade_view_reports_effective_prices_caps_and_market_tones() {
 }
 
 #[test]
-fn station_trade_view_blocks_spot_sell_for_contract_cargo() {
-    let mut sim = Simulation::new(stage_a_config(), 241);
-    let ship_id = ShipId(0);
-    let station_id = station_for_system(&sim, SystemId(0));
-
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.location = SystemId(0);
-        ship.current_station = Some(station_id);
-        ship.eta_ticks_remaining = 0;
-        ship.segment_eta_remaining = 0;
-        ship.segment_progress_total = 0;
-        ship.movement_queue.clear();
-        ship.cargo = Some(CargoLoad {
-            commodity: Commodity::Fuel,
-            amount: 6.0,
-            source: CargoSource::Contract {
-                contract_id: ContractId(0),
-            },
-        });
-    }
-
-    let view = sim
-        .station_trade_view(ship_id, station_id)
-        .expect("station trade view should exist");
-    let row = view
-        .rows
-        .iter()
-        .find(|row| row.commodity == Commodity::Fuel)
-        .expect("fuel row should exist");
-
-    assert!((row.player_cargo - 6.0).abs() < 1e-9);
-    assert!(!row.can_sell);
-    assert!((row.sell_cap - 0.0).abs() < 1e-9);
-}
-
-#[test]
 fn station_trade_view_disables_spot_actions_while_undocked() {
     let mut sim = Simulation::new(stage_a_config(), 243);
     let ship_id = ShipId(0);
@@ -2989,7 +3274,7 @@ fn station_trade_view_disables_spot_actions_while_undocked() {
         ship.current_station = None;
         ship.eta_ticks_remaining = 7;
         ship.segment_eta_remaining = 3;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 5.0,
             source: CargoSource::Spot,
@@ -3028,7 +3313,7 @@ fn station_trade_view_caps_buy_by_available_capital() {
         ship.segment_eta_remaining = 0;
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
-        ship.cargo = None;
+        ship.cargo = CargoManifest::default();
     }
     if let Some(book) = sim.markets.get_mut(&station_id) {
         if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {

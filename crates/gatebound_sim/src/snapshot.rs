@@ -1,7 +1,7 @@
 use crate::{simulation::SnapshotError, Simulation};
 use gatebound_domain::{
-    ActiveLoan, Commodity, Company, CompanyId, Contract, ContractOffer, GateId, MarketState,
-    MilestoneStatus, NpcCompanyRuntime, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
+    ActiveLoan, Commodity, Company, CompanyId, GateId, MarketState, MilestoneStatus, Mission,
+    MissionOffer, NpcCompanyRuntime, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
     TradeOrder,
 };
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const SNAPSHOT_VERSION: u32 = 3;
+const SNAPSHOT_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotEnvelope {
@@ -37,14 +37,19 @@ pub(crate) struct SnapshotState {
     pub reroute_count: u64,
     pub sla_successes: u64,
     pub sla_failures: u64,
-    pub next_offer_id: u64,
     pub next_trade_order_id: u64,
     pub edges: Vec<EdgeSnapshot>,
     pub companies: Vec<Company>,
     pub company_runtimes: Vec<NpcCompanyRuntime>,
     pub markets: Vec<MarketBookSnapshot>,
-    pub contracts: Vec<Contract>,
-    pub contract_offers: Vec<ContractOffer>,
+    #[serde(default)]
+    pub player_station_storage: Vec<StationStorageSnapshot>,
+    #[serde(default)]
+    pub missions: Vec<Mission>,
+    #[serde(default)]
+    pub mission_offers: Vec<MissionOffer>,
+    #[serde(default)]
+    pub next_mission_offer_id: u64,
     pub trade_orders: Vec<TradeOrder>,
     pub ships: Vec<Ship>,
     pub milestones: Vec<MilestoneStatus>,
@@ -73,6 +78,18 @@ pub(crate) struct MarketBookSnapshot {
 pub(crate) struct MarketGoodSnapshot {
     pub commodity: Commodity,
     pub state: MarketState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StationStorageSnapshot {
+    pub station_id: StationId,
+    pub goods: Vec<StoredCommoditySnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct StoredCommoditySnapshot {
+    pub commodity: Commodity,
+    pub amount: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

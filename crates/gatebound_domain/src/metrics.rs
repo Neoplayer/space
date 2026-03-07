@@ -38,7 +38,7 @@ pub struct TickReport {
     pub tick: u64,
     pub cycle: u64,
     pub active_ships: usize,
-    pub active_contracts: usize,
+    pub active_missions: usize,
     pub total_queue_delay: u64,
     pub avg_price_index: f64,
 }
