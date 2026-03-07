@@ -7,6 +7,7 @@ use gatebound_sim::Simulation;
 use std::collections::VecDeque;
 
 use crate::input::camera::{CameraMode, CameraUiState};
+use crate::runtime::save::SaveMenuState;
 use crate::ui::hud::HudMessages;
 
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
@@ -562,7 +563,15 @@ pub fn set_time_speed(clock: &mut SimClock, speed_multiplier: u32) {
     clock.speed_multiplier = speed_multiplier.max(1);
 }
 
-pub fn apply_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
+pub fn apply_time_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    save_menu: Res<SaveMenuState>,
+    mut clock: ResMut<SimClock>,
+) {
+    if save_menu.open {
+        return;
+    }
+
     if keys.just_pressed(KeyCode::Space) {
         toggle_pause(&mut clock);
     }
@@ -609,8 +618,10 @@ pub fn sync_selected_station(
         .map(|station| station.station_id);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_panel_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
+    save_menu: Res<SaveMenuState>,
     mut panels: ResMut<UiPanelState>,
     mut selected_ship: ResMut<SelectedShip>,
     selected_station: Res<SelectedStation>,
@@ -618,6 +629,10 @@ pub fn handle_panel_hotkeys(
     mut station_ui: ResMut<StationUiState>,
     mut kpi: ResMut<UiKpiTracker>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     let mut manual_action = false;
     if keys.just_pressed(KeyCode::F1) {
         apply_panel_toggle(&mut panels, 1);
@@ -687,10 +702,15 @@ pub fn handle_panel_hotkeys(
 
 pub fn handle_risk_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
+    save_menu: Res<SaveMenuState>,
     mut sim: ResMut<SimResource>,
     mut messages: ResMut<HudMessages>,
     mut kpi: ResMut<UiKpiTracker>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     let cycle_ticks = sim.simulation.time_settings_view().cycle_ticks;
     let action = if keys.just_pressed(KeyCode::KeyG) {
         hotkey_to_risk('g')

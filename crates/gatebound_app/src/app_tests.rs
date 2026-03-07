@@ -7,14 +7,19 @@ use crate::render::world::{
     company_color, faction_color, segment_from_point, ship_is_visible_in_current_view,
     system_objects_visible_in_current_view, update_ship_motion_cache, ShipMotionCache,
 };
+use crate::runtime::save::{
+    apply_loaded_simulation, auto_save_name_from_timestamp, sort_save_summaries,
+    storage_manifest_key, storage_payload_key, toggle_save_menu, GameSaveSummary,
+    PendingSaveAction, SaveMenuState, SaveStorage,
+};
 use crate::runtime::sim::{
     apply_offer_filters, apply_panel_toggle, consume_ticks, hotkey_to_risk, open_ship_card,
     open_station_card, open_system_ship_inspector_selection,
     open_system_station_inspector_selection, open_system_view, panel_button_specs,
     panel_hotkey_to_index, seed_markets_ui_state, set_time_speed, toggle_pause, track_ship,
     ContractsFilterState, FinanceUiState, MarketsUiState, OfferSortMode, RiskHotkey, SelectedShip,
-    SelectedStation, ShipCardTab, ShipUiState, SimResource, StationCardTab, StationUiState,
-    TrackedShip, UiKpiTracker, UiPanelState,
+    SelectedStation, SelectedSystem, ShipCardTab, ShipUiState, SimResource, StationCardTab,
+    StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
 };
 use crate::ui::hud::{
     build_hud_snapshot as build_hud_snapshot_v2, build_ship_card_snapshot_for_ui,
@@ -152,7 +157,7 @@ fn shared_time_controls_update_pause_and_speed() {
 }
 
 #[test]
-fn double_click_enters_system_and_escape_returns_to_galaxy() {
+fn double_click_enters_system_and_escape_does_not_exit_system_view() {
     let mut mode = CameraMode::Galaxy;
     let mut tracker = ClickTracker::default();
     let mut helper_mode = CameraMode::Galaxy;
@@ -175,7 +180,272 @@ fn double_click_enters_system_and_escape_returns_to_galaxy() {
     assert_eq!(mode, helper_mode);
 
     apply_escape(&mut mode, true);
-    assert_eq!(mode, CameraMode::Galaxy);
+    assert_eq!(mode, CameraMode::System(SystemId(2)));
+}
+
+#[test]
+fn save_menu_toggle_pauses_and_restores_previous_clock_state() {
+    let mut menu = SaveMenuState::default();
+    let mut clock = crate::runtime::sim::SimClock::default();
+
+    toggle_save_menu(&mut menu, &mut clock);
+    assert!(menu.open);
+    assert!(clock.paused);
+
+    toggle_save_menu(&mut menu, &mut clock);
+    assert!(!menu.open);
+    assert!(!clock.paused);
+
+    clock.paused = true;
+    toggle_save_menu(&mut menu, &mut clock);
+    assert!(menu.open);
+    assert!(clock.paused);
+
+    toggle_save_menu(&mut menu, &mut clock);
+    assert!(!menu.open);
+    assert!(clock.paused);
+}
+
+#[test]
+fn save_summary_helpers_format_sort_and_name_storage_keys() {
+    let mut entries = vec![
+        GameSaveSummary {
+            id: "older".to_string(),
+            display_name: "Older Save".to_string(),
+            saved_at_unix: 10,
+            world_time_label: "3500-01-01 00:00".to_string(),
+            capital: 400.0,
+            debt: 50.0,
+            reputation: 0.4,
+        },
+        GameSaveSummary {
+            id: "newer".to_string(),
+            display_name: "Newer Save".to_string(),
+            saved_at_unix: 25,
+            world_time_label: "3500-01-02 00:00".to_string(),
+            capital: 450.0,
+            debt: 20.0,
+            reputation: 0.6,
+        },
+    ];
+
+    sort_save_summaries(&mut entries);
+
+    assert_eq!(entries[0].id, "newer");
+    assert_eq!(entries[1].id, "older");
+    assert_eq!(
+        auto_save_name_from_timestamp(0),
+        "Save 1970-01-01 00:00:00 UTC"
+    );
+    assert_eq!(storage_manifest_key(), "gatebound.saves.manifest.v1");
+    assert_eq!(
+        storage_payload_key("slot-42"),
+        "gatebound.saves.payload.v1.slot-42"
+    );
+}
+
+#[test]
+fn loading_save_resets_runtime_ui_state_and_closes_menu() {
+    let original = Simulation::new(RuntimeConfig::default(), 42);
+    let loaded = Simulation::new(RuntimeConfig::default(), 77);
+    let loaded_hash = loaded.snapshot_hash();
+
+    let mut sim_resource = SimResource::new(original);
+    let mut clock = crate::runtime::sim::SimClock {
+        paused: false,
+        speed_multiplier: 4,
+        accumulator_seconds: 3.5,
+    };
+    let mut camera = CameraUiState {
+        mode: CameraMode::System(SystemId(2)),
+        galaxy_pan: Vec2::new(12.0, -7.0),
+        zoom_level: 2.0,
+        ..CameraUiState::default()
+    };
+    let mut selected_system = SelectedSystem {
+        system_id: SystemId(2),
+    };
+    let mut selected_station = SelectedStation {
+        station_id: Some(StationId(3)),
+    };
+    let mut selected_ship = SelectedShip {
+        ship_id: Some(ShipId(1)),
+    };
+    let mut panels = UiPanelState {
+        contracts: true,
+        fleet: true,
+        markets: true,
+        assets: true,
+        policies: true,
+        station_ops: true,
+        corporations: true,
+        systems: true,
+    };
+    let mut filters = ContractsFilterState {
+        min_margin: 9.0,
+        max_risk: 0.2,
+        max_eta: 12,
+        commodity: Some(Commodity::Ore),
+        route_gate: Some(GateId(1)),
+        problem: Some(OfferProblemTag::LowMargin),
+        premium_only: true,
+        sort_mode: OfferSortMode::EtaAsc,
+    };
+    let mut tracked_ship = TrackedShip {
+        ship_id: Some(ShipId(1)),
+    };
+    let mut ship_ui = ShipUiState {
+        context_ship_id: Some(ShipId(1)),
+        card_ship_id: Some(ShipId(1)),
+        context_menu_open: true,
+        card_open: true,
+        card_tab: ShipCardTab::Technical,
+    };
+    let mut station_ui = StationUiState {
+        context_station_id: Some(StationId(3)),
+        card_station_id: Some(StationId(3)),
+        context_menu_open: true,
+        station_panel_open: true,
+        card_tab: StationCardTab::Trade,
+        trade_commodity: Commodity::Ore,
+        trade_quantity: 42.0,
+    };
+    let mut markets_ui = MarketsUiState {
+        detail_station_id: Some(StationId(3)),
+        focused_commodity: Commodity::Ore,
+        seeded_from_world_selection: true,
+    };
+    let mut finance_ui = FinanceUiState {
+        pending_offer: Some(LoanOfferId::Growth),
+        repayment_amount: 77.0,
+    };
+    let mut kpi = UiKpiTracker::default();
+    kpi.record_manual_action(3);
+    kpi.record_policy_edit(3);
+    let mut messages = crate::ui::hud::HudMessages {
+        entries: vec!["stale".to_string()],
+    };
+    let mut menu = SaveMenuState {
+        open: true,
+        selected_entry_id: Some("save-77".to_string()),
+        entries: vec![GameSaveSummary {
+            id: "save-77".to_string(),
+            display_name: "Save 77".to_string(),
+            saved_at_unix: 77,
+            world_time_label: "3500-01-01 00:00".to_string(),
+            capital: 700.0,
+            debt: 15.0,
+            reputation: 0.9,
+        }],
+        pending_action: Some(PendingSaveAction::Load("save-77".to_string())),
+        last_error: Some("old error".to_string()),
+        paused_before_open: Some(false),
+    };
+
+    apply_loaded_simulation(
+        loaded,
+        "Save 77",
+        &mut sim_resource,
+        &mut clock,
+        &mut camera,
+        &mut selected_system,
+        &mut selected_station,
+        &mut selected_ship,
+        &mut panels,
+        &mut filters,
+        &mut tracked_ship,
+        &mut ship_ui,
+        &mut station_ui,
+        &mut markets_ui,
+        &mut finance_ui,
+        &mut kpi,
+        &mut messages,
+        &mut menu,
+    );
+
+    assert_eq!(sim_resource.simulation.snapshot_hash(), loaded_hash);
+    assert_eq!(
+        clock,
+        crate::runtime::sim::SimClock {
+            paused: true,
+            speed_multiplier: 1,
+            accumulator_seconds: 0.0,
+        }
+    );
+    assert_eq!(camera, CameraUiState::default());
+    assert_eq!(selected_system, SelectedSystem::default());
+    assert_eq!(selected_station, SelectedStation::default());
+    assert_eq!(selected_ship, SelectedShip::default());
+    assert_eq!(panels, UiPanelState::default());
+    assert_eq!(filters, ContractsFilterState::default());
+    assert_eq!(tracked_ship, TrackedShip::default());
+    assert_eq!(ship_ui, ShipUiState::default());
+    assert_eq!(station_ui, StationUiState::default());
+    assert_eq!(markets_ui, MarketsUiState::default());
+    assert_eq!(finance_ui, FinanceUiState::default());
+    assert_eq!(kpi, UiKpiTracker::default());
+    assert_eq!(menu, SaveMenuState::default());
+    assert!(messages
+        .entries
+        .last()
+        .is_some_and(|entry| entry.contains("Loaded save Save 77")));
+}
+
+#[test]
+fn save_storage_create_overwrite_and_load_round_trip() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be monotonic enough for test dir")
+        .as_nanos();
+    let save_dir = std::env::temp_dir().join(format!("gatebound_app_save_flow_{unique}"));
+    let storage = SaveStorage::for_test_desktop_dir(save_dir);
+
+    let sim = Simulation::new(RuntimeConfig::default(), 91);
+    let original_payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload should serialize");
+    let created = storage
+        .create_new_save(&sim)
+        .expect("create save should pass");
+    assert!(created.display_name.starts_with("Save "));
+
+    let summaries = storage.list_summaries().expect("list should pass");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, created.id);
+
+    let loaded_envelope = storage.load_save(&created.id).expect("load should pass");
+    assert_eq!(loaded_envelope.payload, original_payload);
+    let loaded = loaded_envelope
+        .into_simulation(RuntimeConfig::default())
+        .expect("payload should deserialize");
+    assert_eq!(loaded.tick(), sim.tick());
+    assert_eq!(loaded.cycle(), sim.cycle());
+    assert!((loaded.capital() - sim.capital()).abs() < 1e-9);
+
+    let mut updated = Simulation::new(RuntimeConfig::default(), 91);
+    updated.step_tick();
+    let updated_payload = updated
+        .snapshot_payload()
+        .expect("snapshot payload should serialize");
+
+    let overwritten = storage
+        .overwrite_save(&created.id, &updated)
+        .expect("overwrite should pass");
+    assert_eq!(overwritten.id, created.id);
+    assert_eq!(overwritten.display_name, created.display_name);
+
+    let summaries = storage.list_summaries().expect("list should pass");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, created.id);
+
+    let loaded_envelope = storage.load_save(&created.id).expect("load should pass");
+    assert_eq!(loaded_envelope.payload, updated_payload);
+    let loaded = loaded_envelope
+        .into_simulation(RuntimeConfig::default())
+        .expect("payload should deserialize");
+    assert_eq!(loaded.tick(), updated.tick());
+    assert_eq!(loaded.cycle(), updated.cycle());
+    assert!((loaded.capital() - updated.capital()).abs() < 1e-9);
 }
 
 #[test]
@@ -246,7 +516,7 @@ fn galaxy_pan_clamps_to_bounds_and_recenters_large_viewports() {
 }
 
 #[test]
-fn galaxy_pan_and_zoom_survive_galaxy_system_round_trip() {
+fn galaxy_pan_and_zoom_survive_manual_system_exit_after_escape_noop() {
     let mut ui = CameraUiState {
         zoom_level: 1.7,
         galaxy_pan: Vec2::new(180.0, -75.0),
@@ -269,6 +539,8 @@ fn galaxy_pan_and_zoom_survive_galaxy_system_round_trip() {
 
     apply_escape(&mut ui.mode, true);
 
+    assert_eq!(ui.mode, CameraMode::System(SystemId(2)));
+    ui.mode = CameraMode::Galaxy;
     assert_eq!(ui.mode, CameraMode::Galaxy);
     assert_eq!(ui.zoom_level, 1.7);
     assert_eq!(ui.galaxy_pan, Vec2::new(180.0, -75.0));

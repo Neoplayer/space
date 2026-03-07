@@ -13,11 +13,11 @@ pub mod runtime;
 pub mod ui;
 
 use input::camera::{
-    apply_zoom_controls, camera_mode_input_system, escape_to_galaxy_system,
-    galaxy_pan_input_system, ship_context_input_system, station_select_input_system,
-    sync_camera_transform, CameraUiState,
+    apply_zoom_controls, camera_mode_input_system, galaxy_pan_input_system,
+    ship_context_input_system, station_select_input_system, sync_camera_transform, CameraUiState,
 };
 use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, ShipMotionCache};
+use runtime::save::{save_menu_hotkey_system, SaveMenuState, SaveStorage};
 use runtime::sim::{
     apply_time_controls, drive_simulation, handle_panel_hotkeys, handle_risk_hotkeys,
     sync_selected_station, sync_selected_system, ContractsFilterState, FinanceUiState,
@@ -49,6 +49,8 @@ pub fn run() {
         .insert_resource(StationUiState::default())
         .insert_resource(UiKpiTracker::default())
         .insert_resource(HudMessages::default())
+        .insert_resource(SaveStorage::default())
+        .insert_resource(SaveMenuState::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Gatebound Stage A UI Slice".to_string(),
@@ -63,8 +65,8 @@ pub fn run() {
         .add_systems(
             Update,
             (
+                save_menu_hotkey_system,
                 apply_time_controls,
-                escape_to_galaxy_system,
                 camera_mode_input_system,
                 station_select_input_system,
                 apply_zoom_controls,

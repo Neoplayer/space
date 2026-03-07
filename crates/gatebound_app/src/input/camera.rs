@@ -6,6 +6,7 @@ use gatebound_domain::{ShipId, StationId, SystemId};
 use gatebound_sim::CameraTopologyView;
 
 use crate::render::world::{pick_visible_ship, ShipMotionCache};
+use crate::runtime::save::SaveMenuState;
 use crate::runtime::sim::{
     open_system_view, SelectedStation, ShipUiState, SimResource, StationUiState,
 };
@@ -77,17 +78,9 @@ pub fn apply_system_click(
     false
 }
 
-pub fn apply_escape(mode: &mut CameraMode, escape_pressed: bool) {
-    if escape_pressed {
-        *mode = CameraMode::Galaxy;
-    }
-}
+pub fn apply_escape(_mode: &mut CameraMode, _escape_pressed: bool) {}
 
-pub fn escape_to_galaxy_system(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut ui_state: ResMut<CameraUiState>,
-) {
-    apply_escape(&mut ui_state.mode, keys.just_pressed(KeyCode::Escape));
+pub fn escape_to_galaxy_system(_keys: Res<ButtonInput<KeyCode>>, _ui_state: ResMut<CameraUiState>) {
 }
 
 pub fn clamp_zoom(current_zoom: f32, delta: f32, min_zoom: f32, max_zoom: f32) -> f32 {
@@ -172,15 +165,22 @@ pub fn apply_galaxy_pan_drag(
     clamp_galaxy_pan(desired_pan, bounds, viewport_size * zoom_level * 0.5)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn galaxy_pan_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     sim: Res<SimResource>,
+    save_menu: Res<SaveMenuState>,
     egui_wants_input: Option<Res<EguiWantsInput>>,
     mut ui_state: ResMut<CameraUiState>,
     mut drag_state: Local<GalaxyPanDragState>,
 ) {
+    if save_menu.open {
+        drag_state.last_cursor_position = None;
+        return;
+    }
+
     if !buttons.pressed(MouseButton::Right) {
         drag_state.last_cursor_position = None;
         return;
@@ -250,11 +250,16 @@ pub fn camera_mode_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    save_menu: Res<SaveMenuState>,
     egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     mut ui_state: ResMut<CameraUiState>,
     mut tracker: Local<ClickTracker>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
@@ -298,12 +303,17 @@ pub fn station_select_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    save_menu: Res<SaveMenuState>,
     egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     ui_state: Res<CameraUiState>,
     mut selected_station: ResMut<SelectedStation>,
     mut station_ui: ResMut<StationUiState>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     let left_click = buttons.just_pressed(MouseButton::Left);
     let right_click = buttons.just_pressed(MouseButton::Right);
     if !(left_click || right_click) {
@@ -352,12 +362,17 @@ pub fn ship_context_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    save_menu: Res<SaveMenuState>,
     egui_wants_input: Option<Res<EguiWantsInput>>,
     sim: Res<SimResource>,
     cache: Res<ShipMotionCache>,
     ui_state: Res<CameraUiState>,
     mut ship_ui: ResMut<ShipUiState>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     if !buttons.just_pressed(MouseButton::Right) {
         return;
     }
@@ -399,9 +414,14 @@ pub fn apply_ship_context_open(state: &mut ShipUiState, ship_id: ShipId) {
 
 pub fn apply_zoom_controls(
     keys: Res<ButtonInput<KeyCode>>,
+    save_menu: Res<SaveMenuState>,
     mut wheel_events: MessageReader<MouseWheel>,
     mut ui_state: ResMut<CameraUiState>,
 ) {
+    if save_menu.open {
+        return;
+    }
+
     let mut delta = 0.0_f32;
 
     for event in wheel_events.read() {

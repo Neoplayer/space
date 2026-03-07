@@ -1,8 +1,13 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
 use gatebound_sim::TradePriceTone;
 
+use crate::runtime::save::{
+    apply_loaded_simulation, format_save_timestamp, refresh_save_entries, toggle_save_menu,
+    toggle_save_menu_with_storage, PendingSaveAction, SaveMenuState, SaveStorage,
+};
 use crate::runtime::sim::{
     open_ship_card, open_station_card, open_system_ship_inspector_selection,
     open_system_station_inspector_selection, open_system_view, panel_button_specs, panel_is_open,
@@ -36,25 +41,49 @@ pub(crate) fn player_fleet_rows(
         .collect()
 }
 
+#[derive(SystemParam)]
+pub struct HudUiState<'w> {
+    selected_system: ResMut<'w, SelectedSystem>,
+    selected_station: ResMut<'w, SelectedStation>,
+    selected_ship: ResMut<'w, SelectedShip>,
+    filters: ResMut<'w, ContractsFilterState>,
+    panels: ResMut<'w, UiPanelState>,
+    kpi: ResMut<'w, UiKpiTracker>,
+    messages: ResMut<'w, HudMessages>,
+    tracked_ship: ResMut<'w, TrackedShip>,
+    ship_ui: ResMut<'w, ShipUiState>,
+    station_ui: ResMut<'w, StationUiState>,
+    markets_ui: ResMut<'w, MarketsUiState>,
+    finance_ui: ResMut<'w, FinanceUiState>,
+    save_storage: Res<'w, SaveStorage>,
+    save_menu: ResMut<'w, SaveMenuState>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_hud_panel(
     mut egui_contexts: EguiContexts,
     mut sim: ResMut<SimResource>,
     mut clock: ResMut<SimClock>,
     mut camera: ResMut<crate::input::camera::CameraUiState>,
-    selected_system: Res<SelectedSystem>,
-    mut selected_station: ResMut<SelectedStation>,
-    mut selected_ship: ResMut<SelectedShip>,
-    mut filters: ResMut<ContractsFilterState>,
-    mut panels: ResMut<UiPanelState>,
-    mut kpi: ResMut<UiKpiTracker>,
-    mut messages: ResMut<HudMessages>,
-    mut tracked_ship: ResMut<TrackedShip>,
-    mut ship_ui: ResMut<ShipUiState>,
-    mut station_ui: ResMut<StationUiState>,
-    mut markets_ui: ResMut<MarketsUiState>,
-    mut finance_ui: ResMut<FinanceUiState>,
+    hud: HudUiState,
 ) -> Result {
+    let HudUiState {
+        mut selected_system,
+        mut selected_station,
+        mut selected_ship,
+        mut filters,
+        mut panels,
+        mut kpi,
+        mut messages,
+        mut tracked_ship,
+        mut ship_ui,
+        mut station_ui,
+        mut markets_ui,
+        mut finance_ui,
+        save_storage,
+        mut save_menu,
+    } = hud;
+
     let selected_system_id = selected_system.system_id;
     if panels.markets {
         seed_markets_ui_state(
@@ -84,35 +113,55 @@ pub fn draw_hud_panel(
     );
 
     let ctx = egui_contexts.ctx_mut()?;
+    let save_menu_open = save_menu.open;
 
     egui::TopBottomPanel::top("gatebound_top_panel").show(ctx, |ui| {
         ui.columns(2, |columns| {
             columns[0].horizontal_wrapped(|ui| {
+                let mut menu_button = egui::Button::new("Menu (Esc)");
+                if save_menu_open {
+                    menu_button = menu_button.fill(ui.visuals().selection.bg_fill);
+                }
+                if ui.add(menu_button).clicked() {
+                    toggle_save_menu_with_storage(&mut save_menu, &mut clock, &save_storage);
+                    kpi.record_manual_action(sim.simulation.tick());
+                }
+                if matches!(camera.mode, crate::input::camera::CameraMode::System(_)) {
+                    if ui
+                        .add_enabled(!save_menu_open, egui::Button::new("Galaxy View"))
+                        .clicked()
+                    {
+                        camera.mode = crate::input::camera::CameraMode::Galaxy;
+                        kpi.record_manual_action(sim.simulation.tick());
+                    }
+                    ui.separator();
+                }
                 ui.label(format!("View: {}", snapshot.camera_mode));
                 ui.separator();
                 ui.label(format!("Time: {}", snapshot.time_label));
                 ui.separator();
-
-                let pause_label = if snapshot.paused { "Resume" } else { "Pause" };
-                let mut pause_button = egui::Button::new(pause_label);
-                if snapshot.paused {
-                    pause_button = pause_button.fill(ui.visuals().selection.bg_fill);
-                }
-                if ui.add(pause_button).clicked() {
-                    toggle_pause(&mut clock);
-                    kpi.record_manual_action(sim.simulation.tick());
-                }
-
-                for speed in [1_u32, 2, 4] {
-                    let mut speed_button = egui::Button::new(format!("{speed}x"));
-                    if snapshot.speed_multiplier == speed {
-                        speed_button = speed_button.fill(ui.visuals().selection.bg_fill);
+                ui.add_enabled_ui(!save_menu_open, |ui| {
+                    let pause_label = if snapshot.paused { "Resume" } else { "Pause" };
+                    let mut pause_button = egui::Button::new(pause_label);
+                    if snapshot.paused {
+                        pause_button = pause_button.fill(ui.visuals().selection.bg_fill);
                     }
-                    if ui.add(speed_button).clicked() {
-                        set_time_speed(&mut clock, speed);
+                    if ui.add(pause_button).clicked() {
+                        toggle_pause(&mut clock);
                         kpi.record_manual_action(sim.simulation.tick());
                     }
-                }
+
+                    for speed in [1_u32, 2, 4] {
+                        let mut speed_button = egui::Button::new(format!("{speed}x"));
+                        if snapshot.speed_multiplier == speed {
+                            speed_button = speed_button.fill(ui.visuals().selection.bg_fill);
+                        }
+                        if ui.add(speed_button).clicked() {
+                            set_time_speed(&mut clock, speed);
+                            kpi.record_manual_action(sim.simulation.tick());
+                        }
+                    }
+                });
             });
             columns[1].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.strong(format!("Balance: {:.1}", snapshot.capital));
@@ -124,30 +173,32 @@ pub fn draw_hud_panel(
         .resizable(true)
         .show(ctx, |ui| {
             ui.heading("Windows");
-            for button in panel_button_specs() {
-                let open = panel_is_open(&panels, button.index);
-                let label = format!("{} ({})", button.label, button.hotkey);
-                if ui.selectable_label(open, label).clicked() {
-                    crate::runtime::sim::apply_panel_toggle(&mut panels, button.index);
-                    if button.index == 6 {
-                        station_ui.station_panel_open = panels.station_ops;
-                        if panels.station_ops {
-                            let station_id =
-                                selected_station.station_id.or(station_ui.card_station_id);
-                            if let Some(station_id) = station_id {
-                                let preferred = preferred_trade_commodity(
-                                    &sim.simulation,
-                                    selected_ship.ship_id.or(snapshot.default_player_ship_id),
-                                    station_id,
-                                    station_ui.trade_commodity,
-                                );
-                                open_station_card(&mut station_ui, station_id, Some(preferred));
+            ui.add_enabled_ui(!save_menu_open, |ui| {
+                for button in panel_button_specs() {
+                    let open = panel_is_open(&panels, button.index);
+                    let label = format!("{} ({})", button.label, button.hotkey);
+                    if ui.selectable_label(open, label).clicked() {
+                        crate::runtime::sim::apply_panel_toggle(&mut panels, button.index);
+                        if button.index == 6 {
+                            station_ui.station_panel_open = panels.station_ops;
+                            if panels.station_ops {
+                                let station_id =
+                                    selected_station.station_id.or(station_ui.card_station_id);
+                                if let Some(station_id) = station_id {
+                                    let preferred = preferred_trade_commodity(
+                                        &sim.simulation,
+                                        selected_ship.ship_id.or(snapshot.default_player_ship_id),
+                                        station_id,
+                                        station_ui.trade_commodity,
+                                    );
+                                    open_station_card(&mut station_ui, station_id, Some(preferred));
+                                }
                             }
                         }
+                        kpi.record_manual_action(sim.simulation.tick());
                     }
-                    kpi.record_manual_action(sim.simulation.tick());
                 }
-            }
+            });
 
             if !messages.entries.is_empty() {
                 ui.separator();
@@ -158,45 +209,47 @@ pub fn draw_hud_panel(
             }
         });
 
-    if let Some(system_panel) = snapshot.system_panel.as_ref() {
-        let current_station_id = selected_station.station_id;
-        let current_ship_id = selected_ship.ship_id;
-        let preferred_ship_id = selected_ship.ship_id.or(snapshot.default_player_ship_id);
-        let current_tick = sim.simulation.tick();
-        egui::SidePanel::right("gatebound_system_hud")
-            .resizable(false)
-            .default_width(360.0)
-            .show(ctx, |ui| {
-                render_system_panel_header(ui, system_panel);
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("system_panel_scroll")
-                    .show(ui, |ui| {
-                        render_system_overview(ui, system_panel);
-                        ui.add_space(10.0);
-                        render_system_stations(
-                            ui,
-                            system_panel,
-                            preferred_ship_id,
-                            current_station_id,
-                            &sim.simulation,
-                            &mut selected_station,
-                            &mut panels,
-                            &mut station_ui,
-                            &mut kpi,
-                        );
-                        ui.add_space(10.0);
-                        render_system_ships(
-                            ui,
-                            system_panel,
-                            current_ship_id,
-                            current_tick,
-                            &mut selected_ship,
-                            &mut ship_ui,
-                            &mut kpi,
-                        );
-                    });
-            });
+    if !save_menu_open {
+        if let Some(system_panel) = snapshot.system_panel.as_ref() {
+            let current_station_id = selected_station.station_id;
+            let current_ship_id = selected_ship.ship_id;
+            let preferred_ship_id = selected_ship.ship_id.or(snapshot.default_player_ship_id);
+            let current_tick = sim.simulation.tick();
+            egui::SidePanel::right("gatebound_system_hud")
+                .resizable(false)
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    render_system_panel_header(ui, system_panel);
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("system_panel_scroll")
+                        .show(ui, |ui| {
+                            render_system_overview(ui, system_panel);
+                            ui.add_space(10.0);
+                            render_system_stations(
+                                ui,
+                                system_panel,
+                                preferred_ship_id,
+                                current_station_id,
+                                &sim.simulation,
+                                &mut selected_station,
+                                &mut panels,
+                                &mut station_ui,
+                                &mut kpi,
+                            );
+                            ui.add_space(10.0);
+                            render_system_ships(
+                                ui,
+                                system_panel,
+                                current_ship_id,
+                                current_tick,
+                                &mut selected_ship,
+                                &mut ship_ui,
+                                &mut kpi,
+                            );
+                        });
+                });
+        }
     }
 
     let live_ship_card = ship_ui
@@ -217,7 +270,7 @@ pub fn draw_hud_panel(
             build_station_card_snapshot_for_ui(&sim.simulation, ship_id, station_id)
         });
 
-    if ship_ui.context_menu_open {
+    if !save_menu_open && ship_ui.context_menu_open {
         let mut open = ship_ui.context_menu_open;
         egui::Window::new("Ship Context")
             .open(&mut open)
@@ -262,7 +315,7 @@ pub fn draw_hud_panel(
         ship_ui.context_menu_open = open && ship_ui.context_menu_open;
     }
 
-    if station_ui.context_menu_open {
+    if !save_menu_open && station_ui.context_menu_open {
         let mut open = station_ui.context_menu_open;
         egui::Window::new("Station Context")
             .open(&mut open)
@@ -319,7 +372,7 @@ pub fn draw_hud_panel(
         station_ui.context_menu_open = open && station_ui.context_menu_open;
     }
 
-    if panels.contracts {
+    if !save_menu_open && panels.contracts {
         let mut open = panels.contracts;
         egui::Window::new("Contracts Board")
             .open(&mut open)
@@ -480,7 +533,7 @@ pub fn draw_hud_panel(
         panels.contracts = open;
     }
 
-    if panels.fleet {
+    if !save_menu_open && panels.fleet {
         let mut open = panels.fleet;
         egui::Window::new("Fleet Manager")
             .default_width(560.0)
@@ -529,7 +582,7 @@ pub fn draw_hud_panel(
         panels.fleet = open;
     }
 
-    if panels.systems {
+    if !save_menu_open && panels.systems {
         let mut open = panels.systems;
         let current_mode = camera.mode;
         egui::Window::new("Systems")
@@ -564,7 +617,7 @@ pub fn draw_hud_panel(
         panels.systems = open;
     }
 
-    if panels.markets {
+    if !save_menu_open && panels.markets {
         let mut open = panels.markets;
         egui::Window::new("Markets")
             .default_width(1120.0)
@@ -582,7 +635,7 @@ pub fn draw_hud_panel(
         panels.markets = open;
     }
 
-    if ship_ui.card_open {
+    if !save_menu_open && ship_ui.card_open {
         let mut open = ship_ui.card_open;
         egui::Window::new("Ship Card")
             .open(&mut open)
@@ -645,7 +698,7 @@ pub fn draw_hud_panel(
         ship_ui.card_open = open;
     }
 
-    if panels.station_ops && station_ui.station_panel_open {
+    if !save_menu_open && panels.station_ops && station_ui.station_panel_open {
         let mut open = panels.station_ops;
         egui::Window::new("Station Card")
             .open(&mut open)
@@ -711,7 +764,7 @@ pub fn draw_hud_panel(
         station_ui.station_panel_open = open;
     }
 
-    if panels.assets {
+    if !save_menu_open && panels.assets {
         let mut open = panels.assets;
         egui::Window::new("Finance")
             .open(&mut open)
@@ -820,7 +873,7 @@ pub fn draw_hud_panel(
         panels.assets = open;
     }
 
-    if panels.policies {
+    if !save_menu_open && panels.policies {
         let mut open = panels.policies;
         egui::Window::new("Autopilot Policies")
             .open(&mut open)
@@ -925,7 +978,7 @@ pub fn draw_hud_panel(
         panels.policies = open;
     }
 
-    if panels.corporations {
+    if !save_menu_open && panels.corporations {
         let mut open = panels.corporations;
         egui::Window::new("NPC Corporations")
             .open(&mut open)
@@ -965,7 +1018,260 @@ pub fn draw_hud_panel(
         panels.corporations = open;
     }
 
+    render_save_menu(
+        ctx,
+        &save_storage,
+        &mut save_menu,
+        &mut sim,
+        &mut clock,
+        &mut camera,
+        &mut selected_system,
+        &mut selected_station,
+        &mut selected_ship,
+        &mut panels,
+        &mut filters,
+        &mut tracked_ship,
+        &mut ship_ui,
+        &mut station_ui,
+        &mut markets_ui,
+        &mut finance_ui,
+        &mut kpi,
+        &mut messages,
+    );
+
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_save_menu(
+    ctx: &egui::Context,
+    save_storage: &SaveStorage,
+    save_menu: &mut SaveMenuState,
+    sim: &mut SimResource,
+    clock: &mut SimClock,
+    camera: &mut crate::input::camera::CameraUiState,
+    selected_system: &mut SelectedSystem,
+    selected_station: &mut SelectedStation,
+    selected_ship: &mut SelectedShip,
+    panels: &mut UiPanelState,
+    filters: &mut ContractsFilterState,
+    tracked_ship: &mut TrackedShip,
+    ship_ui: &mut ShipUiState,
+    station_ui: &mut StationUiState,
+    markets_ui: &mut MarketsUiState,
+    finance_ui: &mut FinanceUiState,
+    kpi: &mut UiKpiTracker,
+    messages: &mut HudMessages,
+) {
+    if !save_menu.open {
+        return;
+    }
+
+    let mut open = save_menu.open;
+    let entries = save_menu.entries.clone();
+    egui::Window::new("Save / Load")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(720.0)
+        .default_height(460.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label("Create a new save, overwrite the selected slot, or load an existing one.");
+            if let Some(error) = save_menu.last_error.as_ref() {
+                ui.colored_label(egui::Color32::from_rgb(220, 96, 96), error);
+            }
+
+            ui.add_space(8.0);
+            ui.columns(2, |columns| {
+                columns[0].heading("Saves");
+                columns[0].separator();
+                if entries.is_empty() {
+                    columns[0].label("No saves yet");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("save_menu_entries")
+                        .show(&mut columns[0], |ui| {
+                            for entry in &entries {
+                                let selected =
+                                    save_menu.selected_entry_id.as_ref() == Some(&entry.id);
+                                ui.group(|ui| {
+                                    if ui.selectable_label(selected, &entry.display_name).clicked()
+                                    {
+                                        save_menu.selected_entry_id = Some(entry.id.clone());
+                                        save_menu.pending_action = None;
+                                    }
+                                    ui.small(format!(
+                                        "Saved: {}",
+                                        format_save_timestamp(entry.saved_at_unix)
+                                    ));
+                                    ui.small(format!("World: {}", entry.world_time_label));
+                                });
+                                ui.add_space(4.0);
+                            }
+                        });
+                }
+
+                columns[1].heading("Details");
+                columns[1].separator();
+                let selected_summary =
+                    save_menu
+                        .selected_entry_id
+                        .as_ref()
+                        .and_then(|selected_id| {
+                            entries
+                                .iter()
+                                .find(|entry| &entry.id == selected_id)
+                                .cloned()
+                        });
+                if let Some(summary) = selected_summary.clone() {
+                    columns[1].label(format!("Name: {}", summary.display_name));
+                    columns[1].label(format!(
+                        "Saved at: {}",
+                        format_save_timestamp(summary.saved_at_unix)
+                    ));
+                    columns[1].label(format!("World time: {}", summary.world_time_label));
+                    columns[1].label(format!("Capital: {:.1}", summary.capital));
+                    columns[1].label(format!("Debt: {:.1}", summary.debt));
+                    columns[1].label(format!("Reputation: {:.2}", summary.reputation));
+                } else {
+                    columns[1].label("Select a save slot to inspect it.");
+                }
+
+                columns[1].add_space(12.0);
+                columns[1].horizontal_wrapped(|ui| {
+                    if ui.button("Create New").clicked() {
+                        match save_storage.create_new_save(&sim.simulation) {
+                            Ok(summary) => {
+                                refresh_save_entries(save_menu, save_storage);
+                                save_menu.selected_entry_id = Some(summary.id.clone());
+                                save_menu.pending_action = None;
+                                save_menu.last_error = None;
+                                messages.push(format!("Created save {}", summary.display_name));
+                                kpi.record_manual_action(sim.simulation.tick());
+                            }
+                            Err(error) => save_menu.last_error = Some(error.to_string()),
+                        }
+                    }
+
+                    let has_selection = selected_summary.is_some();
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("Overwrite"))
+                        .clicked()
+                    {
+                        if let Some(summary) = selected_summary.as_ref() {
+                            save_menu.pending_action =
+                                Some(PendingSaveAction::Overwrite(summary.id.clone()));
+                        }
+                    }
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("Load"))
+                        .clicked()
+                    {
+                        if let Some(summary) = selected_summary.as_ref() {
+                            save_menu.pending_action =
+                                Some(PendingSaveAction::Load(summary.id.clone()));
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        toggle_save_menu(save_menu, clock);
+                        kpi.record_manual_action(sim.simulation.tick());
+                    }
+                });
+
+                if let Some(pending_action) = save_menu.pending_action.clone() {
+                    let target_id = match &pending_action {
+                        PendingSaveAction::Load(id) | PendingSaveAction::Overwrite(id) => id,
+                    };
+                    let target_summary =
+                        entries.iter().find(|entry| &entry.id == target_id).cloned();
+                    columns[1].add_space(12.0);
+                    columns[1].group(|ui| {
+                        let action_label = match pending_action {
+                            PendingSaveAction::Load(_) => "Load",
+                            PendingSaveAction::Overwrite(_) => "Overwrite",
+                        };
+                        ui.strong(format!(
+                            "{action_label} {}?",
+                            target_summary
+                                .as_ref()
+                                .map(|summary| summary.display_name.as_str())
+                                .unwrap_or("selected save")
+                        ));
+                        ui.label("This action requires confirmation.");
+                        ui.horizontal(|ui| {
+                            if ui.button(action_label).clicked() {
+                                match pending_action {
+                                    PendingSaveAction::Overwrite(save_id) => {
+                                        match save_storage.overwrite_save(&save_id, &sim.simulation)
+                                        {
+                                            Ok(summary) => {
+                                                refresh_save_entries(save_menu, save_storage);
+                                                save_menu.selected_entry_id =
+                                                    Some(summary.id.clone());
+                                                save_menu.pending_action = None;
+                                                save_menu.last_error = None;
+                                                messages.push(format!(
+                                                    "Overwrote save {}",
+                                                    summary.display_name
+                                                ));
+                                                kpi.record_manual_action(sim.simulation.tick());
+                                            }
+                                            Err(error) => {
+                                                save_menu.last_error = Some(error.to_string())
+                                            }
+                                        }
+                                    }
+                                    PendingSaveAction::Load(save_id) => {
+                                        let config = sim.simulation.config().clone();
+                                        match save_storage.load_save(&save_id).and_then(
+                                            |envelope| {
+                                                let save_name =
+                                                    envelope.summary.display_name.clone();
+                                                envelope
+                                                    .into_simulation(config)
+                                                    .map(|loaded| (save_name, loaded))
+                                            },
+                                        ) {
+                                            Ok((save_name, loaded)) => apply_loaded_simulation(
+                                                loaded,
+                                                &save_name,
+                                                sim,
+                                                clock,
+                                                camera,
+                                                selected_system,
+                                                selected_station,
+                                                selected_ship,
+                                                panels,
+                                                filters,
+                                                tracked_ship,
+                                                ship_ui,
+                                                station_ui,
+                                                markets_ui,
+                                                finance_ui,
+                                                kpi,
+                                                messages,
+                                                save_menu,
+                                            ),
+                                            Err(error) => {
+                                                save_menu.last_error = Some(error.to_string())
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if ui.button("Back").clicked() {
+                                save_menu.pending_action = None;
+                            }
+                        });
+                    });
+                }
+            });
+        });
+
+    if !open && save_menu.open {
+        toggle_save_menu(save_menu, clock);
+    }
 }
 
 fn render_station_card_header(

@@ -1601,6 +1601,25 @@ fn snapshot_save_writes_v3_json_envelope() {
 }
 
 #[test]
+fn snapshot_payload_round_trip_matches_file_api() {
+    let cfg = stage_a_config();
+    let sim = Simulation::new(cfg.clone(), 98);
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_payload.json");
+
+    let payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload serialization should pass");
+    sim.save_snapshot(&tmp).expect("snapshot save should pass");
+    let file_payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
+
+    assert_eq!(file_payload, format!("{payload}\n"));
+
+    let loaded = Simulation::from_snapshot_payload(&payload, cfg)
+        .expect("snapshot payload load should pass");
+    assert_eq!(loaded.snapshot_hash(), sim.snapshot_hash());
+}
+
+#[test]
 fn legacy_snapshot_versions_are_rejected() {
     let cfg = stage_a_config();
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_legacy.json");

@@ -231,9 +231,10 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Stage A baseline (каноничный):**
   - 3-7 систем
   - 2 “центральных” хаба
-  - 5 компаний (1 игрок + 4 NPC: 2 hauler, 1 miner, 1 industrial)
+  - 7 компаний (1 игроковая + 6 NPC, включая дополнительные hauler-компании)
   - 1 корабль игрока (стартовый)
-  - 60 NPC trade-кораблей в живой экономике
+  - Сейчас используется 60 NPC trade-кораблей в живой экономике
+  - Каноничность baseline определяется кодом сидинга в `seed_stage_a_companies` и `seed_stage_a_ships` (источник истины для состава компаний и флота).
 - **Stage B+ / расширенный балансный сценарий:**
   - 5-7 систем
   - 2 “центральных” хаба
@@ -573,7 +574,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ## 17) MVP (реалистичный)
 ### Stage A (играбельный кластер)
 - локальный кластер 3-7 систем в рамках архитектуры полной галактики;
-- 4 NPC компании (2 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
+- 6 NPC компаний (4 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
 - фиксированные 7 товарных категорий: Ore, Ice, Gas, Metal, Fuel, Parts, Electronics;
 - 1 добыча -> 1 переработка -> 1 потребитель;
 - контракты только Delivery + Supply;
@@ -697,8 +698,8 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - `TradeReceipt`
   - `ContractActionError`
 - Snapshot:
-  - сохранение: версия `v4`
-  - загрузка: поддержка `v3` и `v4` (обратная совместимость при загрузке)
+  - сохранение: версия `v3`
+  - загрузка: только `v3`
 
 ---
 
@@ -732,22 +733,35 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ## 22) Текущее состояние и перспективы (март 2026)
 ### 22.1) Текущее состояние
 - **Реализовано**
-  - один игроковый корабль на старте + нормализация до single player ship при загрузке snapshot;
-  - command-based manual station loop для игрока (`Fly to station`);
-  - station trading loop (`Buy`/`Sell`) и explicit contract actions (`Load`/`Unload`);
+  - single-player baseline: ровно 1 игроковый корабль (остальные только NPC), старт в уже работающем рынке;
+  - command-based player loop: `Fly to station` + явные `Load/Unload` и `Buy/Sell` без автозавершения контрактов;
   - `CargoSource`-lock: контрактный груз нельзя продать как spot;
-  - snapshot `v4` + backward-load пути для `v3`.
+  - snapshot: сохранение/загрузка только формата `v3`;
+  - risk-injection hotkeys для Stage A рисков: `G` (gate congestion), `D` (dock congestion), `F` (fuel shock);
+  - time controls в HUD: Pause/Resume + `1x/2x/4x`.
+  - **UI/UX уже реализовано (Stage A)**
+    - окна/панели: `Contracts Board`, `Fleet Manager` (только player-корабли), `Markets`, `Finance`, `Autopilot Policies`, `Station Card`, `NPC Corporations`, `Systems`, `Ship Card`;
+    - контекстные меню: `Ship Context` и `Station Context` (действия `Fly to station`, `Track ship`, `Open ship card`, `Open station card`);
+    - camera UX: double-click по системе -> `System View`, `Esc` -> `Galaxy View`, right-drag pan только в galaxy, zoom отключён в system view;
+    - правая системная панель (`System Panel`) с owner/economy метриками, списком локальных станций и кораблей;
+    - Markets как галактический dashboard: global KPI, commodity matrix, system stress, station anomalies, hotspots, station drilldown;
+    - визуальное поведение: сглаженное движение кораблей через кэш сегментов (интерполяция по `segment_eta_remaining`).
 - **В работе**
   - UX-полировка station operations (согласованность context/panel state);
-  - более точные quantity-presets под разные действия;
+  - quantity-presets и быстрые действия для station-loop;
   - расширение интеграционных UI-тестов station-loop.
 - **Перспектива**
   - масштабирование gameplay от single-ship command loop к multi-ship orchestration;
   - расширение контрактного рынка и инфраструктурной экономики без ломки текущей архитектуры.
 
+#### Синхронизация с `docs/todo.md`
+- `docs/todo.md` — первичный источник открытых задач Stage A (по приоритетам High/Medium/Low).
+- `docs/Idea.md` не дублирует полный список задач из todo, а фиксирует только текущее состояние реализации и стратегический контекст.
+- Регулярная синхронизация: при завершении задач обновлять соответствующие пункты в `docs/todo.md` (`In Progress`/`Done`) и отражать итоговые изменения в разделе «22.1 Текущее состояние».
+
 ### 22.2) Перспективы (Roadmap)
 - **Ближайшие итерации (Stage A+)**
-  - UX и тесты station loop, чтобы снизить friction ручных операций;
+  - UX и тесты station loop (для уже реализованного Stage A UI/UX — только polish), чтобы снизить friction ручных операций;
   - более прозрачный прогресс контрактов в UI (pickup/in-transit/unload), чтобы повысить управляемость;
   - QoL для single-ship flow (быстрые действия и меньше лишних кликов), опираясь на текущие core API.
 - **Stage B**
@@ -759,5 +773,10 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - расширенные рыночные механики (глубина, инструменты хеджа, сложные профили спроса); ценность: richer economy gameplay, зависимость: текущие market/price/pressure подсистемы;
   - deeper infrastructure economy (пакеты сервисов, тарифы, контрактные SLA-экосистемы); ценность: долгие стратегии владения узлами, зависимость: текущие slot/gate/dock bottleneck модели;
   - крупномасштабная симуляция и аналитика (сценарии 200+ систем, продвинутые KPI/диагностика); ценность: управляемый late-game, зависимость: существующий deterministic tick core и telemetry метрики.
+
+#### Принцип roadmap-синхронизации с `docs/todo.md`
+- Roadmap в этом разделе следует приоритетам и формулировкам задач из `docs/todo.md`.
+- При изменении приоритетов или состава задач сначала обновляется `docs/todo.md`, затем корректируется roadmap в `docs/Idea.md`.
+- Цель раздела 22.2 — не копия todo, а увязка задач из todo с этапами (Stage A+, Stage B, дальний горизонт) и зависимостями.
 
 ---
