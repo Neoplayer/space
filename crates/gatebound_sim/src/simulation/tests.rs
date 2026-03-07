@@ -1634,13 +1634,13 @@ fn snapshot_round_trip_preserves_player_station_storage() {
         ship.movement_queue.clear();
         ship.active_contract = None;
         ship.cargo_capacity = 18.0;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 7.0,
             source: CargoSource::Spot,
         });
     }
-    sim.player_unload_to_station_storage(ship_id, station_id, 4.0)
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 4.0)
         .expect("station unload should succeed");
 
     let payload = sim
@@ -1813,7 +1813,7 @@ fn market_fee_applies_to_payouts() {
         ship.current_segment_kind = None;
         ship.movement_queue.clear();
         ship.active_contract = Some(ContractId(0));
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 10.0,
             source: CargoSource::Contract {
@@ -1877,7 +1877,7 @@ fn explicit_supply_unload_drives_cycle_payout() {
         ship.current_segment_kind = None;
         ship.movement_queue.clear();
         ship.active_contract = Some(cid);
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 5.0,
             source: CargoSource::Contract { contract_id: cid },
@@ -1944,7 +1944,7 @@ fn player_trade_enforces_docked_capacity_and_contract_lock() {
     assert!(sim.capital > before_sell);
 
     if let Some(ship) = sim.ships.get_mut(&ShipId(0)) {
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 2.0,
             source: CargoSource::Contract {
@@ -1956,6 +1956,62 @@ fn player_trade_enforces_docked_capacity_and_contract_lock() {
         sim.player_sell(ShipId(0), station_id, Commodity::Fuel, 1.0),
         Err(TradeError::ContractCargoLocked)
     );
+}
+
+#[test]
+fn player_trade_allows_multiple_spot_commodities_in_hold() {
+    let mut cfg = stage_a_config();
+    cfg.pressure.market_fee_rate = 0.1;
+    let mut sim = Simulation::new(cfg, 244);
+    let ship_id = ShipId(0);
+    let station_id = station_for_system(&sim, SystemId(0));
+
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.location = SystemId(0);
+        ship.current_station = Some(station_id);
+        ship.eta_ticks_remaining = 0;
+        ship.segment_eta_remaining = 0;
+        ship.segment_progress_total = 0;
+        ship.movement_queue.clear();
+        ship.active_contract = None;
+        ship.cargo_capacity = 18.0;
+    }
+    if let Some(book) = sim.markets.get_mut(&station_id) {
+        if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {
+            fuel.stock = 100.0;
+        }
+        if let Some(ore) = book.goods.get_mut(&Commodity::Ore) {
+            ore.stock = 100.0;
+        }
+    }
+
+    sim.player_buy(ship_id, station_id, Commodity::Fuel, 6.0)
+        .expect("fuel buy should work");
+    sim.player_buy(ship_id, station_id, Commodity::Ore, 4.0)
+        .expect("ore buy should also work");
+    sim.player_sell(ship_id, station_id, Commodity::Fuel, 2.0)
+        .expect("fuel sell should only reduce the matching lot");
+
+    let trade = sim
+        .station_trade_view(ship_id, station_id)
+        .expect("trade view should exist");
+    let fuel_row = trade
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Fuel)
+        .expect("fuel row should exist");
+    let ore_row = trade
+        .rows
+        .iter()
+        .find(|row| row.commodity == Commodity::Ore)
+        .expect("ore row should exist");
+
+    assert!((fuel_row.player_cargo - 4.0).abs() < 1e-9);
+    assert!((ore_row.player_cargo - 4.0).abs() < 1e-9);
+    assert!((fuel_row.buy_cap - 10.0).abs() < 1e-9);
+    assert!((ore_row.buy_cap - 10.0).abs() < 1e-9);
+    assert!((fuel_row.sell_cap - 4.0).abs() < 1e-9);
+    assert!((ore_row.sell_cap - 4.0).abs() < 1e-9);
 }
 
 #[test]
@@ -1972,14 +2028,14 @@ fn player_station_storage_transfers_spot_cargo_between_ship_and_local_station() 
         ship.movement_queue.clear();
         ship.active_contract = None;
         ship.cargo_capacity = 18.0;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 6.0,
             source: CargoSource::Spot,
         });
     }
 
-    sim.player_unload_to_station_storage(ship_id, station_id, 4.0)
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 4.0)
         .expect("station unload should work");
 
     let storage = sim
@@ -2026,7 +2082,7 @@ fn player_station_storage_rejects_contract_cargo_and_wrong_station_access() {
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
         ship.active_contract = None;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 6.0,
             source: CargoSource::Contract {
@@ -2036,11 +2092,11 @@ fn player_station_storage_rejects_contract_cargo_and_wrong_station_access() {
     }
 
     assert_eq!(
-        sim.player_unload_to_station_storage(ship_id, station_id, 2.0),
+        sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 2.0),
         Err(StorageTransferError::ContractCargoLocked)
     );
     assert_eq!(
-        sim.player_unload_to_station_storage(ship_id, other_station, 2.0),
+        sim.player_unload_to_station_storage(ship_id, other_station, Commodity::Fuel, 2.0),
         Err(StorageTransferError::NotDocked)
     );
 }
@@ -2060,34 +2116,39 @@ fn player_station_storage_enforces_capacity_commodity_and_station_locality() {
         ship.movement_queue.clear();
         ship.active_contract = None;
         ship.cargo_capacity = 18.0;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 5.0,
             source: CargoSource::Spot,
         });
     }
 
-    sim.player_unload_to_station_storage(ship_id, station_id, 5.0)
+    sim.player_unload_to_station_storage(ship_id, station_id, Commodity::Fuel, 5.0)
         .expect("initial unload should work");
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Ore,
             amount: 17.0,
             source: CargoSource::Spot,
         });
     }
 
-    assert_eq!(
-        sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0),
-        Err(StorageTransferError::CommodityMismatch)
-    );
+    sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0)
+        .expect("loading a second commodity should work while capacity remains");
 
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.cargo = Some(CargoLoad {
-            commodity: Commodity::Fuel,
-            amount: 17.5,
-            source: CargoSource::Spot,
-        });
+        ship.cargo = CargoManifest::from(vec![
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 0.5,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 17.0,
+                source: CargoSource::Spot,
+            },
+        ]);
     }
     assert_eq!(
         sim.player_load_from_station_storage(ship_id, station_id, Commodity::Fuel, 1.0),
@@ -2503,7 +2564,7 @@ fn snapshot_round_trip_preserves_npc_company_runtime_and_trade_orders() {
     );
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.trade_order_id = Some(order_id);
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Parts,
             amount: 4.0,
             source: CargoSource::Spot,
@@ -2575,7 +2636,7 @@ fn ship_card_view_exposes_owner_route_and_display_metadata() {
         ship.eta_ticks_remaining = 17;
         ship.current_segment_kind = Some(SegmentKind::InSystem);
         ship.active_contract = Some(ContractId(0));
-        ship.cargo = Some(cargo);
+        ship.cargo = CargoManifest::from(cargo);
     }
 
     let view = sim
@@ -2590,7 +2651,8 @@ fn ship_card_view_exposes_owner_route_and_display_metadata() {
     assert_eq!(view.current_target, Some(SystemId(2)));
     assert_eq!(view.eta_ticks_remaining, 17);
     assert_eq!(view.current_segment_kind, Some(SegmentKind::InSystem));
-    assert_eq!(view.cargo, Some(cargo));
+    assert_eq!(view.cargo_lots, vec![cargo]);
+    assert!((view.cargo_total_amount - cargo.amount).abs() < 1e-9);
     assert_eq!(
         view.active_contract.map(|contract| contract.id),
         Some(ContractId(0))
@@ -2598,6 +2660,90 @@ fn ship_card_view_exposes_owner_route_and_display_metadata() {
     assert!(!view.description.is_empty());
     assert!(!view.modules.is_empty());
     assert!(view.technical_state.cargo_bay > 0.0);
+}
+
+#[test]
+fn snapshot_round_trip_preserves_multi_cargo_manifest() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 161);
+    let ship_id = ShipId(0);
+    if let Some(ship) = sim.ships.get_mut(&ship_id) {
+        ship.cargo = CargoManifest::from(vec![
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 6.0,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 4.5,
+                source: CargoSource::Spot,
+            },
+        ]);
+    }
+
+    let payload = sim
+        .snapshot_payload()
+        .expect("snapshot payload serialization should pass");
+    let loaded = Simulation::from_snapshot_payload(&payload, cfg)
+        .expect("snapshot payload load should pass");
+    let ship = loaded
+        .ships
+        .get(&ship_id)
+        .expect("ship should exist after load");
+
+    assert_eq!(
+        ship.cargo_lots(),
+        &[
+            CargoLoad {
+                commodity: Commodity::Ore,
+                amount: 4.5,
+                source: CargoSource::Spot,
+            },
+            CargoLoad {
+                commodity: Commodity::Fuel,
+                amount: 6.0,
+                source: CargoSource::Spot,
+            },
+        ]
+    );
+    assert!((ship.cargo_total_amount() - 10.5).abs() < 1e-9);
+}
+
+#[test]
+fn legacy_snapshot_with_single_cargo_object_loads_into_manifest() {
+    let cfg = stage_a_config();
+    let sim = Simulation::new(cfg.clone(), 162);
+    let mut state =
+        serde_json::to_value(sim.snapshot_state()).expect("snapshot state should serialize");
+    let cargo = CargoLoad {
+        commodity: Commodity::Fuel,
+        amount: 5.0,
+        source: CargoSource::Spot,
+    };
+    state["ships"]
+        .as_array_mut()
+        .expect("snapshot ships should serialize as an array")[0]["cargo"] =
+        serde_json::to_value(cargo).expect("cargo should serialize");
+
+    let payload = serde_json::json!({
+        "version": 3,
+        "state": state,
+    });
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_legacy_single_cargo.json");
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&payload).expect("payload serialization should succeed"),
+    )
+    .expect("legacy snapshot write should succeed");
+
+    let loaded = Simulation::load_snapshot(&tmp, cfg).expect("legacy snapshot should load");
+    let ship = loaded
+        .ships
+        .get(&ShipId(0))
+        .expect("player ship should exist after load");
+
+    assert_eq!(ship.cargo_lots(), &[cargo]);
 }
 
 #[test]
@@ -2619,7 +2765,7 @@ fn legacy_snapshot_without_ship_card_fields_loads_and_backfills_metadata() {
     }
 
     let payload = serde_json::json!({
-        "version": 4,
+        "version": 3,
         "state": state,
     });
     let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_ship_card_legacy.json");
@@ -3096,7 +3242,7 @@ fn station_trade_view_reports_effective_prices_caps_and_market_tones() {
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
         ship.cargo_capacity = 18.0;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 4.0,
             source: CargoSource::Spot,
@@ -3151,7 +3297,7 @@ fn station_trade_view_blocks_spot_sell_for_contract_cargo() {
         ship.segment_eta_remaining = 0;
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 6.0,
             source: CargoSource::Contract {
@@ -3184,7 +3330,7 @@ fn station_trade_view_disables_spot_actions_while_undocked() {
         ship.current_station = None;
         ship.eta_ticks_remaining = 7;
         ship.segment_eta_remaining = 3;
-        ship.cargo = Some(CargoLoad {
+        ship.cargo = CargoManifest::from(CargoLoad {
             commodity: Commodity::Fuel,
             amount: 5.0,
             source: CargoSource::Spot,
@@ -3223,7 +3369,7 @@ fn station_trade_view_caps_buy_by_available_capital() {
         ship.segment_eta_remaining = 0;
         ship.segment_progress_total = 0;
         ship.movement_queue.clear();
-        ship.cargo = None;
+        ship.cargo = CargoManifest::default();
     }
     if let Some(book) = sim.markets.get_mut(&station_id) {
         if let Some(fuel) = book.goods.get_mut(&Commodity::Fuel) {

@@ -205,12 +205,11 @@ pub fn draw_world_gizmos(
         if tracked_ship.ship_id == Some(ship.ship_id) {
             gizmos.circle_2d(position, 7.2, Color::srgba(0.95, 0.95, 0.35, 0.95));
         }
-        if let Some(cargo) = ship.cargo {
-            gizmos.circle_2d(
-                position + Vec2::new(3.0, -3.0),
-                1.8,
-                cargo_color(cargo.commodity),
-            );
+        for (offset, cargo) in cargo_marker_offsets()
+            .into_iter()
+            .zip(sorted_render_cargo_lots(&ship.cargo_lots).into_iter())
+        {
+            gizmos.circle_2d(position + offset, 1.8, cargo_color(cargo.commodity));
         }
     }
 }
@@ -241,6 +240,29 @@ pub(crate) fn ship_position(
         return segment.from.lerp(segment.to, t);
     }
     system_position(snapshot, fallback_system)
+}
+
+fn sorted_render_cargo_lots(
+    cargo_lots: &[gatebound_domain::CargoLoad],
+) -> Vec<gatebound_domain::CargoLoad> {
+    let mut lots = cargo_lots.to_vec();
+    lots.sort_by(|left, right| {
+        right
+            .amount
+            .total_cmp(&left.amount)
+            .then_with(|| left.commodity.cmp(&right.commodity))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    lots.truncate(3);
+    lots
+}
+
+fn cargo_marker_offsets() -> [Vec2; 3] {
+    [
+        Vec2::new(3.0, -3.0),
+        Vec2::new(0.0, -4.6),
+        Vec2::new(-3.0, -3.0),
+    ]
 }
 
 pub(crate) fn pick_visible_ship(

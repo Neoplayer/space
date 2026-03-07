@@ -27,9 +27,10 @@ use crate::ui::hud::{
 };
 use bevy::prelude::*;
 use gatebound_domain::{
-    ActiveLoan, CargoLoad, CargoSource, Commodity, CompanyId, ContractOffer, ContractTypeStageA,
-    FactionId, GateId, LoanOfferId, OfferProblemTag, PriorityMode, RouteSegment, RuntimeConfig,
-    SegmentKind, ShipClass, ShipDescriptor, ShipId, ShipRole, StationId, StationProfile, SystemId,
+    ActiveLoan, CargoLoad, CargoManifest, CargoSource, Commodity, CompanyId, ContractOffer,
+    ContractTypeStageA, FactionId, GateId, LoanOfferId, OfferProblemTag, PriorityMode,
+    RouteSegment, RuntimeConfig, SegmentKind, ShipClass, ShipDescriptor, ShipId, ShipRole,
+    StationId, StationProfile, SystemId,
 };
 use gatebound_sim::{
     test_support::{
@@ -416,7 +417,7 @@ fn save_storage_create_overwrite_and_load_round_trip() {
             segment_progress_total: Some(0),
             movement_queue: Some(Vec::new()),
             active_contract: Some(None),
-            cargo: Some(Some(CargoLoad {
+            cargo: Some(CargoManifest::from(CargoLoad {
                 commodity: Commodity::Fuel,
                 amount: 6.0,
                 source: CargoSource::Spot,
@@ -425,7 +426,7 @@ fn save_storage_create_overwrite_and_load_round_trip() {
         },
     );
     let mut sim = builder.build();
-    sim.player_unload_to_station_storage(ShipId(0), station_id, 4.0)
+    sim.player_unload_to_station_storage(ShipId(0), station_id, Commodity::Fuel, 4.0)
         .expect("station storage unload should pass");
     let original_payload = sim
         .snapshot_payload()
@@ -467,7 +468,7 @@ fn save_storage_create_overwrite_and_load_round_trip() {
             segment_progress_total: Some(0),
             movement_queue: Some(Vec::new()),
             active_contract: Some(None),
-            cargo: Some(Some(CargoLoad {
+            cargo: Some(CargoManifest::from(CargoLoad {
                 commodity: Commodity::Fuel,
                 amount: 8.0,
                 source: CargoSource::Spot,
@@ -478,7 +479,7 @@ fn save_storage_create_overwrite_and_load_round_trip() {
     let mut updated = updated_builder.build();
     updated.step_tick();
     updated
-        .player_unload_to_station_storage(ShipId(0), station_id, 5.0)
+        .player_unload_to_station_storage(ShipId(0), station_id, Commodity::Fuel, 5.0)
         .expect("updated station storage unload should pass");
     let updated_payload = updated
         .snapshot_payload()
@@ -1341,7 +1342,7 @@ fn fleet_snapshot_exposes_role_and_cargo_metadata() {
     builder.with_ship_patch(
         npc_id,
         ShipPatch {
-            cargo: Some(Some(CargoLoad {
+            cargo: Some(CargoManifest::from(CargoLoad {
                 commodity: Commodity::Parts,
                 amount: 5.5,
                 source: CargoSource::Spot,
@@ -1366,8 +1367,9 @@ fn fleet_snapshot_exposes_role_and_cargo_metadata() {
         .find(|row| row.ship_id == npc_id)
         .expect("npc row should exist");
     assert_eq!(row.role, ShipRole::NpcTrade);
-    assert_eq!(row.cargo_commodity, Some(Commodity::Parts));
-    assert!((row.cargo_amount - 5.5).abs() < 1e-9);
+    assert_eq!(row.cargo_lots.len(), 1);
+    assert_eq!(row.cargo_lots[0].commodity, Commodity::Parts);
+    assert!((row.cargo_total_amount - 5.5).abs() < 1e-9);
 }
 
 #[test]
@@ -2003,7 +2005,7 @@ fn ship_card_snapshot_includes_owner_and_module_metadata() {
     builder.with_ship_patch(
         npc_id,
         ShipPatch {
-            cargo: Some(Some(CargoLoad {
+            cargo: Some(CargoManifest::from(CargoLoad {
                 commodity: Commodity::Parts,
                 amount: 4.0,
                 source: CargoSource::Spot,
@@ -2053,7 +2055,7 @@ fn station_card_snapshot_builds_generated_info_metadata() {
             segment_progress_total: Some(0),
             movement_queue: Some(Vec::new()),
             active_contract: Some(None),
-            cargo: Some(Some(CargoLoad {
+            cargo: Some(CargoManifest::from(CargoLoad {
                 commodity: Commodity::Fuel,
                 amount: 5.0,
                 source: CargoSource::Spot,
@@ -2062,7 +2064,7 @@ fn station_card_snapshot_builds_generated_info_metadata() {
         },
     );
     let mut sim = builder.build();
-    sim.player_unload_to_station_storage(ShipId(0), station_id, 3.0)
+    sim.player_unload_to_station_storage(ShipId(0), station_id, Commodity::Fuel, 3.0)
         .expect("station storage unload should pass");
     let snapshot = build_hud_snapshot(
         &sim,
@@ -2460,12 +2462,16 @@ fn station_trade_actions_change_market_and_cargo_state() {
         .station_ops_view(ship_id, station_id)
         .expect("ship station ops view should exist");
     assert!(
-        ops_view.cargo.is_some(),
+        !ops_view.cargo_lots.is_empty(),
         "ship should retain partial cargo after sell"
     );
     assert_eq!(
-        ops_view.cargo.map(|cargo| cargo.source),
-        Some(CargoSource::Spot),
+        ops_view
+            .cargo_lots
+            .iter()
+            .map(|cargo| cargo.source)
+            .collect::<Vec<_>>(),
+        vec![CargoSource::Spot],
         "spot trading should keep spot cargo source"
     );
     let stock_after = ops_view

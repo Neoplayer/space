@@ -363,16 +363,20 @@ impl Simulation {
             player_station_storage: self
                 .player_station_storage
                 .iter()
-                .map(|(station_id, goods)| crate::snapshot::StationStorageSnapshot {
-                    station_id: *station_id,
-                    goods: goods
-                        .iter()
-                        .map(|(commodity, amount)| crate::snapshot::StoredCommoditySnapshot {
-                            commodity: *commodity,
-                            amount: *amount,
-                        })
-                        .collect(),
-                })
+                .map(
+                    |(station_id, goods)| crate::snapshot::StationStorageSnapshot {
+                        station_id: *station_id,
+                        goods: goods
+                            .iter()
+                            .map(
+                                |(commodity, amount)| crate::snapshot::StoredCommoditySnapshot {
+                                    commodity: *commodity,
+                                    amount: *amount,
+                                },
+                            )
+                            .collect(),
+                    },
+                )
                 .collect(),
             contracts: self.contracts.values().cloned().collect(),
             contract_offers: self.contract_offers.values().cloned().collect(),

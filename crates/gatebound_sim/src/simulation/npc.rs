@@ -210,7 +210,7 @@ impl Simulation {
 
         if let Some(ship) = self.ships.get_mut(&plan.ship_id) {
             ship.trade_order_id = Some(order_id);
-            ship.cargo = None;
+            ship.cargo = CargoManifest::default();
             ship.policy.max_hops = super::stage_a_route_hop_limit(&self.world);
         }
 
@@ -244,7 +244,7 @@ impl Simulation {
         self.trade_orders.remove(&order_id);
         if let Some(ship) = self.ships.get_mut(&ship_id) {
             ship.trade_order_id = None;
-            ship.cargo = None;
+            ship.cargo = CargoManifest::default();
             ship.movement_queue.clear();
             ship.planned_path.clear();
             ship.segment_eta_remaining = 0;
@@ -318,7 +318,7 @@ impl Simulation {
                         item.stage = TradeOrderStage::ToDropoff;
                     }
                     if let Some(ship) = self.ships.get_mut(&ship_id) {
-                        ship.cargo = Some(CargoLoad {
+                        ship.cargo = CargoManifest::from(CargoLoad {
                             commodity: order.commodity,
                             amount,
                             source: CargoSource::Spot,
@@ -364,10 +364,14 @@ impl Simulation {
             }
             TradeOrderStage::ToDropoff => {
                 if at_station == Some(order.destination_station) {
-                    let delivered_amount = ship_snapshot
-                        .cargo
-                        .map(|cargo| cargo.amount)
-                        .unwrap_or(order.purchased_amount);
+                    let delivered_amount = {
+                        let spot_amount = ship_snapshot.spot_amount(order.commodity);
+                        if spot_amount > 0.0 {
+                            spot_amount
+                        } else {
+                            order.purchased_amount
+                        }
+                    };
                     if delivered_amount <= 0.0 {
                         self.clear_trade_order_for_ship(ship_id, order_id);
                         return false;

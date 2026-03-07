@@ -8,8 +8,8 @@ use gatebound_sim::{
     CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
     StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
     StationMarketDetailView, StationStorageView, StationTradeView, SystemCommodityHotspotView,
-    SystemDetailsView, SystemMarketStressRowView, SystemShipSummaryView,
-    SystemStationSummaryView, SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
+    SystemDetailsView, SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView,
+    SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
@@ -247,7 +247,8 @@ pub struct ShipCardSnapshot {
     pub eta_ticks_remaining: u32,
     pub current_segment_kind: Option<SegmentKind>,
     pub cargo_capacity: f64,
-    pub cargo: Option<CargoLoad>,
+    pub cargo_lots: Vec<CargoLoad>,
+    pub cargo_total_amount: f64,
     pub active_contract: Option<Contract>,
     pub policy: AutopilotPolicy,
     pub route_len: usize,
@@ -997,7 +998,8 @@ pub(crate) fn build_ship_card_snapshot_for_ui(
         eta_ticks_remaining: view.eta_ticks_remaining,
         current_segment_kind: view.current_segment_kind,
         cargo_capacity: view.cargo_capacity,
-        cargo: view.cargo,
+        cargo_lots: view.cargo_lots,
+        cargo_total_amount: view.cargo_total_amount,
         active_contract: view.active_contract,
         policy: view.policy,
         route_len: view.route_len,

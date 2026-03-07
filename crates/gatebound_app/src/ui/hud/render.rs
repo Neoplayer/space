@@ -1,7 +1,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
+use gatebound_domain::{CargoLoad, CargoSource, Commodity, OfferProblemTag, PriorityMode, ShipId};
 use gatebound_sim::TradePriceTone;
 
 use crate::runtime::save::{
@@ -1431,18 +1431,13 @@ fn render_station_trade_tab(
         .fill(egui::Color32::from_rgb(14, 19, 24))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let cargo_line = trade
-                    .cargo
-                    .map(|cargo| {
-                        format!(
-                            "{} {:.1} ({})",
-                            commodity_label(cargo.commodity),
-                            cargo.amount,
-                            cargo_source_label(cargo.source)
-                        )
-                    })
-                    .unwrap_or_else(|| "-".to_string());
+                let cargo_line = cargo_summary_line(&trade.cargo_lots);
                 ui.monospace(format!("Cargo: {cargo_line}"));
+                ui.separator();
+                ui.monospace(format!(
+                    "Usage: {:.1} / {:.1}",
+                    trade.cargo_total_amount, trade.cargo_capacity
+                ));
                 ui.separator();
                 ui.monospace(format!("Fee: {:.1}%", trade.market_fee_rate * 100.0));
                 ui.separator();
@@ -1537,13 +1532,16 @@ fn render_station_trade_tab(
                 }
             });
 
-            if let Some(reason) = buy_disabled_reason(trade.docked, trade.cargo, selected_row) {
+            if let Some(reason) = buy_disabled_reason(trade.docked, &trade.cargo_lots, selected_row)
+            {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
                     format!("Buy unavailable: {reason}"),
                 );
             }
-            if let Some(reason) = sell_disabled_reason(trade.docked, trade.cargo, selected_row) {
+            if let Some(reason) =
+                sell_disabled_reason(trade.docked, &trade.cargo_lots, selected_row)
+            {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
                     format!("Sell unavailable: {reason}"),
@@ -1671,27 +1669,24 @@ fn render_station_storage_tab(
     card: &StationCardSnapshot,
 ) {
     let storage = &card.storage;
-    let total_stored = storage.rows.iter().map(|row| row.stored_amount).sum::<f64>();
+    let total_stored = storage
+        .rows
+        .iter()
+        .map(|row| row.stored_amount)
+        .sum::<f64>();
     egui::Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(14, 19, 24))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let cargo_line = storage
-                    .cargo
-                    .map(|cargo| {
-                        format!(
-                            "{} {:.1} ({})",
-                            commodity_label(cargo.commodity),
-                            cargo.amount,
-                            cargo_source_label(cargo.source)
-                        )
-                    })
-                    .unwrap_or_else(|| "-".to_string());
+                let cargo_line = cargo_summary_line(&storage.cargo_lots);
                 ui.monospace(format!("Ship cargo: {cargo_line}"));
                 ui.separator();
-                ui.monospace(format!("Stored total: {:.1}", total_stored));
+                ui.monospace(format!(
+                    "Usage: {:.1} / {:.1}",
+                    storage.cargo_total_amount, storage.cargo_capacity
+                ));
                 ui.separator();
-                ui.monospace(format!("Capacity: {:.1}", storage.cargo_capacity));
+                ui.monospace(format!("Stored total: {:.1}", total_stored));
                 ui.separator();
                 ui.monospace(format!(
                     "Docked: {}",
@@ -1782,7 +1777,7 @@ fn render_station_storage_tab(
             });
 
             if let Some(reason) =
-                storage_load_disabled_reason(storage.docked, storage.cargo, selected_row)
+                storage_load_disabled_reason(storage.docked, &storage.cargo_lots, selected_row)
             {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
@@ -1790,7 +1785,7 @@ fn render_station_storage_tab(
                 );
             }
             if let Some(reason) =
-                storage_unload_disabled_reason(storage.docked, storage.cargo, selected_row)
+                storage_unload_disabled_reason(storage.docked, &storage.cargo_lots, selected_row)
             {
                 ui.colored_label(
                     egui::Color32::from_rgb(232, 194, 88),
@@ -1800,7 +1795,10 @@ fn render_station_storage_tab(
 
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(selected_row.can_load, egui::Button::new("Load from Storage"))
+                    .add_enabled(
+                        selected_row.can_load,
+                        egui::Button::new("Load from Storage"),
+                    )
                     .clicked()
                 {
                     kpi.record_manual_action(sim.simulation.tick());
@@ -1814,7 +1812,9 @@ fn render_station_storage_tab(
                     ) {
                         Ok(()) => messages.push(format!(
                             "Loaded {:.1} {} from station storage",
-                            station_ui.storage_quantity.min(selected_row.load_cap.max(0.0)),
+                            station_ui
+                                .storage_quantity
+                                .min(selected_row.load_cap.max(0.0)),
                             commodity_label(selected_row.commodity)
                         )),
                         Err(err) => messages.push(format!(
@@ -1834,6 +1834,7 @@ fn render_station_storage_tab(
                     match sim.simulation.player_unload_to_station_storage(
                         ship_id,
                         card.station_id,
+                        selected_row.commodity,
                         station_ui
                             .storage_quantity
                             .min(selected_row.unload_cap.max(0.0)),
@@ -2208,21 +2209,32 @@ fn render_ship_cargo_tab(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
     egui::Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(14, 19, 24))
         .show(ui, |ui| {
-            let cargo_amount = card.cargo.map(|cargo| cargo.amount).unwrap_or(0.0);
             ui.heading("Cargo Hold");
             ui.monospace(format!(
                 "Usage: {:.1} / {:.1}",
-                cargo_amount, card.cargo_capacity
+                card.cargo_total_amount, card.cargo_capacity
             ));
-            if let Some(cargo) = card.cargo {
-                ui.monospace(format!(
-                    "Load: {} {:.1} ({})",
-                    commodity_label(cargo.commodity),
-                    cargo.amount,
-                    cargo_source_label(cargo.source)
-                ));
-            } else {
+            ui.monospace(format!("Summary: {}", cargo_summary_line(&card.cargo_lots)));
+            if card.cargo_lots.is_empty() {
                 ui.monospace("Load: empty");
+            } else {
+                ui.add_space(6.0);
+                egui::Grid::new("ship_cargo_grid")
+                    .num_columns(3)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Commodity");
+                        ui.strong("Amount");
+                        ui.strong("Source");
+                        ui.end_row();
+
+                        for cargo in sorted_cargo_lots(&card.cargo_lots) {
+                            ui.monospace(commodity_label(cargo.commodity));
+                            ui.monospace(format!("{:.1}", cargo.amount));
+                            ui.monospace(cargo_source_label(cargo.source));
+                            ui.end_row();
+                        }
+                    });
             }
             ui.add_space(8.0);
             if let Some(contract) = &card.active_contract {
@@ -2707,9 +2719,57 @@ fn price_tone_color(tone: TradePriceTone) -> egui::Color32 {
     }
 }
 
+fn sorted_cargo_lots(cargo_lots: &[CargoLoad]) -> Vec<CargoLoad> {
+    let mut lots = cargo_lots.to_vec();
+    lots.sort_by(|left, right| {
+        right
+            .amount
+            .total_cmp(&left.amount)
+            .then_with(|| left.commodity.cmp(&right.commodity))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    lots
+}
+
+fn cargo_summary_line(cargo_lots: &[CargoLoad]) -> String {
+    if cargo_lots.is_empty() {
+        return "-".to_string();
+    }
+
+    let lots = sorted_cargo_lots(cargo_lots);
+    let mut parts = lots
+        .iter()
+        .take(3)
+        .map(|cargo| {
+            format!(
+                "{} {:.1} ({})",
+                commodity_label(cargo.commodity),
+                cargo.amount,
+                cargo_source_label(cargo.source)
+            )
+        })
+        .collect::<Vec<_>>();
+    if lots.len() > 3 {
+        parts.push(format!("+{} more", lots.len() - 3));
+    }
+    parts.join(", ")
+}
+
+fn has_locked_cargo(cargo_lots: &[CargoLoad]) -> bool {
+    cargo_lots
+        .iter()
+        .any(|cargo| cargo.source != CargoSource::Spot)
+}
+
+fn has_matching_spot_cargo(cargo_lots: &[CargoLoad], commodity: Commodity) -> bool {
+    cargo_lots.iter().any(|cargo| {
+        cargo.source == CargoSource::Spot && cargo.commodity == commodity && cargo.amount > 0.0
+    })
+}
+
 fn buy_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationTradeRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2724,21 +2784,15 @@ fn buy_disabled_reason(
     if row.insufficient_capital {
         return Some("insufficient capital for the minimum trade lot");
     }
-
-    match cargo {
-        Some(cargo) if cargo.commodity != row.commodity && cargo.source == CargoSource::Spot => {
-            Some("the hold already carries another commodity")
-        }
-        Some(cargo) if cargo.source != CargoSource::Spot => {
-            Some("contract cargo occupies the hold until the active freight is cleared")
-        }
-        _ => None,
+    if has_locked_cargo(cargo_lots) {
+        return Some("contract cargo occupies the hold until the active freight is cleared");
     }
+    Some("the hold has no remaining capacity for this commodity")
 }
 
 fn sell_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationTradeRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2747,21 +2801,18 @@ fn sell_disabled_reason(
     if row.can_sell {
         return None;
     }
-
-    match cargo {
-        Some(cargo) if cargo.commodity == row.commodity && cargo.source != CargoSource::Spot => {
-            Some("current cargo is locked to an active contract")
-        }
-        Some(cargo) if cargo.commodity == row.commodity && cargo.source == CargoSource::Spot => {
-            Some("matching spot cargo is below the minimum trade lot")
-        }
-        _ => Some("no matching spot cargo is loaded for this row"),
+    if has_locked_cargo(cargo_lots) {
+        return Some("current cargo is locked to an active contract");
     }
+    if has_matching_spot_cargo(cargo_lots, row.commodity) {
+        return Some("matching spot cargo is below the minimum trade lot");
+    }
+    Some("no matching spot cargo is loaded for this row")
 }
 
 fn storage_load_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationStorageRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2773,21 +2824,15 @@ fn storage_load_disabled_reason(
     if row.stored_amount + 1e-9 < 0.1 {
         return Some("this station storage row is below the minimum transferable lot");
     }
-
-    match cargo {
-        Some(cargo) if cargo.source != CargoSource::Spot => {
-            Some("contract cargo occupies the hold until the active freight is cleared")
-        }
-        Some(cargo) if cargo.commodity != row.commodity => {
-            Some("the hold already carries another commodity")
-        }
-        _ => Some("the hold has no remaining capacity for this commodity"),
+    if has_locked_cargo(cargo_lots) {
+        return Some("contract cargo occupies the hold until the active freight is cleared");
     }
+    Some("the hold has no remaining capacity for this commodity")
 }
 
 fn storage_unload_disabled_reason(
     docked: bool,
-    cargo: Option<gatebound_domain::CargoLoad>,
+    cargo_lots: &[CargoLoad],
     row: &gatebound_sim::StationStorageRowView,
 ) -> Option<&'static str> {
     if !docked {
@@ -2796,15 +2841,14 @@ fn storage_unload_disabled_reason(
     if row.can_unload {
         return None;
     }
-
-    match cargo {
-        None => Some("ship has no cargo available for storage"),
-        Some(cargo) if cargo.source != CargoSource::Spot => {
-            Some("current cargo is locked to an active contract")
-        }
-        Some(cargo) if cargo.commodity != row.commodity => {
-            Some("selected storage row does not match the cargo in the hold")
-        }
-        _ => Some("matching spot cargo is below the minimum transferable lot"),
+    if cargo_lots.is_empty() {
+        return Some("ship has no cargo available for storage");
     }
+    if has_locked_cargo(cargo_lots) {
+        return Some("current cargo is locked to an active contract");
+    }
+    if has_matching_spot_cargo(cargo_lots, row.commodity) {
+        return Some("matching spot cargo is below the minimum transferable lot");
+    }
+    Some("selected storage row does not match any spot cargo loaded")
 }

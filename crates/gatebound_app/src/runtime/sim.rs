@@ -545,7 +545,13 @@ pub fn preferred_trade_commodity(
 ) -> Commodity {
     ship_id
         .and_then(|selected_ship_id| simulation.station_trade_view(selected_ship_id, station_id))
-        .and_then(|view| view.cargo.map(|cargo| cargo.commodity))
+        .and_then(|view| {
+            view.cargo_lots
+                .into_iter()
+                .filter(|cargo| cargo.source == gatebound_domain::CargoSource::Spot)
+                .max_by(|left, right| left.amount.total_cmp(&right.amount))
+                .map(|cargo| cargo.commodity)
+        })
         .unwrap_or(fallback)
 }
 

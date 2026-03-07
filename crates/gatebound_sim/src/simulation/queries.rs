@@ -206,7 +206,7 @@ impl Simulation {
                     segment_progress_total: ship.segment_progress_total,
                     current_segment_kind: ship.current_segment_kind,
                     front_segment: ship.movement_queue.front().cloned(),
-                    cargo: ship.cargo,
+                    cargo_lots: ship.cargo_lots().to_vec(),
                     last_gate_arrival: ship.last_gate_arrival,
                     last_risk_score: ship.last_risk_score,
                     reroutes: ship.reroutes,
@@ -432,8 +432,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked: self.is_ship_docked_at(ship_id, station_id),
-            cargo: ship.cargo,
+            cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
+            cargo_total_amount: ship.cargo_total_amount(),
             active_contract: ship
                 .active_contract
                 .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
@@ -458,11 +459,7 @@ impl Simulation {
                     .iter()
                     .filter_map(|commodity| {
                         market.goods.get(commodity).map(|state| {
-                            let player_cargo = ship
-                                .cargo
-                                .filter(|cargo| cargo.commodity == *commodity)
-                                .map(|cargo| cargo.amount)
-                                .unwrap_or(0.0);
+                            let player_cargo = ship.cargo_amount(*commodity);
 
                             let effective_buy_price = state.price * (1.0 + market_fee_rate);
                             let effective_sell_price = state.price * (1.0 - market_fee_rate);
@@ -524,8 +521,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked,
-            cargo: ship.cargo,
+            cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
+            cargo_total_amount: ship.cargo_total_amount(),
             active_contract: ship
                 .active_contract
                 .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
@@ -556,7 +554,7 @@ impl Simulation {
             .map(|goods| goods.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         if docked {
-            if let Some(cargo) = ship.cargo {
+            for cargo in ship.cargo_lots() {
                 if !commodities.contains(&cargo.commodity) {
                     commodities.push(cargo.commodity);
                 }
@@ -574,10 +572,11 @@ impl Simulation {
                     .copied()
                     .unwrap_or(0.0);
                 let player_cargo = ship
-                    .cargo
+                    .cargo_lots()
+                    .iter()
                     .filter(|cargo| cargo.commodity == commodity)
                     .map(|cargo| cargo.amount)
-                    .unwrap_or(0.0);
+                    .sum();
                 let load_cap = if docked {
                     actionable_trade_cap(
                         stored_amount
@@ -609,8 +608,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked,
-            cargo: ship.cargo,
+            cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
+            cargo_total_amount: ship.cargo_total_amount(),
             rows,
         })
     }
@@ -634,7 +634,8 @@ impl Simulation {
             eta_ticks_remaining: ship.eta_ticks_remaining,
             current_segment_kind: ship.current_segment_kind,
             cargo_capacity: ship.cargo_capacity,
-            cargo: ship.cargo,
+            cargo_lots: ship.cargo_lots().to_vec(),
+            cargo_total_amount: ship.cargo_total_amount(),
             active_contract: ship
                 .active_contract
                 .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
@@ -757,8 +758,9 @@ impl Simulation {
                     target: ship.current_target,
                     eta: ship.eta_ticks_remaining,
                     active_contract: ship.active_contract,
-                    cargo_commodity: ship.cargo.map(|cargo| cargo.commodity),
-                    cargo_amount: ship.cargo.map(|cargo| cargo.amount).unwrap_or(0.0),
+                    cargo_lots: ship.cargo_lots().to_vec(),
+                    cargo_total_amount: ship.cargo_total_amount(),
+                    cargo_used_capacity: ship.cargo_used_capacity(),
                     route_len: ship.planned_path.len(),
                     reroutes: ship.reroutes,
                     warning,
@@ -1629,21 +1631,20 @@ impl Simulation {
         }
     }
 
-    fn buy_capacity_for(&self, ship: &Ship, commodity: Commodity) -> f64 {
-        match ship.cargo {
-            None => ship.cargo_capacity,
-            Some(cargo) if cargo.source == CargoSource::Spot && cargo.commodity == commodity => {
-                (ship.cargo_capacity - cargo.amount).max(0.0)
-            }
-            _ => 0.0,
+    fn buy_capacity_for(&self, ship: &Ship, _commodity: Commodity) -> f64 {
+        if ship.has_locked_cargo() {
+            0.0
+        } else {
+            ship.remaining_capacity()
         }
     }
 
     fn sell_capacity_for(&self, ship: &Ship, commodity: Commodity) -> f64 {
-        ship.cargo
-            .filter(|cargo| cargo.source == CargoSource::Spot && cargo.commodity == commodity)
-            .map(|cargo| cargo.amount.max(0.0))
-            .unwrap_or(0.0)
+        if ship.has_locked_cargo() {
+            0.0
+        } else {
+            ship.spot_amount(commodity).max(0.0)
+        }
     }
 
     fn affordable_buy_capacity(&self, effective_buy_price: f64) -> f64 {

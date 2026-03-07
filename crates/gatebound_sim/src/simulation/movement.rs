@@ -44,7 +44,7 @@ impl Simulation {
                     eta_ticks_remaining: 0,
                     sub_light_speed: 18.0,
                     cargo_capacity: 18.0,
-                    cargo: None,
+                    cargo: CargoManifest::default(),
                     trade_order_id: None,
                     movement_queue: VecDeque::new(),
                     segment_eta_remaining: 0,
@@ -83,7 +83,7 @@ impl Simulation {
                 ship.role = ShipRole::NpcTrade;
                 ship.active_contract = None;
                 ship.trade_order_id = None;
-                ship.cargo = None;
+                ship.cargo = CargoManifest::default();
             }
         }
 

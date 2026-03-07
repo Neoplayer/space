@@ -34,7 +34,7 @@ pub struct ShipPatch {
     pub eta_ticks_remaining: Option<u32>,
     pub sub_light_speed: Option<f64>,
     pub cargo_capacity: Option<f64>,
-    pub cargo: Option<Option<CargoLoad>>,
+    pub cargo: Option<CargoManifest>,
     pub trade_order_id: Option<Option<TradeOrderId>>,
     pub movement_queue: Option<Vec<RouteSegment>>,
     pub segment_eta_remaining: Option<u32>,

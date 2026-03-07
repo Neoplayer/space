@@ -43,6 +43,7 @@ pub(crate) struct SnapshotState {
     pub companies: Vec<Company>,
     pub company_runtimes: Vec<NpcCompanyRuntime>,
     pub markets: Vec<MarketBookSnapshot>,
+    #[serde(default)]
     pub player_station_storage: Vec<StationStorageSnapshot>,
     pub contracts: Vec<Contract>,
     pub contract_offers: Vec<ContractOffer>,
@@ -157,7 +158,7 @@ pub fn deserialize_snapshot(
 ) -> Result<Simulation, SnapshotError> {
     let envelope: SnapshotEnvelopeValue = serde_json::from_str(payload)
         .map_err(|error| SnapshotError::Parse(format!("snapshot parse failed: {error}")))?;
-    if envelope.version != SNAPSHOT_VERSION {
+    if envelope.version != 3 && envelope.version != SNAPSHOT_VERSION {
         return Err(SnapshotError::Parse(format!(
             "unsupported snapshot version: {}",
             envelope.version

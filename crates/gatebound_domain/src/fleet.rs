@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use crate::{
-    CargoLoad, Commodity, CompanyId, ContractId, GateId, RouteSegment, SegmentKind, ShipId,
-    StationId, SystemId, TradeOrderId,
+    CargoLoad, CargoManifest, CargoSource, Commodity, CompanyId, ContractId, GateId, RouteSegment,
+    SegmentKind, ShipId, StationId, SystemId, TradeOrderId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,8 +82,9 @@ pub struct FleetShipStatus {
     pub target: Option<SystemId>,
     pub eta: u32,
     pub active_contract: Option<ContractId>,
-    pub cargo_commodity: Option<Commodity>,
-    pub cargo_amount: f64,
+    pub cargo_lots: Vec<CargoLoad>,
+    pub cargo_total_amount: f64,
+    pub cargo_used_capacity: f64,
     pub route_len: usize,
     pub reroutes: u64,
     pub warning: Option<FleetWarning>,
@@ -225,7 +226,8 @@ pub struct Ship {
     pub eta_ticks_remaining: u32,
     pub sub_light_speed: f64,
     pub cargo_capacity: f64,
-    pub cargo: Option<CargoLoad>,
+    #[serde(default)]
+    pub cargo: CargoManifest,
     pub trade_order_id: Option<TradeOrderId>,
     pub movement_queue: VecDeque<RouteSegment>,
     pub segment_eta_remaining: u32,
@@ -245,4 +247,58 @@ pub struct Ship {
     pub modules: Vec<ShipModule>,
     #[serde(default)]
     pub technical_state: ShipTechnicalState,
+}
+
+impl Ship {
+    pub fn cargo_lots(&self) -> &[CargoLoad] {
+        self.cargo.lots()
+    }
+
+    pub fn cargo_total_amount(&self) -> f64 {
+        self.cargo.total_amount()
+    }
+
+    pub fn cargo_used_capacity(&self) -> f64 {
+        self.cargo_total_amount()
+    }
+
+    pub fn remaining_capacity(&self) -> f64 {
+        self.cargo.remaining_capacity(self.cargo_capacity)
+    }
+
+    pub fn cargo_amount(&self, commodity: Commodity) -> f64 {
+        self.cargo_lots()
+            .iter()
+            .filter(|cargo| cargo.commodity == commodity)
+            .map(|cargo| cargo.amount)
+            .sum()
+    }
+
+    pub fn amount_for(&self, commodity: Commodity, source: CargoSource) -> f64 {
+        self.cargo.amount_for(commodity, source)
+    }
+
+    pub fn spot_amount(&self, commodity: Commodity) -> f64 {
+        self.cargo.spot_amount(commodity)
+    }
+
+    pub fn has_locked_cargo(&self) -> bool {
+        self.cargo.has_locked_cargo()
+    }
+
+    pub fn has_spot_cargo(&self) -> bool {
+        self.cargo.has_spot_cargo()
+    }
+
+    pub fn largest_spot_commodity(&self) -> Option<Commodity> {
+        self.cargo.largest_spot_commodity()
+    }
+
+    pub fn upsert_lot(&mut self, commodity: Commodity, source: CargoSource, amount: f64) {
+        self.cargo.upsert_lot(commodity, source, amount);
+    }
+
+    pub fn remove_amount(&mut self, commodity: Commodity, source: CargoSource, amount: f64) -> f64 {
+        self.cargo.remove_amount(commodity, source, amount)
+    }
 }

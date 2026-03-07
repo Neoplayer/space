@@ -49,17 +49,10 @@ impl Simulation {
             return Err(TradeError::InsufficientStock);
         }
 
-        if let Some(cargo) = ship_snapshot.cargo {
-            if cargo.commodity != commodity {
-                return Err(TradeError::CommodityMismatch);
-            }
-            if cargo.source != CargoSource::Spot {
-                return Err(TradeError::ContractCargoLocked);
-            }
-            if cargo.amount + quantity > ship_snapshot.cargo_capacity + 1e-9 {
-                return Err(TradeError::CargoCapacityExceeded);
-            }
-        } else if quantity > ship_snapshot.cargo_capacity + 1e-9 {
+        if ship_snapshot.has_locked_cargo() {
+            return Err(TradeError::ContractCargoLocked);
+        }
+        if ship_snapshot.remaining_capacity() + 1e-9 < quantity {
             return Err(TradeError::CargoCapacityExceeded);
         }
 
@@ -79,16 +72,7 @@ impl Simulation {
             state.cycle_outflow += quantity;
         }
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            match &mut ship.cargo {
-                Some(cargo) => cargo.amount += quantity,
-                None => {
-                    ship.cargo = Some(CargoLoad {
-                        commodity,
-                        amount: quantity,
-                        source: CargoSource::Spot,
-                    });
-                }
-            }
+            ship.upsert_lot(commodity, CargoSource::Spot, quantity);
         }
         self.capital -= total_cost;
 
@@ -130,16 +114,10 @@ impl Simulation {
             return Err(TradeError::NotDocked);
         }
 
-        let Some(cargo) = ship_snapshot.cargo else {
-            return Err(TradeError::InsufficientCargo);
-        };
-        if cargo.commodity != commodity {
-            return Err(TradeError::CommodityMismatch);
-        }
-        if cargo.source != CargoSource::Spot {
+        if ship_snapshot.has_locked_cargo() {
             return Err(TradeError::ContractCargoLocked);
         }
-        if cargo.amount + 1e-9 < quantity {
+        if ship_snapshot.spot_amount(commodity) + 1e-9 < quantity {
             return Err(TradeError::InsufficientCargo);
         }
 
@@ -162,12 +140,7 @@ impl Simulation {
             state.cycle_inflow += quantity;
         }
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            if let Some(ship_cargo) = &mut ship.cargo {
-                ship_cargo.amount = (ship_cargo.amount - quantity).max(0.0);
-                if ship_cargo.amount <= 1e-9 {
-                    ship.cargo = None;
-                }
-            }
+            ship.remove_amount(commodity, CargoSource::Spot, quantity);
         }
         self.capital += net_revenue;
 

@@ -67,21 +67,20 @@ impl Simulation {
             return Err(ContractActionError::InsufficientStock);
         };
 
-        if let Some(cargo) = ship_snapshot.cargo {
-            if cargo.commodity != contract_snapshot.commodity {
-                return Err(ContractActionError::CommodityMismatch);
-            }
-            if cargo.source
-                != (CargoSource::Contract {
-                    contract_id: contract_snapshot.id,
-                })
-            {
-                return Err(ContractActionError::ContractState);
-            }
-            if cargo.amount + quantity > ship_snapshot.cargo_capacity + 1e-9 {
-                return Err(ContractActionError::CargoCapacityExceeded);
-            }
-        } else if quantity > ship_snapshot.cargo_capacity + 1e-9 {
+        let contract_source = CargoSource::Contract {
+            contract_id: contract_snapshot.id,
+        };
+        let matching_amount =
+            ship_snapshot.amount_for(contract_snapshot.commodity, contract_source);
+        let has_incompatible_cargo = ship_snapshot.has_spot_cargo()
+            || ship_snapshot
+                .cargo_lots()
+                .iter()
+                .any(|cargo| cargo.source != contract_source);
+        if has_incompatible_cargo {
+            return Err(ContractActionError::ContractState);
+        }
+        if matching_amount + quantity > ship_snapshot.cargo_capacity + 1e-9 {
             return Err(ContractActionError::CargoCapacityExceeded);
         }
 
@@ -113,18 +112,7 @@ impl Simulation {
             state.cycle_outflow += amount;
         }
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            match &mut ship.cargo {
-                Some(cargo) => cargo.amount += amount,
-                None => {
-                    ship.cargo = Some(CargoLoad {
-                        commodity: contract_snapshot.commodity,
-                        amount,
-                        source: CargoSource::Contract {
-                            contract_id: contract_snapshot.id,
-                        },
-                    });
-                }
-            }
+            ship.upsert_lot(contract_snapshot.commodity, contract_source, amount);
         }
         if let Some(contract) = self.contracts.get_mut(&contract_snapshot.id) {
             contract.loaded_amount += amount;
@@ -166,25 +154,16 @@ impl Simulation {
             return Err(ContractActionError::NotDocked);
         }
 
-        let Some(cargo) = ship_snapshot.cargo else {
-            return Err(ContractActionError::InsufficientCargo);
+        let contract_source = CargoSource::Contract {
+            contract_id: contract_snapshot.id,
         };
-        if cargo.commodity != contract_snapshot.commodity {
-            return Err(ContractActionError::CommodityMismatch);
-        }
-        if cargo.source
-            != (CargoSource::Contract {
-                contract_id: contract_snapshot.id,
-            })
-        {
-            return Err(ContractActionError::ContractState);
-        }
-        if cargo.amount <= 1e-9 || contract_snapshot.loaded_amount <= 1e-9 {
+        let cargo_amount = ship_snapshot.amount_for(contract_snapshot.commodity, contract_source);
+        if cargo_amount <= 1e-9 || contract_snapshot.loaded_amount <= 1e-9 {
             return Err(ContractActionError::InsufficientCargo);
         }
 
         let amount = quantity
-            .min(cargo.amount)
+            .min(cargo_amount)
             .min(contract_snapshot.loaded_amount);
         if amount <= 1e-9 {
             return Err(ContractActionError::InsufficientCargo);
@@ -199,12 +178,7 @@ impl Simulation {
             state.cycle_inflow += amount;
         }
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            if let Some(ship_cargo) = &mut ship.cargo {
-                ship_cargo.amount = (ship_cargo.amount - amount).max(0.0);
-                if ship_cargo.amount <= 1e-9 {
-                    ship.cargo = None;
-                }
-            }
+            ship.remove_amount(contract_snapshot.commodity, contract_source, amount);
         }
 
         let mut delivery_completed = false;
@@ -421,11 +395,11 @@ impl Simulation {
                     }
                     if let Some(ship) = self.ships.get_mut(&ship_id) {
                         ship.active_contract = None;
-                        if let Some(cargo) = ship.cargo {
-                            if cargo.source == (CargoSource::Contract { contract_id: cid }) {
-                                ship.cargo = None;
-                            }
-                        }
+                        ship.remove_amount(
+                            snapshot.commodity,
+                            CargoSource::Contract { contract_id: cid },
+                            f64::MAX,
+                        );
                     }
                     self.sla_failures = self.sla_failures.saturating_add(1);
                 }

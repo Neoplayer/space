@@ -7,6 +7,7 @@ impl Simulation {
         &mut self,
         ship_id: ShipId,
         station_id: StationId,
+        commodity: Commodity,
         quantity: f64,
     ) -> Result<(), StorageTransferError> {
         if quantity <= 0.0 {
@@ -25,29 +26,21 @@ impl Simulation {
             return Err(StorageTransferError::NotDocked);
         }
 
-        let Some(cargo) = ship_snapshot.cargo else {
-            return Err(StorageTransferError::InsufficientShipCargo);
-        };
-        if cargo.source != CargoSource::Spot {
+        if ship_snapshot.has_locked_cargo() {
             return Err(StorageTransferError::ContractCargoLocked);
         }
-        if cargo.amount + STORAGE_EPSILON < quantity {
+        if ship_snapshot.spot_amount(commodity) + STORAGE_EPSILON < quantity {
             return Err(StorageTransferError::InsufficientShipCargo);
         }
 
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            if let Some(ship_cargo) = &mut ship.cargo {
-                ship_cargo.amount = (ship_cargo.amount - quantity).max(0.0);
-                if ship_cargo.amount <= STORAGE_EPSILON {
-                    ship.cargo = None;
-                }
-            }
+            ship.remove_amount(commodity, CargoSource::Spot, quantity);
         }
         *self
             .player_station_storage
             .entry(station_id)
             .or_default()
-            .entry(cargo.commodity)
+            .entry(commodity)
             .or_insert(0.0) += quantity;
 
         Ok(())
@@ -86,17 +79,10 @@ impl Simulation {
             return Err(StorageTransferError::InsufficientStoredCargo);
         }
 
-        if let Some(cargo) = ship_snapshot.cargo {
-            if cargo.source != CargoSource::Spot {
-                return Err(StorageTransferError::ContractCargoLocked);
-            }
-            if cargo.commodity != commodity {
-                return Err(StorageTransferError::CommodityMismatch);
-            }
-            if cargo.amount + quantity > ship_snapshot.cargo_capacity + STORAGE_EPSILON {
-                return Err(StorageTransferError::CargoCapacityExceeded);
-            }
-        } else if quantity > ship_snapshot.cargo_capacity + STORAGE_EPSILON {
+        if ship_snapshot.has_locked_cargo() {
+            return Err(StorageTransferError::ContractCargoLocked);
+        }
+        if ship_snapshot.remaining_capacity() + STORAGE_EPSILON < quantity {
             return Err(StorageTransferError::CargoCapacityExceeded);
         }
 
@@ -115,16 +101,7 @@ impl Simulation {
         }
 
         if let Some(ship) = self.ships.get_mut(&ship_id) {
-            match &mut ship.cargo {
-                Some(cargo) => cargo.amount += quantity,
-                None => {
-                    ship.cargo = Some(CargoLoad {
-                        commodity,
-                        amount: quantity,
-                        source: CargoSource::Spot,
-                    });
-                }
-            }
+            ship.upsert_lot(commodity, CargoSource::Spot, quantity);
         }
 
         Ok(())
