@@ -248,19 +248,14 @@ impl Simulation {
         ship_id: ShipId,
         station_id: StationId,
     ) -> Option<StationMissionView> {
-        let ship = self.ships.get(&ship_id)?;
+        self.ships.get(&ship_id)?;
         let docked = self.is_ship_docked_at(ship_id, station_id);
         let mut offers = self
             .mission_offers
             .values()
             .filter_map(|offer| {
-                let direction = if offer.origin_station == station_id {
-                    Some(StationMissionDirection::Outbound)
-                } else if offer.destination_station == station_id {
-                    Some(StationMissionDirection::Inbound)
-                } else {
-                    None
-                }?;
+                let direction = (offer.origin_station == station_id)
+                    .then_some(StationMissionDirection::Outbound)?;
                 Some(StationMissionOfferRowView {
                     offer: offer.clone(),
                     direction,
@@ -275,60 +270,12 @@ impl Simulation {
                 .then_with(|| left.offer.id.cmp(&right.offer.id))
         });
 
-        let mut mission_rows = self
-            .missions
-            .values()
-            .filter_map(|mission| {
-                if matches!(
-                    mission.status,
-                    MissionStatus::Completed | MissionStatus::Cancelled
-                ) {
-                    return None;
-                }
-                let direction = if mission.origin_station == station_id {
-                    Some(StationMissionDirection::Outbound)
-                } else if mission.destination_station == station_id {
-                    Some(StationMissionDirection::Inbound)
-                } else {
-                    None
-                }?;
-                let station_storage_amount = self
-                    .player_mission_storage
-                    .get(&station_id)
-                    .and_then(|lots| lots.get(&mission.id))
-                    .copied()
-                    .unwrap_or(0.0);
-                let ship_cargo_amount = ship.amount_for(
-                    mission.commodity,
-                    CargoSource::Mission {
-                        mission_id: mission.id,
-                    },
-                );
-                Some(StationMissionCargoRowView {
-                    mission: mission.clone(),
-                    direction,
-                    station_storage_amount,
-                    ship_cargo_amount,
-                    delivered_amount: mission.delivered_amount,
-                    can_load: docked
-                        && station_id == mission.origin_station
-                        && station_storage_amount > 0.0
-                        && ship.remaining_capacity() > 0.0,
-                    can_unload: docked
-                        && ship_cargo_amount > 0.0
-                        && (station_id == mission.origin_station
-                            || station_id == mission.destination_station),
-                })
-            })
-            .collect::<Vec<_>>();
-        mission_rows.sort_by_key(|row| row.mission.id.0);
-
         Some(StationMissionView {
             ship_id,
             station_id,
             docked,
             offers,
-            mission_rows,
+            mission_rows: Vec::new(),
         })
     }
 
@@ -1049,48 +996,25 @@ impl Simulation {
 
     fn build_mission_detail_view(&self, mission: &Mission) -> MissionDetailView {
         let origin_storage_amount = self
-            .player_mission_storage
+            .player_station_storage
             .get(&mission.origin_station)
-            .and_then(|lots| lots.get(&mission.id))
+            .and_then(|goods| goods.get(&mission.commodity))
             .copied()
             .unwrap_or(0.0);
-
-        let mut shipments = self
-            .ships
-            .values()
-            .filter_map(|ship| {
-                let amount = ship.amount_for(
-                    mission.commodity,
-                    CargoSource::Mission {
-                        mission_id: mission.id,
-                    },
-                );
-                if amount <= 1e-9 {
-                    return None;
-                }
-
-                let ship_name = self
-                    .companies
-                    .get(&ship.company_id)
-                    .map(|_| ship.descriptor.name.clone())
-                    .unwrap_or_else(|| format!("Ship {}", ship.id.0));
-                Some(MissionShipCargoView {
-                    ship_id: ship.id,
-                    ship_name,
-                    amount,
-                })
-            })
-            .collect::<Vec<_>>();
-        shipments.sort_by_key(|shipment| shipment.ship_id.0);
-
-        let in_transit_amount = shipments.iter().map(|shipment| shipment.amount).sum();
+        let destination_storage_amount = self
+            .player_station_storage
+            .get(&mission.destination_station)
+            .and_then(|goods| goods.get(&mission.commodity))
+            .copied()
+            .unwrap_or(0.0);
 
         MissionDetailView {
             mission: mission.clone(),
             origin_storage_amount,
-            delivered_amount: mission.delivered_amount,
-            in_transit_amount,
-            shipments,
+            delivered_amount: destination_storage_amount.min(mission.quantity),
+            in_transit_amount: 0.0,
+            shipments: Vec::new(),
+            destination_storage_amount,
         }
     }
 

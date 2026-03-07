@@ -92,6 +92,13 @@ pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MissionsPanelState {
     pub selected_mission_id: Option<MissionId>,
+    pub modal_selection: Option<MissionModalSelection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissionModalSelection {
+    Offer(u64),
+    Active(MissionId),
 }
 
 #[derive(Resource, Debug, Clone, PartialEq)]
@@ -241,7 +248,6 @@ pub struct StationUiState {
     pub trade_quantity: f64,
     pub storage_commodity: Commodity,
     pub storage_quantity: f64,
-    pub mission_quantity: f64,
 }
 
 impl Default for StationUiState {
@@ -256,7 +262,6 @@ impl Default for StationUiState {
             trade_quantity: 5.0,
             storage_commodity: Commodity::Fuel,
             storage_quantity: 5.0,
-            mission_quantity: 5.0,
         }
     }
 }
@@ -471,6 +476,15 @@ pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
     state.card_ship_id = Some(ship_id);
     state.context_ship_id = Some(ship_id);
     state.card_tab = ShipCardTab::Overview;
+}
+
+pub fn open_mission_offer(missions_panel: &mut MissionsPanelState, offer_id: u64) {
+    missions_panel.modal_selection = Some(MissionModalSelection::Offer(offer_id));
+}
+
+pub fn open_active_mission(missions_panel: &mut MissionsPanelState, mission_id: MissionId) {
+    missions_panel.selected_mission_id = Some(mission_id);
+    missions_panel.modal_selection = Some(MissionModalSelection::Active(mission_id));
 }
 
 pub fn open_system_ship_inspector_selection(

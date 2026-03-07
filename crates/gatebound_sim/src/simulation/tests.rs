@@ -1387,17 +1387,17 @@ fn snapshot_round_trip_preserves_active_loan() {
 }
 
 #[test]
-fn snapshot_save_writes_v5_json_envelope() {
+fn snapshot_save_writes_v6_json_envelope() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 97);
-    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v4.json");
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v6.json");
 
     crate::snapshot::save_snapshot(&sim, &tmp).expect("snapshot save should pass");
     let payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
 
     assert!(
-        payload.contains("\"version\": 5"),
-        "snapshot payload should use v5 envelope"
+        payload.contains("\"version\": 6"),
+        "snapshot payload should use v6 envelope"
     );
     assert!(
         payload.contains("\"state\""),
@@ -2484,12 +2484,13 @@ fn mission_offer_generation_populates_route_gates_and_score() {
     assert!(offer.score.is_finite());
     assert!(offer.score.abs() < 10_000.0);
     assert!(offer.risk_score.is_finite());
+    assert!(offer.penalty > 0.0);
     assert!(offer.eta_ticks > 0);
     assert!(!offer.route_gate_ids.is_empty());
 }
 
 #[test]
-fn accepting_mission_offer_reserves_origin_stock_and_creates_origin_mission_storage() {
+fn accepting_mission_offer_moves_goods_into_player_station_storage_and_fixes_penalty() {
     let mut sim = Simulation::new(stage_a_config(), 224);
     let source_station = station_for_system(&sim, SystemId(0));
     let destination_station = station_for_system(&sim, last_station_system(&sim));
@@ -2525,11 +2526,11 @@ fn accepting_mission_offer_reserves_origin_stock_and_creates_origin_mission_stor
         })
         .cloned()
         .expect("mission offer should exist");
-    let before_stock = sim
+    let (before_stock, before_price) = sim
         .markets
         .get(&source_station)
         .and_then(|book| book.goods.get(&Commodity::Fuel))
-        .map(|state| state.stock)
+        .map(|state| (state.stock, state.price))
         .expect("source stock should exist");
 
     let mission_id = sim
@@ -2537,11 +2538,15 @@ fn accepting_mission_offer_reserves_origin_stock_and_creates_origin_mission_stor
         .expect("accepting mission should succeed");
 
     let stored_amount = sim
-        .player_mission_storage
+        .player_station_storage
         .get(&source_station)
-        .and_then(|lots| lots.get(&mission_id))
+        .and_then(|goods| goods.get(&Commodity::Fuel))
         .copied()
-        .expect("mission storage should exist at source station");
+        .expect("player station storage should exist at source station");
+    let mission = sim
+        .missions
+        .get(&mission_id)
+        .expect("mission should exist after acceptance");
     let after_stock = sim
         .markets
         .get(&source_station)
@@ -2551,10 +2556,11 @@ fn accepting_mission_offer_reserves_origin_stock_and_creates_origin_mission_stor
 
     assert!((offer.quantity - stored_amount).abs() < 1e-9);
     assert!((before_stock - after_stock - offer.quantity).abs() < 1e-9);
+    assert!((mission.penalty - offer.quantity * before_price * 5.0).abs() < 1e-9);
 }
 
 #[test]
-fn mission_cargo_is_locked_from_spot_trading_and_spot_storage() {
+fn accepted_mission_goods_flow_through_regular_storage_and_trade_api() {
     let mut sim = Simulation::new(stage_a_config(), 225);
     let ship_id = ShipId(0);
     let source_station = station_for_system(&sim, SystemId(0));
@@ -2603,21 +2609,30 @@ fn mission_cargo_is_locked_from_spot_trading_and_spot_storage() {
         ship.movement_queue.clear();
     }
 
-    sim.player_load_mission_cargo(ship_id, mission_id, 4.0)
-        .expect("loading mission cargo should succeed");
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("accepted goods should load via ordinary storage");
+    sim.player_sell(ship_id, source_station, Commodity::Fuel, 1.0)
+        .expect("accepted goods should be sellable");
+    sim.player_buy(ship_id, source_station, Commodity::Fuel, 1.0)
+        .expect("player should be able to buy matching goods again");
+    sim.player_unload_to_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("ordinary storage should accept the goods back");
 
-    assert_eq!(
-        sim.player_sell(ship_id, source_station, Commodity::Fuel, 1.0),
-        Err(TradeError::MissionCargoLocked)
-    );
-    assert_eq!(
-        sim.player_unload_to_station_storage(ship_id, source_station, Commodity::Fuel, 1.0),
-        Err(StorageTransferError::MissionCargoLocked)
-    );
+    let stored_amount = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("player storage should still contain fuel");
+    let mission = sim
+        .missions
+        .get(&mission_id)
+        .expect("mission should still exist");
+    assert!((stored_amount - mission.quantity).abs() < 1e-9);
 }
 
 #[test]
-fn mission_unload_at_destination_auto_completes_and_pays_reward() {
+fn completing_mission_consumes_destination_storage_and_pays_reward() {
     let mut sim = Simulation::new(stage_a_config(), 226);
     let ship_id = ShipId(0);
     let source_station = station_for_system(&sim, SystemId(0));
@@ -2666,30 +2681,56 @@ fn mission_unload_at_destination_auto_completes_and_pays_reward() {
         ship.movement_queue.clear();
     }
 
-    sim.player_load_mission_cargo(ship_id, mission_id, offer.quantity)
-        .expect("loading reserved mission cargo should succeed");
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, offer.quantity)
+        .expect("loading accepted goods should use ordinary storage");
     let destination_system = last_station_system(&sim);
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.location = destination_system;
         ship.current_station = Some(destination_station);
     }
+    sim.player_unload_to_station_storage(
+        ship_id,
+        destination_station,
+        Commodity::Fuel,
+        offer.quantity,
+    )
+    .expect("delivered goods should unload through ordinary storage");
 
     let before_capital = sim.capital;
-    sim.player_unload_mission_cargo(ship_id, mission_id, offer.quantity)
-        .expect("unloading at destination should complete the mission");
+    let before_destination_stock = sim
+        .markets
+        .get(&destination_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .expect("destination stock should exist");
+    sim.complete_mission(ship_id, mission_id)
+        .expect("completing the mission should succeed");
 
     let mission = sim
         .missions
         .get(&mission_id)
         .expect("mission should still exist after completion");
+    let destination_storage_amount = sim
+        .player_station_storage
+        .get(&destination_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .unwrap_or(0.0);
+    let after_destination_stock = sim
+        .markets
+        .get(&destination_station)
+        .and_then(|book| book.goods.get(&Commodity::Fuel))
+        .map(|state| state.stock)
+        .expect("destination stock should exist");
     assert_eq!(mission.status, MissionStatus::Completed);
     assert!((sim.capital - before_capital - offer.reward).abs() < 1e-9);
+    assert!(destination_storage_amount.abs() < 1e-9);
+    assert!((after_destination_stock - before_destination_stock - offer.quantity).abs() < 1e-9);
 }
 
 #[test]
-fn multiple_missions_can_share_one_ship_with_separate_cargo_sources() {
+fn cancelling_mission_applies_penalty_without_touching_player_storage() {
     let mut sim = Simulation::new(stage_a_config(), 227);
-    let ship_id = ShipId(0);
     let source_station = station_for_system(&sim, SystemId(0));
     let destination_station = station_for_system(&sim, last_station_system(&sim));
 
@@ -2706,19 +2747,9 @@ fn multiple_missions_can_share_one_ship_with_separate_cargo_sources() {
         .expect("source fuel should exist")
         .stock = 170.0;
     sim.markets
-        .get_mut(&source_station)
-        .and_then(|book| book.goods.get_mut(&Commodity::Parts))
-        .expect("source parts should exist")
-        .stock = 170.0;
-    sim.markets
         .get_mut(&destination_station)
         .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
         .expect("destination fuel should exist")
-        .stock = 30.0;
-    sim.markets
-        .get_mut(&destination_station)
-        .and_then(|book| book.goods.get_mut(&Commodity::Parts))
-        .expect("destination parts should exist")
         .stock = 30.0;
 
     sim.refresh_mission_offers();
@@ -2732,63 +2763,43 @@ fn multiple_missions_can_share_one_ship_with_separate_cargo_sources() {
         })
         .map(|offer| offer.id)
         .expect("fuel mission offer should exist");
-    let parts_offer_id = sim
-        .mission_offers
-        .values()
-        .find(|offer| {
-            offer.origin_station == source_station
-                && offer.destination_station == destination_station
-                && offer.commodity == Commodity::Parts
-        })
-        .map(|offer| offer.id)
-        .expect("parts mission offer should exist");
     let fuel_mission = sim
         .accept_mission_offer(fuel_offer_id)
         .expect("fuel mission should be accepted");
-    let parts_mission = sim
-        .accept_mission_offer(parts_offer_id)
-        .expect("parts mission should be accepted");
 
-    if let Some(ship) = sim.ships.get_mut(&ship_id) {
-        ship.location = SystemId(0);
-        ship.current_station = Some(source_station);
-        ship.eta_ticks_remaining = 0;
-        ship.segment_eta_remaining = 0;
-        ship.segment_progress_total = 0;
-        ship.current_segment_kind = None;
-        ship.movement_queue.clear();
-    }
+    let mission = sim
+        .missions
+        .get(&fuel_mission)
+        .cloned()
+        .expect("mission should exist");
+    let before_storage = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("accepted goods should be in ordinary storage");
+    sim.capital = mission.penalty / 2.0;
 
-    sim.player_load_mission_cargo(ship_id, fuel_mission, 3.0)
-        .expect("fuel mission cargo should load");
-    sim.player_load_mission_cargo(ship_id, parts_mission, 2.0)
-        .expect("parts mission cargo should load");
+    sim.cancel_mission(fuel_mission)
+        .expect("cancelling should always be allowed");
 
-    let ship = sim.ships.get(&ship_id).expect("ship should exist");
-    assert!(
-        ship.cargo_lots().contains(&CargoLoad {
-            commodity: Commodity::Fuel,
-            amount: 3.0,
-            source: CargoSource::Mission {
-                mission_id: fuel_mission
-            },
-        }),
-        "fuel cargo should stay attached to its mission source"
-    );
-    assert!(
-        ship.cargo_lots().contains(&CargoLoad {
-            commodity: Commodity::Parts,
-            amount: 2.0,
-            source: CargoSource::Mission {
-                mission_id: parts_mission,
-            },
-        }),
-        "parts cargo should stay attached to its mission source"
-    );
+    let after_storage = sim
+        .player_station_storage
+        .get(&source_station)
+        .and_then(|goods| goods.get(&Commodity::Fuel))
+        .copied()
+        .expect("cancelling should not remove player goods");
+    let cancelled = sim
+        .missions
+        .get(&fuel_mission)
+        .expect("mission should still exist");
+    assert_eq!(cancelled.status, MissionStatus::Cancelled);
+    assert!((after_storage - before_storage).abs() < 1e-9);
+    assert!((sim.capital + mission.penalty / 2.0).abs() < 1e-9);
 }
 
 #[test]
-fn missions_board_and_ship_card_views_report_mission_cargo_distribution() {
+fn missions_board_reports_destination_storage_readiness() {
     let mut sim = Simulation::new(stage_a_config(), 228);
     let ship_id = ShipId(0);
     let source_station = station_for_system(&sim, SystemId(0));
@@ -2838,14 +2849,14 @@ fn missions_board_and_ship_card_views_report_mission_cargo_distribution() {
         ship.movement_queue.clear();
     }
 
-    sim.player_load_mission_cargo(ship_id, mission_id, 4.0)
-        .expect("loading mission cargo should succeed");
+    sim.player_load_from_station_storage(ship_id, source_station, Commodity::Fuel, 4.0)
+        .expect("accepted goods should load through ordinary storage");
     if let Some(ship) = sim.ships.get_mut(&ship_id) {
         ship.location = destination_system;
         ship.current_station = Some(destination_station);
     }
-    sim.player_unload_mission_cargo(ship_id, mission_id, 1.5)
-        .expect("partial unload should succeed");
+    sim.player_unload_to_station_storage(ship_id, destination_station, Commodity::Fuel, 1.5)
+        .expect("partial unload should use ordinary storage");
 
     let board = sim.missions_board_view();
     let detail = board
@@ -2853,23 +2864,8 @@ fn missions_board_and_ship_card_views_report_mission_cargo_distribution() {
         .iter()
         .find(|entry| entry.mission.id == mission_id)
         .expect("mission detail should be visible");
-    assert!((detail.origin_storage_amount - (offer.quantity - 4.0)).abs() < 1e-9);
-    assert!((detail.in_transit_amount - 2.5).abs() < 1e-9);
-    assert!((detail.delivered_amount - 1.5).abs() < 1e-9);
-    assert_eq!(detail.shipments.len(), 1);
-    assert_eq!(detail.shipments[0].ship_id, ship_id);
-    assert!((detail.shipments[0].amount - 2.5).abs() < 1e-9);
-
-    let ship_card = sim
-        .ship_card_view(ship_id)
-        .expect("ship card should still render");
-    let mission_card = ship_card
-        .mission_cargo
-        .iter()
-        .find(|entry| entry.mission.id == mission_id)
-        .expect("ship card should expose mission cargo");
-    assert!((mission_card.in_transit_amount - 2.5).abs() < 1e-9);
-    assert!((mission_card.delivered_amount - 1.5).abs() < 1e-9);
+    assert!((detail.destination_storage_amount - 1.5).abs() < 1e-9);
+    assert_eq!(detail.mission.status, MissionStatus::Accepted);
 }
 
 #[test]

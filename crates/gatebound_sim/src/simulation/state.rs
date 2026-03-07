@@ -12,7 +12,6 @@ pub struct Simulation {
     pub(crate) npc_company_runtimes: BTreeMap<CompanyId, NpcCompanyRuntime>,
     pub(crate) markets: BTreeMap<StationId, MarketBook>,
     pub(crate) player_station_storage: BTreeMap<StationId, BTreeMap<Commodity, f64>>,
-    pub(crate) player_mission_storage: BTreeMap<StationId, BTreeMap<MissionId, f64>>,
     pub(crate) missions: BTreeMap<MissionId, Mission>,
     pub(crate) mission_offers: BTreeMap<u64, MissionOffer>,
     pub(crate) next_mission_offer_id: u64,

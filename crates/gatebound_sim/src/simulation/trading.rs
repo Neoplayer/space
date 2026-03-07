@@ -49,9 +49,6 @@ impl Simulation {
             return Err(TradeError::InsufficientStock);
         }
 
-        if ship_snapshot.has_locked_cargo() {
-            return Err(TradeError::MissionCargoLocked);
-        }
         if ship_snapshot.remaining_capacity() + 1e-9 < quantity {
             return Err(TradeError::CargoCapacityExceeded);
         }
@@ -114,9 +111,6 @@ impl Simulation {
             return Err(TradeError::NotDocked);
         }
 
-        if ship_snapshot.has_locked_cargo() {
-            return Err(TradeError::MissionCargoLocked);
-        }
         if ship_snapshot.spot_amount(commodity) + 1e-9 < quantity {
             return Err(TradeError::InsufficientCargo);
         }

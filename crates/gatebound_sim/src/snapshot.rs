@@ -1,7 +1,7 @@
 use crate::{simulation::SnapshotError, Simulation};
 use gatebound_domain::{
     ActiveLoan, Commodity, Company, CompanyId, GateId, MarketState, MilestoneStatus, Mission,
-    MissionId, MissionOffer, NpcCompanyRuntime, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
+    MissionOffer, NpcCompanyRuntime, RiskStageA, RuntimeConfig, Ship, ShipId, StationId,
     TradeOrder,
 };
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const SNAPSHOT_VERSION: u32 = 5;
+const SNAPSHOT_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotEnvelope {
@@ -44,8 +44,6 @@ pub(crate) struct SnapshotState {
     pub markets: Vec<MarketBookSnapshot>,
     #[serde(default)]
     pub player_station_storage: Vec<StationStorageSnapshot>,
-    #[serde(default)]
-    pub player_mission_storage: Vec<MissionStorageSnapshot>,
     #[serde(default)]
     pub missions: Vec<Mission>,
     #[serde(default)]
@@ -86,18 +84,6 @@ pub(crate) struct MarketGoodSnapshot {
 pub(crate) struct StationStorageSnapshot {
     pub station_id: StationId,
     pub goods: Vec<StoredCommoditySnapshot>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MissionStorageSnapshot {
-    pub station_id: StationId,
-    pub missions: Vec<StoredMissionSnapshot>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub(crate) struct StoredMissionSnapshot {
-    pub mission_id: MissionId,
-    pub amount: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

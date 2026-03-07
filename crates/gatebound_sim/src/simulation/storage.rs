@@ -26,9 +26,6 @@ impl Simulation {
             return Err(StorageTransferError::NotDocked);
         }
 
-        if ship_snapshot.has_locked_cargo() {
-            return Err(StorageTransferError::MissionCargoLocked);
-        }
         if ship_snapshot.spot_amount(commodity) + STORAGE_EPSILON < quantity {
             return Err(StorageTransferError::InsufficientShipCargo);
         }
@@ -79,9 +76,6 @@ impl Simulation {
             return Err(StorageTransferError::InsufficientStoredCargo);
         }
 
-        if ship_snapshot.has_locked_cargo() {
-            return Err(StorageTransferError::MissionCargoLocked);
-        }
         if ship_snapshot.remaining_capacity() + STORAGE_EPSILON < quantity {
             return Err(StorageTransferError::CargoCapacityExceeded);
         }

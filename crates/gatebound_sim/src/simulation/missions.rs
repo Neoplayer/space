@@ -119,6 +119,7 @@ impl Simulation {
                             + route.eta_ticks as f64 * 0.18
                             + route.risk_score * 5.0,
                     );
+                    let penalty = stable_money(quantity * origin_state.price * 5.0);
                     let offer = MissionOffer {
                         id: self.next_mission_offer_id,
                         kind: MissionKind::Transport,
@@ -129,6 +130,7 @@ impl Simulation {
                         destination_station: *destination_station,
                         quantity,
                         reward,
+                        penalty,
                         eta_ticks: route.eta_ticks,
                         risk_score: stable_ratio(route.risk_score),
                         score,
@@ -155,12 +157,12 @@ impl Simulation {
             return Err(MissionOfferError::ExpiredOffer);
         }
 
-        let available = self
+        let (available, current_price) = self
             .markets
             .get(&offer.origin_station)
             .and_then(|book| book.goods.get(&offer.commodity))
-            .map(|state| state.stock)
-            .unwrap_or(0.0);
+            .map(|state| (state.stock, state.price))
+            .unwrap_or((0.0, 0.0));
         if available + MISSION_EPSILON < offer.quantity {
             self.mission_offers.remove(&offer_id);
             return Err(MissionOfferError::InsufficientStock);
@@ -172,7 +174,9 @@ impl Simulation {
             .and_then(|book| book.goods.get_mut(&offer.commodity))
         {
             state.stock = (state.stock - offer.quantity).max(0.0);
+            state.cycle_outflow += offer.quantity;
         }
+        let penalty = stable_money(offer.quantity * current_price * 5.0);
 
         let mission_id = MissionId(
             self.missions
@@ -182,10 +186,12 @@ impl Simulation {
                 .unwrap_or(0)
                 .saturating_add(1),
         );
-        self.player_mission_storage
+        *self
+            .player_station_storage
             .entry(offer.origin_station)
             .or_default()
-            .insert(mission_id, offer.quantity);
+            .entry(offer.commodity)
+            .or_insert(0.0) += offer.quantity;
         self.missions.insert(
             mission_id,
             Mission {
@@ -199,6 +205,7 @@ impl Simulation {
                 destination_station: offer.destination_station,
                 quantity: offer.quantity,
                 reward: offer.reward,
+                penalty,
                 eta_ticks: offer.eta_ticks,
                 risk_score: offer.risk_score,
                 route_gate_ids: offer.route_gate_ids,
@@ -216,38 +223,25 @@ impl Simulation {
         let Some(mission) = self.missions.get(&mission_id).cloned() else {
             return Err(MissionActionError::UnknownMission);
         };
-        if mission.status != MissionStatus::Accepted
-            || mission.loaded_amount > MISSION_EPSILON
-            || mission.delivered_amount > MISSION_EPSILON
-        {
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Cancelled
+        ) {
             return Err(MissionActionError::MissionState);
         }
 
-        let amount = self.take_mission_storage(mission.origin_station, mission_id, f64::MAX);
-        if amount > MISSION_EPSILON {
-            if let Some(state) = self
-                .markets
-                .get_mut(&mission.origin_station)
-                .and_then(|book| book.goods.get_mut(&mission.commodity))
-            {
-                state.stock += amount;
-            }
-        }
         if let Some(existing) = self.missions.get_mut(&mission_id) {
             existing.status = MissionStatus::Cancelled;
         }
+        self.capital -= mission.penalty;
         Ok(())
     }
 
-    pub fn player_load_mission_cargo(
+    pub fn complete_mission(
         &mut self,
         ship_id: ShipId,
         mission_id: MissionId,
-        quantity: f64,
     ) -> Result<(), MissionActionError> {
-        if quantity <= 0.0 {
-            return Err(MissionActionError::InvalidQuantity);
-        }
         let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
             return Err(MissionActionError::UnknownShip);
         };
@@ -263,130 +257,44 @@ impl Simulation {
         ) {
             return Err(MissionActionError::MissionState);
         }
-        if !self.is_ship_docked_at(ship_id, mission.origin_station) {
-            return Err(MissionActionError::NotDocked);
-        }
-        if ship_snapshot.remaining_capacity() + MISSION_EPSILON < quantity {
-            return Err(MissionActionError::CargoCapacityExceeded);
+        if !self.is_ship_docked_at(ship_id, mission.destination_station) {
+            return Err(ship_snapshot
+                .current_station
+                .map(|_| MissionActionError::WrongStation)
+                .unwrap_or(MissionActionError::NotDocked));
         }
 
         let available = self
-            .player_mission_storage
-            .get(&mission.origin_station)
-            .and_then(|lots| lots.get(&mission_id))
+            .player_station_storage
+            .get(&mission.destination_station)
+            .and_then(|goods| goods.get(&mission.commodity))
             .copied()
             .unwrap_or(0.0);
-        if available + MISSION_EPSILON < quantity {
+        if available + MISSION_EPSILON < mission.quantity {
             return Err(MissionActionError::InsufficientStoredCargo);
         }
 
-        let amount = self.take_mission_storage(mission.origin_station, mission_id, quantity);
+        let amount = self.take_station_storage(
+            mission.destination_station,
+            mission.commodity,
+            mission.quantity,
+        );
         if amount <= MISSION_EPSILON {
             return Err(MissionActionError::InsufficientStoredCargo);
         }
-        if let Some(ship) = self.ships.get_mut(&ship_id) {
-            ship.upsert_lot(
-                mission.commodity,
-                CargoSource::Mission { mission_id },
-                amount,
-            );
-        }
         if let Some(existing) = self.missions.get_mut(&mission_id) {
-            existing.loaded_amount += amount;
-            existing.status = MissionStatus::InProgress;
+            existing.delivered_amount = amount.min(existing.quantity);
+            existing.status = MissionStatus::Completed;
         }
-        Ok(())
-    }
-
-    pub fn player_unload_mission_cargo(
-        &mut self,
-        ship_id: ShipId,
-        mission_id: MissionId,
-        quantity: f64,
-    ) -> Result<(), MissionActionError> {
-        if quantity <= 0.0 {
-            return Err(MissionActionError::InvalidQuantity);
+        if let Some(state) = self
+            .markets
+            .get_mut(&mission.destination_station)
+            .and_then(|book| book.goods.get_mut(&mission.commodity))
+        {
+            state.stock += amount;
+            state.cycle_inflow += amount;
         }
-        let Some(ship_snapshot) = self.ships.get(&ship_id).cloned() else {
-            return Err(MissionActionError::UnknownShip);
-        };
-        if ship_snapshot.company_id != CompanyId(0) {
-            return Err(MissionActionError::UnknownShip);
-        }
-        let Some(mission) = self.missions.get(&mission_id).cloned() else {
-            return Err(MissionActionError::UnknownMission);
-        };
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Cancelled
-        ) {
-            return Err(MissionActionError::MissionState);
-        }
-
-        let current_station = ship_snapshot.current_station;
-        if !self.is_ship_docked_at(
-            ship_id,
-            current_station.unwrap_or(mission.destination_station),
-        ) {
-            return Err(MissionActionError::NotDocked);
-        }
-        let Some(station_id) = current_station else {
-            return Err(MissionActionError::UnknownStation);
-        };
-        if station_id != mission.origin_station && station_id != mission.destination_station {
-            return Err(MissionActionError::WrongStation);
-        }
-
-        let cargo_amount =
-            ship_snapshot.amount_for(mission.commodity, CargoSource::Mission { mission_id });
-        if cargo_amount <= MISSION_EPSILON {
-            return Err(MissionActionError::InsufficientCargo);
-        }
-        let amount = cargo_amount.min(quantity);
-        if amount <= MISSION_EPSILON {
-            return Err(MissionActionError::InsufficientCargo);
-        }
-
-        if let Some(ship) = self.ships.get_mut(&ship_id) {
-            ship.remove_amount(
-                mission.commodity,
-                CargoSource::Mission { mission_id },
-                amount,
-            );
-        }
-        if let Some(existing) = self.missions.get_mut(&mission_id) {
-            existing.loaded_amount = (existing.loaded_amount - amount).max(0.0);
-            if station_id == mission.destination_station {
-                if let Some(state) = self
-                    .markets
-                    .get_mut(&mission.destination_station)
-                    .and_then(|book| book.goods.get_mut(&mission.commodity))
-                {
-                    state.stock += amount;
-                    state.cycle_inflow += amount;
-                }
-                existing.delivered_amount += amount;
-            } else {
-                *self
-                    .player_mission_storage
-                    .entry(mission.origin_station)
-                    .or_default()
-                    .entry(mission_id)
-                    .or_insert(0.0) += amount;
-            }
-
-            if existing.delivered_amount + MISSION_EPSILON >= existing.quantity {
-                existing.delivered_amount = existing.quantity;
-                existing.status = MissionStatus::Completed;
-                self.capital += existing.reward;
-            } else if existing.loaded_amount <= MISSION_EPSILON
-                && existing.delivered_amount <= MISSION_EPSILON
-            {
-                existing.status = MissionStatus::Accepted;
-            } else {
-                existing.status = MissionStatus::InProgress;
-            }
-        }
+        self.capital += mission.reward;
 
         Ok(())
     }
@@ -396,34 +304,34 @@ impl Simulation {
             .retain(|_, offer| offer.expires_cycle >= self.cycle);
     }
 
-    fn take_mission_storage(
+    fn take_station_storage(
         &mut self,
         station_id: StationId,
-        mission_id: MissionId,
+        commodity: Commodity,
         quantity: f64,
     ) -> f64 {
         let mut remove_station_entry = false;
         let amount = self
-            .player_mission_storage
+            .player_station_storage
             .get_mut(&station_id)
-            .and_then(|lots| {
-                let removed = lots.get_mut(&mission_id).map(|stored| {
+            .and_then(|goods| {
+                let removed = goods.get_mut(&commodity).map(|stored| {
                     let removed = stored.min(quantity);
                     *stored = (*stored - removed).max(0.0);
                     removed
                 })?;
-                if lots
-                    .get(&mission_id)
+                if goods
+                    .get(&commodity)
                     .is_some_and(|stored| *stored <= MISSION_EPSILON)
                 {
-                    lots.remove(&mission_id);
+                    goods.remove(&commodity);
                 }
-                remove_station_entry = lots.is_empty();
+                remove_station_entry = goods.is_empty();
                 Some(removed)
             })
             .unwrap_or(0.0);
         if remove_station_entry {
-            self.player_mission_storage.remove(&station_id);
+            self.player_station_storage.remove(&station_id);
         }
         amount
     }

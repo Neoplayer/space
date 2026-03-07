@@ -167,6 +167,7 @@ pub struct MissionDetailView {
     pub delivered_amount: f64,
     pub in_transit_amount: f64,
     pub shipments: Vec<MissionShipCargoView>,
+    pub destination_storage_amount: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

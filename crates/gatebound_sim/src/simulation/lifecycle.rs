@@ -45,7 +45,6 @@ impl Simulation {
             npc_company_runtimes,
             markets,
             player_station_storage: BTreeMap::new(),
-            player_mission_storage: BTreeMap::new(),
             missions: BTreeMap::new(),
             mission_offers: BTreeMap::new(),
             next_mission_offer_id: 0,
@@ -345,24 +344,6 @@ impl Simulation {
                     },
                 )
                 .collect(),
-            player_mission_storage: self
-                .player_mission_storage
-                .iter()
-                .map(
-                    |(station_id, missions)| crate::snapshot::MissionStorageSnapshot {
-                        station_id: *station_id,
-                        missions: missions
-                            .iter()
-                            .map(
-                                |(mission_id, amount)| crate::snapshot::StoredMissionSnapshot {
-                                    mission_id: *mission_id,
-                                    amount: *amount,
-                                },
-                            )
-                            .collect(),
-                    },
-                )
-                .collect(),
             missions: self.missions.values().cloned().collect(),
             mission_offers: self.mission_offers.values().cloned().collect(),
             trade_orders: self.trade_orders.values().cloned().collect(),
@@ -489,7 +470,6 @@ impl Simulation {
             company_runtimes,
             markets,
             player_station_storage,
-            player_mission_storage,
             missions,
             mission_offers,
             trade_orders,
@@ -569,21 +549,6 @@ impl Simulation {
                 )
             })
             .filter(|(_, goods): &(StationId, BTreeMap<Commodity, f64>)| !goods.is_empty())
-            .collect();
-        simulation.player_mission_storage = player_mission_storage
-            .into_iter()
-            .map(|station| {
-                (
-                    station.station_id,
-                    station
-                        .missions
-                        .into_iter()
-                        .filter(|entry| entry.amount > 1e-9)
-                        .map(|entry| (entry.mission_id, entry.amount))
-                        .collect(),
-                )
-            })
-            .filter(|(_, missions): &(StationId, BTreeMap<MissionId, f64>)| !missions.is_empty())
             .collect();
         simulation.missions = missions
             .into_iter()
