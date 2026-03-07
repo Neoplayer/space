@@ -574,7 +574,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ## 17) MVP (реалистичный)
 ### Stage A (играбельный кластер)
 - локальный кластер 3-7 систем в рамках архитектуры полной галактики;
-- 4 NPC компании (2 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
+- 6 NPC компаний (4 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
 - фиксированные 7 товарных категорий: Ore, Ice, Gas, Metal, Fuel, Parts, Electronics;
 - 1 добыча -> 1 переработка -> 1 потребитель;
 - контракты только Delivery + Supply;
@@ -698,8 +698,8 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - `TradeReceipt`
   - `ContractActionError`
 - Snapshot:
-  - сохранение: версия `v4`
-  - загрузка: поддержка `v3` и `v4` (обратная совместимость при загрузке)
+  - сохранение: версия `v3`
+  - загрузка: только `v3`
 
 ---
 
@@ -733,19 +733,22 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ## 22) Текущее состояние и перспективы (март 2026)
 ### 22.1) Текущее состояние
 - **Реализовано**
-  - один игроковый корабль на старте + нормализация до single player ship при загрузке snapshot;
-  - command-based manual station loop для игрока (`Fly to station`);
-  - station trading loop (`Buy`/`Sell`) и explicit contract actions (`Load`/`Unload`);
+  - single-player baseline: ровно 1 игроковый корабль (остальные только NPC), старт в уже работающем рынке;
+  - command-based player loop: `Fly to station` + явные `Load/Unload` и `Buy/Sell` без автозавершения контрактов;
   - `CargoSource`-lock: контрактный груз нельзя продать как spot;
-  - snapshot `v4` + backward-load пути для `v3`.
-  - **UI/UX уже реализовано (уже в Stage A)**
-    - окна/панели: `Systems`, `NPC Corporations`, `Ship Card`, `Station Operations` (`Station Card`), `Markets`, `Finance`, `Policies`, `Contracts`;
-    - контекстные действия: `Fly to station`, `Track ship`, `Open ship card`/`Open station card`;
-    - визуальное поведение: сглаженное движение кораблей через кэш сегментов (интерполяция по `segment_eta_remaining`);
-    - код-ориентиры: `crates/gatebound_app/src/ui/hud/render.rs`, `crates/gatebound_app/src/runtime/sim.rs`, `crates/gatebound_app/src/render/world.rs`.
+  - snapshot: сохранение/загрузка только формата `v3`;
+  - risk-injection hotkeys для Stage A рисков: `G` (gate congestion), `D` (dock congestion), `F` (fuel shock);
+  - time controls в HUD: Pause/Resume + `1x/2x/4x`.
+  - **UI/UX уже реализовано (Stage A)**
+    - окна/панели: `Contracts Board`, `Fleet Manager` (только player-корабли), `Markets`, `Finance`, `Autopilot Policies`, `Station Card`, `NPC Corporations`, `Systems`, `Ship Card`;
+    - контекстные меню: `Ship Context` и `Station Context` (действия `Fly to station`, `Track ship`, `Open ship card`, `Open station card`);
+    - camera UX: double-click по системе -> `System View`, `Esc` -> `Galaxy View`, right-drag pan только в galaxy, zoom отключён в system view;
+    - правая системная панель (`System Panel`) с owner/economy метриками, списком локальных станций и кораблей;
+    - Markets как галактический dashboard: global KPI, commodity matrix, system stress, station anomalies, hotspots, station drilldown;
+    - визуальное поведение: сглаженное движение кораблей через кэш сегментов (интерполяция по `segment_eta_remaining`).
 - **В работе**
   - UX-полировка station operations (согласованность context/panel state);
-  - более точные quantity-presets под разные действия;
+  - quantity-presets и быстрые действия для station-loop;
   - расширение интеграционных UI-тестов station-loop.
 - **Перспектива**
   - масштабирование gameplay от single-ship command loop к multi-ship orchestration;
