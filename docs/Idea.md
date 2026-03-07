@@ -738,6 +738,11 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - station trading loop (`Buy`/`Sell`) и explicit contract actions (`Load`/`Unload`);
   - `CargoSource`-lock: контрактный груз нельзя продать как spot;
   - snapshot `v4` + backward-load пути для `v3`.
+  - **UI/UX уже реализовано (уже в Stage A)**
+    - окна/панели: `Systems`, `NPC Corporations`, `Ship Card`, `Station Operations` (`Station Card`), `Markets`, `Finance`, `Policies`, `Contracts`;
+    - контекстные действия: `Fly to station`, `Track ship`, `Open ship card`/`Open station card`;
+    - визуальное поведение: сглаженное движение кораблей через кэш сегментов (интерполяция по `segment_eta_remaining`);
+    - код-ориентиры: `crates/gatebound_app/src/ui/hud/render.rs`, `crates/gatebound_app/src/runtime/sim.rs`, `crates/gatebound_app/src/render/world.rs`.
 - **В работе**
   - UX-полировка station operations (согласованность context/panel state);
   - более точные quantity-presets под разные действия;
@@ -753,7 +758,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 ### 22.2) Перспективы (Roadmap)
 - **Ближайшие итерации (Stage A+)**
-  - UX и тесты station loop, чтобы снизить friction ручных операций;
+  - UX и тесты station loop (для уже реализованного Stage A UI/UX — только polish), чтобы снизить friction ручных операций;
   - более прозрачный прогресс контрактов в UI (pickup/in-transit/unload), чтобы повысить управляемость;
   - QoL для single-ship flow (быстрые действия и меньше лишних кликов), опираясь на текущие core API.
 - **Stage B**
