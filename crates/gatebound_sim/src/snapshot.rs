@@ -118,12 +118,7 @@ pub(crate) struct ActiveModifierSnapshot {
 }
 
 pub fn save_snapshot(simulation: &Simulation, path: &Path) -> Result<(), SnapshotError> {
-    let envelope = SnapshotEnvelope {
-        version: SNAPSHOT_VERSION,
-        state: simulation.snapshot_state(),
-    };
-    let payload = serde_json::to_string_pretty(&envelope)
-        .map_err(|error| SnapshotError::Parse(format!("snapshot serialize failed: {error}")))?;
+    let payload = serialize_snapshot(simulation)?;
     fs::write(path, format!("{payload}\n"))
         .map_err(|error| SnapshotError::Io(format!("save failed: {error}")))
 }
@@ -131,7 +126,23 @@ pub fn save_snapshot(simulation: &Simulation, path: &Path) -> Result<(), Snapsho
 pub fn load_snapshot(path: &Path, config: RuntimeConfig) -> Result<Simulation, SnapshotError> {
     let payload = fs::read_to_string(path)
         .map_err(|error| SnapshotError::Io(format!("load failed: {error}")))?;
-    let envelope: SnapshotEnvelopeValue = serde_json::from_str(&payload)
+    deserialize_snapshot(&payload, config)
+}
+
+pub fn serialize_snapshot(simulation: &Simulation) -> Result<String, SnapshotError> {
+    let envelope = SnapshotEnvelope {
+        version: SNAPSHOT_VERSION,
+        state: simulation.snapshot_state(),
+    };
+    serde_json::to_string_pretty(&envelope)
+        .map_err(|error| SnapshotError::Parse(format!("snapshot serialize failed: {error}")))
+}
+
+pub fn deserialize_snapshot(
+    payload: &str,
+    config: RuntimeConfig,
+) -> Result<Simulation, SnapshotError> {
+    let envelope: SnapshotEnvelopeValue = serde_json::from_str(payload)
         .map_err(|error| SnapshotError::Parse(format!("snapshot parse failed: {error}")))?;
     if envelope.version != SNAPSHOT_VERSION {
         return Err(SnapshotError::Parse(format!(

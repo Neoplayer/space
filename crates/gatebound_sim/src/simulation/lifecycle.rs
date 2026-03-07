@@ -218,6 +218,17 @@ impl Simulation {
         crate::snapshot::load_snapshot(path, config)
     }
 
+    pub fn snapshot_payload(&self) -> Result<String, SnapshotError> {
+        crate::snapshot::serialize_snapshot(self)
+    }
+
+    pub fn from_snapshot_payload(
+        payload: &str,
+        config: RuntimeConfig,
+    ) -> Result<Self, SnapshotError> {
+        crate::snapshot::deserialize_snapshot(payload, config)
+    }
+
     pub fn snapshot_hash(&self) -> u64 {
         crate::snapshot::snapshot_hash(self)
     }
