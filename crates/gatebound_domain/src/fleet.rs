@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use crate::{
-    CargoLoad, CargoManifest, CargoSource, Commodity, CompanyId, ContractId, GateId, RouteSegment,
-    SegmentKind, ShipId, StationId, SystemId, TradeOrderId,
+    CargoLoad, CargoManifest, CargoSource, Commodity, CompanyId, GateId, RouteSegment, SegmentKind,
+    ShipId, StationId, SystemId, TradeOrderId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub enum RepeatMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShipRole {
-    PlayerContract,
+    Player,
     NpcTrade,
 }
 
@@ -81,7 +81,6 @@ pub struct FleetShipStatus {
     pub current_station: Option<StationId>,
     pub target: Option<SystemId>,
     pub eta: u32,
-    pub active_contract: Option<ContractId>,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_total_amount: f64,
     pub cargo_used_capacity: f64,
@@ -233,7 +232,6 @@ pub struct Ship {
     pub segment_eta_remaining: u32,
     pub segment_progress_total: u32,
     pub current_segment_kind: Option<SegmentKind>,
-    pub active_contract: Option<ContractId>,
     pub route_cursor: usize,
     pub policy: AutopilotPolicy,
     pub planned_path: Vec<SystemId>,

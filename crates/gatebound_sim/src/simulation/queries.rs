@@ -215,31 +215,121 @@ impl Simulation {
         }
     }
 
-    pub fn contracts_board_view(&self) -> ContractsBoardView {
-        let mut active_contracts = self
-            .contracts
+    pub fn missions_board_view(&self) -> MissionsBoardView {
+        let mut active_missions = self
+            .missions
             .values()
-            .filter(|contract| !contract.completed && !contract.failed)
-            .cloned()
+            .filter(|mission| {
+                !matches!(
+                    mission.status,
+                    MissionStatus::Completed | MissionStatus::Cancelled
+                )
+            })
+            .map(|mission| self.build_mission_detail_view(mission))
             .collect::<Vec<_>>();
-        active_contracts.sort_by_key(|contract| contract.id.0);
+        active_missions.sort_by_key(|entry| entry.mission.id.0);
 
         let mut offers = self
-            .contract_offers
+            .mission_offers
             .values()
             .cloned()
-            .map(|offer| ContractOfferView {
-                destination_intel: self.market_intel(offer.destination, false),
-                offer,
-            })
+            .map(|offer| MissionOfferView { offer })
             .collect::<Vec<_>>();
         offers.sort_by_key(|entry| entry.offer.id);
 
-        ContractsBoardView {
-            active_contracts,
-            route_gates: self.world.edges.iter().map(|edge| edge.id).collect(),
+        MissionsBoardView {
+            active_missions,
             offers,
         }
+    }
+
+    pub fn station_mission_view(
+        &self,
+        ship_id: ShipId,
+        station_id: StationId,
+    ) -> Option<StationMissionView> {
+        let ship = self.ships.get(&ship_id)?;
+        let docked = self.is_ship_docked_at(ship_id, station_id);
+        let mut offers = self
+            .mission_offers
+            .values()
+            .filter_map(|offer| {
+                let direction = if offer.origin_station == station_id {
+                    Some(StationMissionDirection::Outbound)
+                } else if offer.destination_station == station_id {
+                    Some(StationMissionDirection::Inbound)
+                } else {
+                    None
+                }?;
+                Some(StationMissionOfferRowView {
+                    offer: offer.clone(),
+                    direction,
+                })
+            })
+            .collect::<Vec<_>>();
+        offers.sort_by(|left, right| {
+            right
+                .offer
+                .reward
+                .total_cmp(&left.offer.reward)
+                .then_with(|| left.offer.id.cmp(&right.offer.id))
+        });
+
+        let mut mission_rows = self
+            .missions
+            .values()
+            .filter_map(|mission| {
+                if matches!(
+                    mission.status,
+                    MissionStatus::Completed | MissionStatus::Cancelled
+                ) {
+                    return None;
+                }
+                let direction = if mission.origin_station == station_id {
+                    Some(StationMissionDirection::Outbound)
+                } else if mission.destination_station == station_id {
+                    Some(StationMissionDirection::Inbound)
+                } else {
+                    None
+                }?;
+                let station_storage_amount = self
+                    .player_mission_storage
+                    .get(&station_id)
+                    .and_then(|lots| lots.get(&mission.id))
+                    .copied()
+                    .unwrap_or(0.0);
+                let ship_cargo_amount = ship.amount_for(
+                    mission.commodity,
+                    CargoSource::Mission {
+                        mission_id: mission.id,
+                    },
+                );
+                Some(StationMissionCargoRowView {
+                    mission: mission.clone(),
+                    direction,
+                    station_storage_amount,
+                    ship_cargo_amount,
+                    delivered_amount: mission.delivered_amount,
+                    can_load: docked
+                        && station_id == mission.origin_station
+                        && station_storage_amount > 0.0
+                        && ship.remaining_capacity() > 0.0,
+                    can_unload: docked
+                        && ship_cargo_amount > 0.0
+                        && (station_id == mission.origin_station
+                            || station_id == mission.destination_station),
+                })
+            })
+            .collect::<Vec<_>>();
+        mission_rows.sort_by_key(|row| row.mission.id.0);
+
+        Some(StationMissionView {
+            ship_id,
+            station_id,
+            docked,
+            offers,
+            mission_rows,
+        })
     }
 
     pub fn fleet_panel_view(&self) -> FleetPanelView {
@@ -435,9 +525,6 @@ impl Simulation {
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
             cargo_total_amount: ship.cargo_total_amount(),
-            active_contract: ship
-                .active_contract
-                .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
             market_rows: self.market_rows_for_station(station_id),
         })
     }
@@ -459,7 +546,7 @@ impl Simulation {
                     .iter()
                     .filter_map(|commodity| {
                         market.goods.get(commodity).map(|state| {
-                            let player_cargo = ship.cargo_amount(*commodity);
+                            let player_cargo = ship.spot_amount(*commodity);
 
                             let effective_buy_price = state.price * (1.0 + market_fee_rate);
                             let effective_sell_price = state.price * (1.0 - market_fee_rate);
@@ -524,9 +611,6 @@ impl Simulation {
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
             cargo_total_amount: ship.cargo_total_amount(),
-            active_contract: ship
-                .active_contract
-                .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
             market_fee_rate,
             rows,
         })
@@ -574,7 +658,9 @@ impl Simulation {
                 let player_cargo = ship
                     .cargo_lots()
                     .iter()
-                    .filter(|cargo| cargo.commodity == commodity)
+                    .filter(|cargo| {
+                        cargo.commodity == commodity && cargo.source == CargoSource::Spot
+                    })
                     .map(|cargo| cargo.amount)
                     .sum();
                 let load_cap = if docked {
@@ -618,6 +704,19 @@ impl Simulation {
     pub fn ship_card_view(&self, ship_id: ShipId) -> Option<ShipCardView> {
         let ship = self.ships.get(&ship_id)?;
         let owner = self.companies.get(&ship.company_id)?;
+        let mut mission_cargo = ship
+            .cargo_lots()
+            .iter()
+            .filter_map(|cargo| match cargo.source {
+                CargoSource::Mission { mission_id } => self
+                    .missions
+                    .get(&mission_id)
+                    .map(|mission| self.build_mission_detail_view(mission)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        mission_cargo.sort_by_key(|detail| detail.mission.id.0);
+        mission_cargo.dedup_by_key(|detail| detail.mission.id);
 
         Some(ShipCardView {
             ship_id,
@@ -636,9 +735,7 @@ impl Simulation {
             cargo_capacity: ship.cargo_capacity,
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_total_amount: ship.cargo_total_amount(),
-            active_contract: ship
-                .active_contract
-                .and_then(|contract_id| self.contracts.get(&contract_id).cloned()),
+            mission_cargo,
             policy: ship.policy.clone(),
             route_len: ship.planned_path.len(),
             reroutes: ship.reroutes,
@@ -663,10 +760,15 @@ impl Simulation {
             debt: self.outstanding_debt(),
             interest_rate: self.current_loan_interest_rate(),
             reputation: self.reputation,
-            active_contracts: self
-                .contracts
+            active_missions: self
+                .missions
                 .values()
-                .filter(|contract| !contract.completed && !contract.failed)
+                .filter(|mission| {
+                    !matches!(
+                        mission.status,
+                        MissionStatus::Completed | MissionStatus::Cancelled
+                    )
+                })
                 .count(),
             active_ships: self.ships.len(),
             sla_success_rate: cycle_report.sla_success_rate,
@@ -700,12 +802,6 @@ impl Simulation {
         })
     }
 
-    pub fn station_of_contract(&self, contract_id: ContractId) -> Option<(StationId, StationId)> {
-        self.contracts
-            .get(&contract_id)
-            .map(|contract| (contract.origin_station, contract.destination_station))
-    }
-
     pub fn station_position(&self, station_id: StationId) -> Option<(f64, f64)> {
         self.world.station_coords(station_id)
     }
@@ -734,9 +830,25 @@ impl Simulation {
             .ships
             .values()
             .map(|ship| {
-                let warning = if ship.eta_ticks_remaining == 0 && ship.active_contract.is_none() {
+                let mut mission_ids = ship
+                    .cargo_lots()
+                    .iter()
+                    .filter_map(|cargo| match cargo.source {
+                        CargoSource::Mission { mission_id } => Some(mission_id),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                mission_ids.sort_by_key(|mission_id| mission_id.0);
+                mission_ids.dedup();
+
+                let warning = if ship.eta_ticks_remaining == 0
+                    && ship.trade_order_id.is_none()
+                    && mission_ids.is_empty()
+                    && ship.current_target.is_none()
+                    && ship.planned_path.is_empty()
+                {
                     Some(FleetWarning::ShipIdle)
-                } else if ship.active_contract.is_some()
+                } else if !mission_ids.is_empty()
                     && ship.current_target.is_none()
                     && ship.planned_path.is_empty()
                 {
@@ -757,7 +869,6 @@ impl Simulation {
                     current_station: ship.current_station,
                     target: ship.current_target,
                     eta: ship.eta_ticks_remaining,
-                    active_contract: ship.active_contract,
                     cargo_lots: ship.cargo_lots().to_vec(),
                     cargo_total_amount: ship.cargo_total_amount(),
                     cargo_used_capacity: ship.cargo_used_capacity(),
@@ -934,6 +1045,53 @@ impl Simulation {
             })
             .sum::<f64>()
             / edges.len() as f64
+    }
+
+    fn build_mission_detail_view(&self, mission: &Mission) -> MissionDetailView {
+        let origin_storage_amount = self
+            .player_mission_storage
+            .get(&mission.origin_station)
+            .and_then(|lots| lots.get(&mission.id))
+            .copied()
+            .unwrap_or(0.0);
+
+        let mut shipments = self
+            .ships
+            .values()
+            .filter_map(|ship| {
+                let amount = ship.amount_for(
+                    mission.commodity,
+                    CargoSource::Mission {
+                        mission_id: mission.id,
+                    },
+                );
+                if amount <= 1e-9 {
+                    return None;
+                }
+
+                let ship_name = self
+                    .companies
+                    .get(&ship.company_id)
+                    .map(|_| ship.descriptor.name.clone())
+                    .unwrap_or_else(|| format!("Ship {}", ship.id.0));
+                Some(MissionShipCargoView {
+                    ship_id: ship.id,
+                    ship_name,
+                    amount,
+                })
+            })
+            .collect::<Vec<_>>();
+        shipments.sort_by_key(|shipment| shipment.ship_id.0);
+
+        let in_transit_amount = shipments.iter().map(|shipment| shipment.amount).sum();
+
+        MissionDetailView {
+            mission: mission.clone(),
+            origin_storage_amount,
+            delivered_amount: mission.delivered_amount,
+            in_transit_amount,
+            shipments,
+        }
     }
 
     fn default_player_ship_id(&self) -> Option<ShipId> {

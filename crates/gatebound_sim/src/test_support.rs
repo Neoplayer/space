@@ -40,7 +40,6 @@ pub struct ShipPatch {
     pub segment_eta_remaining: Option<u32>,
     pub segment_progress_total: Option<u32>,
     pub current_segment_kind: Option<Option<SegmentKind>>,
-    pub active_contract: Option<Option<ContractId>>,
     pub route_cursor: Option<usize>,
     pub policy: Option<AutopilotPolicy>,
     pub planned_path: Option<Vec<SystemId>>,
@@ -164,9 +163,9 @@ impl SimulationScenarioBuilder {
         self.stations_in_system(system_id).into_iter().next()
     }
 
-    pub fn with_contract_offer(&mut self, offer: ContractOffer) -> &mut Self {
+    pub fn with_mission_offer(&mut self, offer: MissionOffer) -> &mut Self {
         self.simulation
-            .test_support_contract_offers_mut()
+            .test_support_mission_offers_mut()
             .insert(offer.id, offer);
         self
     }
@@ -211,9 +210,6 @@ impl SimulationScenarioBuilder {
             }
             if let Some(current_segment_kind) = patch.current_segment_kind {
                 ship.current_segment_kind = current_segment_kind;
-            }
-            if let Some(active_contract) = patch.active_contract {
-                ship.active_contract = active_contract;
             }
             if let Some(route_cursor) = patch.route_cursor {
                 ship.route_cursor = route_cursor;

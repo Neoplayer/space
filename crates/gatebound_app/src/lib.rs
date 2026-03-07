@@ -20,8 +20,8 @@ use render::world::{draw_world_gizmos, setup_camera, update_ship_motion_cache, S
 use runtime::save::{save_menu_hotkey_system, SaveMenuState, SaveStorage};
 use runtime::sim::{
     apply_time_controls, drive_simulation, handle_panel_hotkeys, handle_risk_hotkeys,
-    sync_selected_station, sync_selected_system, ContractsFilterState, FinanceUiState,
-    MarketsUiState, SelectedShip, SelectedStation, SelectedSystem, ShipUiState, SimClock,
+    sync_selected_station, sync_selected_system, FinanceUiState, MarketsUiState,
+    MissionsPanelState, SelectedShip, SelectedStation, SelectedSystem, ShipUiState, SimClock,
     SimResource, StationUiState, TrackedShip, UiKpiTracker, UiPanelState,
 };
 use ui::hud::{draw_hud_panel, HudMessages};
@@ -39,7 +39,7 @@ pub fn run() {
         .insert_resource(ShipMotionCache::default())
         .insert_resource(FinanceUiState::default())
         .insert_resource(UiPanelState::default())
-        .insert_resource(ContractsFilterState::default())
+        .insert_resource(MissionsPanelState::default())
         .insert_resource(SelectedShip::default())
         .insert_resource(SelectedSystem::default())
         .insert_resource(SelectedStation::default())

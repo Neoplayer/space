@@ -22,7 +22,7 @@ pub struct CompanyId(pub usize);
 pub struct ShipId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ContractId(pub usize);
+pub struct MissionId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TradeOrderId(pub u64);

@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use gatebound_domain::{
-    Commodity, ContractOffer, CycleReport, GateId, LoanOfferId, OfferProblemTag, ShipId, StationId,
-    SystemId, TickReport,
+    Commodity, CycleReport, LoanOfferId, MissionId, ShipId, StationId, SystemId, TickReport,
 };
 use gatebound_sim::Simulation;
 use std::collections::VecDeque;
@@ -12,7 +11,7 @@ use crate::ui::hud::HudMessages;
 
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
 pub struct UiPanelState {
-    pub contracts: bool,
+    pub missions: bool,
     pub fleet: bool,
     pub markets: bool,
     pub assets: bool,
@@ -32,7 +31,7 @@ pub struct PanelButtonSpec {
 const PANEL_BUTTON_SPECS: [PanelButtonSpec; 8] = [
     PanelButtonSpec {
         index: 1,
-        label: "Contracts",
+        label: "Missions",
         hotkey: "F1",
     },
     PanelButtonSpec {
@@ -78,7 +77,7 @@ pub fn panel_button_specs() -> &'static [PanelButtonSpec; 8] {
 
 pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
     match index {
-        1 => panels.contracts,
+        1 => panels.missions,
         2 => panels.fleet,
         3 => panels.markets,
         4 => panels.assets,
@@ -90,38 +89,9 @@ pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfferSortMode {
-    MarginDesc,
-    RiskAsc,
-    EtaAsc,
-}
-
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-pub struct ContractsFilterState {
-    pub min_margin: f64,
-    pub max_risk: f64,
-    pub max_eta: u32,
-    pub commodity: Option<Commodity>,
-    pub route_gate: Option<GateId>,
-    pub problem: Option<OfferProblemTag>,
-    pub premium_only: bool,
-    pub sort_mode: OfferSortMode,
-}
-
-impl Default for ContractsFilterState {
-    fn default() -> Self {
-        Self {
-            min_margin: 0.0,
-            max_risk: 2.0,
-            max_eta: 240,
-            commodity: None,
-            route_gate: None,
-            problem: None,
-            premium_only: false,
-            sort_mode: OfferSortMode::MarginDesc,
-        }
-    }
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MissionsPanelState {
+    pub selected_mission_id: Option<MissionId>,
 }
 
 #[derive(Resource, Debug, Clone, PartialEq)]
@@ -257,6 +227,7 @@ pub enum StationCardTab {
     Info,
     Trade,
     Storage,
+    Missions,
 }
 
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
@@ -270,6 +241,7 @@ pub struct StationUiState {
     pub trade_quantity: f64,
     pub storage_commodity: Commodity,
     pub storage_quantity: f64,
+    pub mission_quantity: f64,
 }
 
 impl Default for StationUiState {
@@ -284,6 +256,7 @@ impl Default for StationUiState {
             trade_quantity: 5.0,
             storage_commodity: Commodity::Fuel,
             storage_quantity: 5.0,
+            mission_quantity: 5.0,
         }
     }
 }
@@ -303,7 +276,7 @@ impl SimResource {
                 tick: 0,
                 cycle: 0,
                 active_ships: overview.active_ships,
-                active_contracts: overview.active_contracts,
+                active_missions: overview.active_missions,
                 total_queue_delay: 0,
                 avg_price_index: overview.avg_price_index,
             },
@@ -434,35 +407,6 @@ pub fn cycle_selected_ship(
     Some(ship_ids[next_idx])
 }
 
-pub fn apply_offer_filters(
-    mut offers: Vec<ContractOffer>,
-    filters: ContractsFilterState,
-) -> Vec<ContractOffer> {
-    offers.retain(|offer| {
-        offer.margin_estimate >= filters.min_margin
-            && offer.risk_score <= filters.max_risk
-            && offer.eta_ticks <= filters.max_eta
-            && filters
-                .commodity
-                .is_none_or(|commodity| offer.commodity == commodity)
-            && filters
-                .route_gate
-                .is_none_or(|gate_id| offer.route_gate_ids.contains(&gate_id))
-            && filters
-                .problem
-                .is_none_or(|problem| offer.problem_tag == problem)
-            && (!filters.premium_only || offer.premium)
-    });
-    match filters.sort_mode {
-        OfferSortMode::MarginDesc => {
-            offers.sort_by(|a, b| b.margin_estimate.total_cmp(&a.margin_estimate))
-        }
-        OfferSortMode::RiskAsc => offers.sort_by(|a, b| a.risk_score.total_cmp(&b.risk_score)),
-        OfferSortMode::EtaAsc => offers.sort_by_key(|offer| offer.eta_ticks),
-    }
-    offers
-}
-
 pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
     match ch {
         '1' => Some(1),
@@ -479,7 +423,7 @@ pub fn panel_hotkey_to_index(ch: char) -> Option<u8> {
 
 pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
     match index {
-        1 => panels.contracts = !panels.contracts,
+        1 => panels.missions = !panels.missions,
         2 => panels.fleet = !panels.fleet,
         3 => panels.markets = !panels.markets,
         4 => panels.assets = !panels.assets,

@@ -1,21 +1,20 @@
 use gatebound_domain::{
-    AutopilotPolicy, CargoLoad, Commodity, CompanyArchetype, Contract, ContractTypeStageA,
-    FleetShipStatus, GateId, MilestoneStatus, SegmentKind, ShipClass, ShipId, ShipModule, ShipRole,
-    ShipTechnicalState, StationId, StationProfile, SystemId,
+    AutopilotPolicy, CargoLoad, Commodity, CompanyArchetype, FleetShipStatus, MilestoneStatus,
+    SegmentKind, ShipClass, ShipId, ShipModule, ShipRole, ShipTechnicalState, StationId,
+    StationProfile, SystemId,
 };
 use gatebound_sim::{
-    ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, ContractOfferView,
-    CorporationRowView, LoanOfferView, MarketGlobalKpisView, MarketPanelView, Simulation,
-    StationCommodityDetailView, StationCommodityHotspotView, StationMarketAnomalyRowView,
-    StationMarketDetailView, StationStorageView, StationTradeView, SystemCommodityHotspotView,
-    SystemDetailsView, SystemMarketStressRowView, SystemShipSummaryView, SystemStationSummaryView,
-    SystemsPanelRowView, SystemsPanelView, TimeSettingsView,
+    ActiveLoanView, CommodityHotspotsView, CommodityMarketRowView, CorporationRowView,
+    LoanOfferView, MarketGlobalKpisView, MarketPanelView, MissionDetailView, MissionOfferView,
+    Simulation, StationCommodityDetailView, StationCommodityHotspotView,
+    StationMarketAnomalyRowView, StationMarketDetailView, StationMissionView, StationStorageView,
+    StationTradeView, SystemCommodityHotspotView, SystemDetailsView, SystemMarketStressRowView,
+    SystemShipSummaryView, SystemStationSummaryView, SystemsPanelRowView, SystemsPanelView,
+    TimeSettingsView,
 };
 
 use crate::input::camera::CameraMode;
-use crate::runtime::sim::{
-    apply_offer_filters, derive_cycle_report, ContractsFilterState, UiKpiTracker,
-};
+use crate::runtime::sim::{derive_cycle_report, UiKpiTracker};
 
 use super::labels::commodity_label;
 
@@ -27,7 +26,7 @@ pub struct HudSnapshot {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub active_contracts: usize,
+    pub active_missions: usize,
     pub active_ships: usize,
     pub selected_system_id: SystemId,
     pub selected_station_id: Option<StationId>,
@@ -39,12 +38,12 @@ pub struct HudSnapshot {
     pub sla_success_rate: f64,
     pub reroutes: u64,
     pub camera_mode: String,
-    pub route_gate_options: Vec<GateId>,
-    pub contract_lines: Vec<String>,
+    pub mission_lines: Vec<String>,
     pub ship_lines: Vec<String>,
     pub active_loan: Option<ActiveLoanView>,
     pub loan_offers: Vec<LoanOfferView>,
-    pub offers: Vec<ContractOfferView>,
+    pub mission_offers: Vec<MissionOfferView>,
+    pub mission_details: Vec<MissionDetailView>,
     pub fleet_rows: Vec<FleetShipStatus>,
     pub fleet_list_rows: Vec<FleetListRowSnapshot>,
     pub systems_list_rows: Vec<SystemsListRowSnapshot>,
@@ -249,7 +248,7 @@ pub struct ShipCardSnapshot {
     pub cargo_capacity: f64,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_total_amount: f64,
-    pub active_contract: Option<Contract>,
+    pub mission_cargo: Vec<MissionDetailView>,
     pub policy: AutopilotPolicy,
     pub route_len: usize,
     pub reroutes: u64,
@@ -348,6 +347,7 @@ pub struct StationCardSnapshot {
     pub docked: bool,
     pub trade: StationTradeView,
     pub storage: StationStorageView,
+    pub missions: StationMissionView,
 }
 
 fn format_time_label(tick: u64, time: TimeSettingsView) -> String {
@@ -381,13 +381,12 @@ pub fn build_hud_snapshot(
     station_card_station_id: Option<StationId>,
     ship_card_ship_id: Option<ShipId>,
     selected_ship_id: Option<ShipId>,
-    filters: ContractsFilterState,
     kpi: &UiKpiTracker,
 ) -> HudSnapshot {
     let cycle_report = derive_cycle_report(simulation);
     let overview = simulation.hud_overview_view();
     let time_settings = simulation.time_settings_view();
-    let contracts_board = simulation.contracts_board_view();
+    let missions_board = simulation.missions_board_view();
     let fleet_panel = simulation.fleet_panel_view();
     let render_snapshot = simulation.world_render_snapshot();
     let market_panel = simulation.market_panel_view(
@@ -415,26 +414,26 @@ pub fn build_hud_snapshot(
     let ship_card =
         ship_card_ship_id.and_then(|ship_id| build_ship_card_snapshot_for_ui(simulation, ship_id));
 
-    let contract_lines = contracts_board
-        .active_contracts
+    let mission_lines = missions_board
+        .active_missions
         .iter()
         .take(8)
-        .map(|contract| {
-            let kind = match contract.kind {
-                ContractTypeStageA::Delivery => "Delivery",
-                ContractTypeStageA::Supply => "Supply",
-            };
+        .map(|detail| {
+            let mission = &detail.mission;
             format!(
-                "#{} {kind} {} S{}:A{} -> S{}:A{} qty={:.1} deadline={} miss={}",
-                contract.id.0,
-                commodity_label(contract.commodity),
-                contract.origin.0,
-                contract.origin_station.0,
-                contract.destination.0,
-                contract.destination_station.0,
-                contract.quantity,
-                contract.deadline_tick,
-                contract.missed_cycles,
+                "#{} {:?} {} S{}:A{} -> S{}:A{} qty={:.1} reward={:.1} stored={:.1} transit={:.1} delivered={:.1}",
+                mission.id.0,
+                mission.kind,
+                commodity_label(mission.commodity),
+                mission.origin.0,
+                mission.origin_station.0,
+                mission.destination.0,
+                mission.destination_station.0,
+                mission.quantity,
+                mission.reward,
+                detail.origin_storage_amount,
+                detail.in_transit_amount,
+                detail.delivered_amount,
             )
         })
         .collect::<Vec<_>>();
@@ -468,24 +467,6 @@ pub fn build_hud_snapshot(
         })
         .collect::<Vec<_>>();
 
-    let offers = apply_offer_filters(
-        contracts_board
-            .offers
-            .iter()
-            .map(|entry| entry.offer.clone())
-            .collect::<Vec<_>>(),
-        filters,
-    )
-    .into_iter()
-    .filter_map(|offer| {
-        contracts_board
-            .offers
-            .iter()
-            .find(|entry| entry.offer.id == offer.id)
-            .cloned()
-    })
-    .collect::<Vec<_>>();
-
     HudSnapshot {
         tick: overview.tick,
         cycle: overview.cycle,
@@ -493,7 +474,7 @@ pub fn build_hud_snapshot(
         debt: overview.debt,
         interest_rate: overview.interest_rate,
         reputation: overview.reputation,
-        active_contracts: overview.active_contracts,
+        active_missions: overview.active_missions,
         active_ships: overview.active_ships,
         selected_system_id,
         selected_station_id,
@@ -508,12 +489,12 @@ pub fn build_hud_snapshot(
             CameraMode::Galaxy => "Galaxy".to_string(),
             CameraMode::System(system_id) => format!("System({})", system_id.0),
         },
-        route_gate_options: contracts_board.route_gates,
-        contract_lines,
+        mission_lines,
         ship_lines,
         active_loan: finance_panel.active_loan,
         loan_offers: finance_panel.loan_offers,
-        offers,
+        mission_offers: missions_board.offers,
+        mission_details: missions_board.active_missions,
         fleet_rows: fleet_panel.rows,
         fleet_list_rows,
         systems_list_rows,
@@ -1000,7 +981,7 @@ pub(crate) fn build_ship_card_snapshot_for_ui(
         cargo_capacity: view.cargo_capacity,
         cargo_lots: view.cargo_lots,
         cargo_total_amount: view.cargo_total_amount,
-        active_contract: view.active_contract,
+        mission_cargo: view.mission_cargo,
         policy: view.policy,
         route_len: view.route_len,
         reroutes: view.reroutes,
@@ -1017,6 +998,7 @@ pub(crate) fn build_station_card_snapshot_for_ui(
 ) -> Option<StationCardSnapshot> {
     let trade = simulation.station_trade_view(ship_id, station_id)?;
     let storage = simulation.station_storage_view(ship_id, station_id)?;
+    let missions = simulation.station_mission_view(ship_id, station_id)?;
     let topology = simulation.camera_topology_view();
     let (system, station) = topology.systems.iter().find_map(|system| {
         system
@@ -1051,6 +1033,7 @@ pub(crate) fn build_station_card_snapshot_for_ui(
         docked: trade.docked,
         trade,
         storage,
+        missions,
     })
 }
 

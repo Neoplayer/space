@@ -54,7 +54,6 @@ impl Simulation {
             .filter(|ship| {
                 ship.company_id == company_id
                     && ship.role == ShipRole::NpcTrade
-                    && ship.active_contract.is_none()
                     && ship.trade_order_id.is_none()
                     && ship.segment_eta_remaining == 0
                     && ship.movement_queue.is_empty()

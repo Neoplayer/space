@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 
-mod contracts;
 mod economy;
 mod finance;
 mod lifecycle;
 mod milestones;
+mod missions;
 mod movement;
 mod npc;
 mod queries;
@@ -152,7 +152,7 @@ fn stage_a_ship_metadata(
     role: ShipRole,
 ) -> (ShipDescriptor, Vec<ShipModule>, ShipTechnicalState) {
     let class = match (role, company_id.0) {
-        (ShipRole::PlayerContract, _) => ShipClass::Courier,
+        (ShipRole::Player, _) => ShipClass::Courier,
         (_, 1 | 2 | 5 | 6) => ShipClass::Hauler,
         (_, 3) => ShipClass::Miner,
         _ => ShipClass::Industrial,
@@ -169,7 +169,7 @@ fn stage_a_ship_metadata(
         class,
         description: match class {
             ShipClass::Courier => {
-                "Fast-response contract hull configured for dispatch runs, inspections, and operator oversight."
+                "Fast-response mission hull configured for dispatch runs, inspections, and operator oversight."
             }
             ShipClass::Hauler => {
                 "General freight workhorse balancing cargo throughput, dock cadence, and dependable route turnover."
@@ -197,7 +197,7 @@ fn stage_a_ship_metadata(
                 name: "Courier Flight Deck".to_string(),
                 status: status_for(0),
                 details:
-                    "Dispatch bridge with rapid traffic clearances and contract telemetry uplinks."
+                    "Dispatch bridge with rapid traffic clearances and mission telemetry uplinks."
                         .to_string(),
             },
             ShipModule {
@@ -341,13 +341,13 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
     let player_location = player_route[0];
     let hop_limit = stage_a_route_hop_limit(world);
     let (descriptor, modules, technical_state) =
-        stage_a_ship_metadata(ShipId(0), CompanyId(0), ShipRole::PlayerContract);
+        stage_a_ship_metadata(ShipId(0), CompanyId(0), ShipRole::Player);
     ships.insert(
         ShipId(0),
         Ship {
             id: ShipId(0),
             company_id: CompanyId(0),
-            role: ShipRole::PlayerContract,
+            role: ShipRole::Player,
             location: player_location,
             current_station: world.first_station(player_location),
             eta_ticks_remaining: 0,
@@ -359,7 +359,6 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
             segment_eta_remaining: 0,
             segment_progress_total: 0,
             current_segment_kind: None,
-            active_contract: None,
             route_cursor: 0,
             policy: AutopilotPolicy {
                 max_hops: hop_limit,
@@ -400,7 +399,6 @@ fn seed_stage_a_ships(world: &World) -> BTreeMap<ShipId, Ship> {
                 segment_eta_remaining: 0,
                 segment_progress_total: 0,
                 current_segment_kind: None,
-                active_contract: None,
                 route_cursor: 0,
                 policy: AutopilotPolicy {
                     max_hops: hop_limit,

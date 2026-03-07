@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
-use crate::ContractId;
+use crate::MissionId;
 
 const CARGO_EPSILON: f64 = 1e-9;
 
@@ -38,7 +38,7 @@ pub struct CargoLoad {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CargoSource {
     Spot,
-    Contract { contract_id: ContractId },
+    Mission { mission_id: MissionId },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -8,22 +8,22 @@
 **Gatebound Logistics** — это космический логистический тайкун, где экономика полностью живая:  
 NPC-компании добывают, производят, перевозят и торгуют. **Игрок входит в уже работающий рынок**, конкурирует/кооперируется, строит собственную логистическую империю.
 
-Ключ: **игра не про войну**, а про **потоки** (goods flow), **контракты**, **узкие места** и **инфраструктуру**.
+Ключ: **игра не про войну**, а про **потоки** (goods flow), **миссии**, **узкие места** и **инфраструктуру**.
 
 ---
 
 ## 1) Игровая фантазия (Fantasy)
 - Ты видишь сверху «живую» систему: **корабли-геометрические фигуры** летают по понятным траекториям, стыкуются, ждут слоты, уходят через ворота.
 - Ты чувствуешь экономику руками: цены меняются **потому что** где-то не хватает топлива, перегружен док, или сгорела фабрика.
-- Ты начинаешь с малого (купить 1 транспорт и возить контракты), а заканчиваешь **владением воротами, хабами и производствами**.
+- Ты начинаешь с малого (купить 1 транспорт и возить миссии на перевозку), а заканчиваешь **владением воротами, хабами и производствами**.
 
 ---
 
 ## 2) Pillars (столпы дизайна)
 1. **Fully Alive Economy**  
    Никаких «скриптовых» цен. Всё происходит из производства/потребления/логистики/рисков.
-2. **Contracts First**  
-   Основной интерфейс игрока с рынком — **контракты** (перевозка, снабжение, долгосрок).
+2. **Mission First**  
+   Основной интерфейс игрока с рынком — **миссии на перевозку**, которые рождаются из реальных профицитов и дефицитов станций.
 3. **Infrastructure & Real Estate**  
    Игрок покупает **место на станциях/планетах** (площадки/слоты) для производств и складов.
 4. **Gates Define Strategy**  
@@ -41,18 +41,18 @@ NPC-компании добывают, производят, перевозят 
 - `tick = 1 second`
 - `cycle = 60 ticks = 60 sec @1x`
 - `rolling_window_cycles = 20`
-- Все SLA, события, штрафы и периодические обязательства Stage A измеряются в `cycles`.
+- Все события, штрафы и периодические обязательства Stage A измеряются в `cycles`.
 
 ### 2.3) Stage A In/Out (жёсткий scope)
-- `ContractTypeStageA = { Delivery, Supply }`
+- `MissionTypeStageA = { Transport }`
 - `RiskStageA = { gate_congestion, dock_congestion, fuel_shock }`
 - In Scope:
-  - Delivery/Supply контракты
+  - transport missions, создаваемые из surplus/deficit рынков
   - manual station commands (`Fly to station`) + automatic gate routing
   - lease + slot pricing
   - congestion + fuel shock
 - Out of Scope:
-  - Route Contract / Station Service
+  - Route/Service missions
   - station construction
   - full manual free-flight routing
   - reliability failures / piracy / storms
@@ -136,7 +136,7 @@ NPC-компании добывают, производят, перевозят 
 - предложения производителей
 - транспортных затрат и времени
 - складских ограничений
-- рисков и штрафов за срыв контрактов
+- рисков и задержек в миссионной логистике
 
 **Никаких “фиксированных прайсов”.** Только рынок.
 
@@ -205,7 +205,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - Для удалённых систем применяется `delayed intel`:
   - данные приходят с задержкой;
   - видна степень достоверности (`confidence`).
-- Такая модель создаёт пространство для риск-менеджмента маршрутов и контрактов.
+- Такая модель создаёт пространство для риск-менеджмента маршрутов и миссий.
 
 ---
 
@@ -217,7 +217,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 ### 6.1) Типы компаний (архетипы)
 1) **Haulers Co.** (перевозчики)  
-   Покупают контракты на доставку, владеют флотом, мало производств.
+   Балансируют рынок через торговые рейсы, владеют флотом, мало производств.
 2) **Miners Guild** (добытчики)  
    Контролируют сырьё, продают на хабы, иногда имеют 1 переработку.
 3) **Industrial Combine** (промышленники)  
@@ -225,7 +225,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 4) **Gate Services** (операторы ворот/хабов)  
    Получают прибыль с throughput (пошлины, сервис).
 5) **Planetary Authority** (планетарные администрации)  
-   Генерируют долгие контракты на снабжение, штрафуют за срывы.
+   Генерируют системный спрос и дефициты, которые превращаются в миссии для игрока.
 
 ### 6.2) Стартовая конфигурация (пример)
 - **Stage A baseline (каноничный):**
@@ -248,7 +248,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 ## 7) Игрок: роли и пути
 Игрок может быть одновременно:
-1) **Carrier** — возить чужие контракты.
+1) **Carrier** — возить миссионный груз между станциями.
 2) **Trader** — покупать/продавать на спреде (арбитраж).
 3) **Industrialist** — строить своё производство.
 4) **Infrastructure owner** — владеть складом/доком/хабом и брать плату за сервис.
@@ -286,53 +286,48 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 ---
 
-## 9) Контракты (ядро геймплея)
-Контракт — это “квест”, который создаёт экономика.
+## 9) Миссии (ядро player-loop)
+Миссия — это player-facing слой поверх живой экономики: она появляется там, где одна станция имеет профицит, а другая дефицит.
 
-### 9.1) Типы контрактов
-`ContractTypeStageA = { Delivery, Supply }`
+### 9.1) Типы миссий
+`MissionTypeStageA = { Transport }`
 
 **Stage A (обязательные):**
-1) **Delivery (разовая доставка)**
-- забрать X units в A
-- доставить в B до T
-- оплата: base + bonus за скорость
-- штраф: за опоздание/потерю
-
-2) **Supply (долгосрок)**
-- поставлять X/цикл в течение N циклов
-- оплата периодическая
-- штрафы за недопоставку
-- бонус за стабильность
+1) **Transport Mission**
+- зарезервировать X units товара на origin station;
+- загрузить миссионный груз бесплатно из mission storage;
+- доставить груз на destination station;
+- награда выплачивается автоматически после полной выгрузки;
+- миссия завершается без отдельной кнопки claim.
 
 Текущий execution-loop Stage A (реализован):
-- `accept -> fly to A -> load -> fly to B -> unload -> payout/penalty`
-- для `Delivery` и `Supply` нет авто-завершения “по прибытии” — прогресс идёт только через явные `load/unload` действия.
+- `accept -> fly to origin -> load -> fly to destination -> unload -> auto-complete`
+- при принятии миссии товар сразу снимается с рыночного stock origin-станции и кладётся в персональное mission storage игрока;
+- unload в destination повышает stock локального рынка;
+- unload в посторонней станции запрещён;
+- cancel разрешён только до первой загрузки и возвращает резерв обратно в рынок origin.
 
 **Stage B+ / advanced toggles (не часть Stage A baseline):**
-3) **Route Contract (обслуживание линии)**
-- поддерживать линию A↔B с частотой F
-- оплата за “выполненные рейсы”
-- полезно для создания “расписаний”
+2) **Route Mission**
+- поддерживать линию A↔B с частотой F;
+- используется для полуавтоматических player service routes.
 
-4) **Station Service**
-- хранить Y units товара Z
-- плата за хранение
-- даёт игроку путь “складского бизнеса”
+3) **Station Service Mission**
+- держать буфер Y units товара Z на конкретной станции;
+- даёт путь к складскому бизнесу и обслуживанию инфраструктуры.
 
-### 9.2) Рынок контрактов
-Контракты публикуют:
-- планеты
-- заводы
-- станции-хабы
-- NPC-компании (аутсорс перевозки)
+### 9.2) Доска миссий
+Миссии публикуются из реального состояния экономики:
+- outbound-миссии появляются на станции с профицитом;
+- inbound-миссии появляются на станции, где есть спрос/дефицит;
+- генерация использует route ETA, risk score и величину дисбаланса, но не вмешивается в NPC trade planner.
 
 Игрок видит:
-- маржу
-- риск
-- требуемый тоннаж
-- дедлайн
-- где узкое место (ворота/доки)
+- reward;
+- маршрут и ворота;
+- риск / ETA;
+- объём и товар;
+- текущее распределение груза: `origin storage / in transit / delivered`.
 
 ---
 
@@ -364,7 +359,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 Роль автопилота в текущем цикле:
 - **NPC-флот** продолжает policy-driven торговый поток и поддерживает “живой” рынок;
-- **игрок** выполняет контракты и торговлю через явные команды и station interaction loop.
+- **игрок** выполняет миссии и торговлю через явные команды и station interaction loop.
 
 Межсистемный перелёт всегда **многошаговый**:
 - движение внутри системы к нужным воротам;
@@ -389,7 +384,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ### 10.4) Отказы маршрутов и reroute
 - Длинные маршруты разрешены, но получают soft-cap через рост риска/штрафов.
 - При временной недоступности ребра (авария/событие/перегрузка) включается **auto re-route + warning**.
-- Игрок видит причину reroute и обновлённый ETA в Fleet/Contracts UI.
+- Игрок видит причину reroute и обновлённый ETA в Fleet/Missions UI.
 
 ---
 
@@ -421,13 +416,13 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 ### Early
 - купить 1 корабль (кредит/лизинг)
-- взять простые delivery контракты
+- взять простые transport missions
 - понять где “дорогой” товар
 - накопить на склад-слот в ключевом хабе
 
 ### Mid
 - 3-8 кораблей
-- первые долгосрок контракты supply
+- параллельное выполнение нескольких transport missions
 - покупка 1-2 factory slots
 - оптимизация маршрутов + расписание
 - игра с bottleneck’ами (доки/ворота)
@@ -462,13 +457,13 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Milestone 2: Market Share** — занять долю перевозок в выбранном кластере.
 - **Milestone 3: Throughput Control** — контролировать throughput выбранной пары ключевых ворот:
   `throughput_control = player_share(gate_pair, rolling_window_cycles=20) >= 35%`.
-- **Milestone 4: Reputation** — открыть премиальные контракты через стабильный SLA.
+- **Milestone 4: Reputation** — открыть более дорогие миссии через стабильное исполнение перевозок.
 
 Итоговые метрики поздней игры:
 - Net Worth (капитал)
 - Market Share (доля перевозок)
 - Infrastructure Index (сколько throughput контролируешь)
-- Contract Reputation (доступ к жирным гос-контрактам)
+- Mission Reputation (доступ к дорогим и срочным перевозкам)
 
 ---
 
@@ -489,9 +484,10 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - heatmap цен / спроса
 - right-click по станции -> context menu (`Fly to station`, `Open station UI`)
 
-3) **Contracts Board**
-- фильтры: прибыль/тонна, риск, дедлайн, маршрут через ворота
-- “проблема контракта” (почему риск высокий)
+3) **Missions Board**
+- активные миссии и доступные offers;
+- origin/destination, reward, ETA и маршрут через ворота;
+- распределение миссионного груза: в storage / на кораблях / доставлено;
 - признак свежести данных по удалённым рынкам (`intel staleness/confidence`)
 
 4) **Fleet Manager**
@@ -524,7 +520,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 8) **Station Operations** (реализованный Stage A loop)
 - статус дока выбранного ship/station
 - торговля spot-товарами (`Buy`/`Sell`)
-- контрактные действия (`Load contract`/`Unload contract`)
+- миссионные действия (`Accept`, `Load`, `Unload`, `Open mission`, `Cancel before load`)
 - управление объёмом: пресеты `25%/50%/100%` + numeric input
 - авто-стыковка по прибытии на станцию (без отдельной кнопки Dock)
 
@@ -532,7 +528,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - очереди доков/ворот — видно прямо на системной карте
 - “простои заводов” — красный индикатор на модуле
 - “переполненный склад” — мигает/сигнал
-- маршруты с риском срыва — предупреждение в Contracts/Fleet
+- маршруты с риском срыва — предупреждение в Missions/Fleet
 - подсветка выбранной станции и целевой станции для выбранного player-корабля
 
 ---
@@ -541,7 +537,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ### 16.1) Economy pressure loop
 - Старт через кредит/лизинг создаёт обязательные выплаты.
 - Постоянный upkeep флота и арендованных слотов удерживает давление на cashflow.
-- За повторные SLA-срывы действует **прогрессивная penalty curve**.
+- За плохое исполнение перевозок награды и доступность миссий могут ухудшаться в следующих итерациях баланса.
 - Принцип отказоустойчивости: ошибки болезненны, но не приводят к мгновенному “смерть-run”.
 
 ### 16.1.1) Soft-fail при банкротстве (Stage A)
@@ -556,7 +552,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - комиссия рынка
   - плата за ворота
   - стоимость простоя/штрафы
-- `CargoSource`-ограничение: контрактный груз нельзя продавать как spot-груз.
+- `CargoSource`-ограничение: миссионный груз нельзя продавать как spot-груз или смешивать с обычным station storage.
 - Ограничить “идеальный арбитраж” через:
   - задержки информации (цены обновляются раз в N секунд)
   - лимит объёма сделки (market depth)
@@ -566,7 +562,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - `manual_actions_per_min`
 - `reroute_rate`
 - `avg_route_hops`
-- `contract_sla_success_rate`
+- `mission_completion_rate`
 - `economy_stress_index` (дефицит + congestion)
 
 ---
@@ -577,7 +573,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - 6 NPC компаний (4 hauler + miner + industrial), суммарно 60 NPC trade-кораблей;
 - фиксированные 7 товарных категорий: Ore, Ice, Gas, Metal, Fuel, Parts, Electronics;
 - 1 добыча -> 1 переработка -> 1 потребитель;
-- контракты только Delivery + Supply;
+- миссии только `Transport`;
 - игрок стартует с 1 кораблём;
 - lease + slot pricing (без station construction);
 - док-очереди/ворота + базовые цены, зависящие от запасов и времени доставки.
@@ -586,7 +582,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 
 | Stage A In Scope | Stage A Out of Scope |
 | --- | --- |
-| Delivery / Supply контракты | Route Contract / Station Service |
+| Transport missions | Route / Service missions |
 | Manual station commands + automatic gate routing | Full manual free-flight routing |
 | Lease + slot pricing | Station construction |
 | Gate/Dock congestion + Fuel shock | Reliability failures / Piracy / Storms |
@@ -624,21 +620,26 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - `ProgressionMilestone` (`id`, `goal_metric`, `goal_value`, `reward_type`)
 - `AutopilotPolicy` (`min_margin`, `max_risk_score`, `max_hops`, `priority_mode`, `waypoints`, `repeat_mode`)
 - `MarketIntel` (`system_id`, `observed_tick`, `staleness_ticks`, `confidence`)
-- `ContractRiskModel` (`eta_ticks`, `risk_score`, `sla_penalty_multiplier`, `reroute_cost_estimate`)
-- `ContractTypeStageA` (`Delivery | Supply`)
+- `MissionOfferScore` (`eta_ticks`, `risk_score`, `imbalance_score`, `reward`)
+- `MissionTypeStageA` (`Transport`)
 - `RiskStageA` (`gate_congestion`, `dock_congestion`, `fuel_shock`)
 - `Market` (на станции/планете)
-- `Contract` + `ContractProgress` (`AwaitPickup | InTransit | Completed | Failed`)
-- `CargoLoad` + `CargoSource` (`Spot | Contract { contract_id }`)
+- `MissionOffer`, `Mission`, `MissionStatus` (`Accepted | InProgress | Completed | Cancelled`)
+- `CargoLoad` + `CargoSource` (`Spot | Mission { mission_id }`)
 - `CameraState` (`GalaxyView | SystemView(system_id)`, `zoom_level`, `zoom_min`, `zoom_max`, `snap_thresholds`)
 - `StationUiState` (context menu + station operations panel)
 
-### 18.3) Логика контрактов
-- `accept_contract_offer` назначает контракт в `AwaitPickup` без авто-завершения.
-- Игроковый поток контракта: `accept -> fly -> load -> fly -> unload`.
-- `Delivery` закрывается и выплачивается только после явного `unload` в destination.
-- `Supply` считается по объёму явных unload в цикле и применяет cycle payout/penalty.
-- Контрактный груз маркируется источником (`CargoSource::Contract`) и не смешивается со spot-продажей.
+### 18.3) Логика миссий
+- `refresh_mission_offers` строит offers из реальных surplus/deficit по station pairs.
+- `accept_mission_offer` резервирует товар в origin market и создаёт mission storage игрока на origin station.
+- Игроковый поток миссии: `accept -> fly -> load -> fly -> unload`.
+- `player_load_mission_cargo` грузит только из origin mission storage и не берёт деньги с игрока.
+- `player_unload_mission_cargo` принимает груз только в origin/destination rules:
+  - destination: товар зачисляется в station market и прогресс миссии растёт;
+  - origin: допускается возврат в mission storage;
+  - любая другая станция: reject.
+- Миссионный груз маркируется источником (`CargoSource::Mission`) и не смешивается со spot-продажей.
+- Полная доставка завершает миссию автоматически и сразу выплачивает reward.
 
 ### 18.4) Маршрутизация
 - межсистемный путь = поиск пути по графу ворот (Dijkstra/A*)
@@ -660,9 +661,10 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - **Routing invariants**:
   - корректный multi-hop путь через промежуточные узлы;
   - auto re-route при недоступности сегмента.
-- **Pressure loop tests**:
-  - повторные SLA-срывы увеличивают штрафы по кривой;
-  - штрафы не дают мгновенный hard fail run.
+- **Mission loop tests**:
+  - принятие миссии сразу резервирует stock на origin;
+  - unload в destination автоматически завершает миссию и выплачивает reward;
+  - миссионный груз нельзя продать через spot trade или перегнать в обычный storage.
 - **Manual command loop tests**:
   - player ship летит только по явной команде к станции;
   - на прибытии доступна авто-стыковка и station actions.
@@ -673,8 +675,8 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - локальные рынки всегда точные;
   - удалённые рынки имеют staleness/confidence.
 - **Scope guard tests (Stage A)**:
-  - `cycle = 60 ticks`, все SLA/события/штрафы считаются в cycles;
-  - доступны только `ContractTypeStageA = {Delivery, Supply}`;
+  - `cycle = 60 ticks`, все события/штрафы считаются в cycles;
+  - доступны только `MissionTypeStageA = {Transport}`;
   - активны только `RiskStageA = {gate_congestion, dock_congestion, fuel_shock}`;
   - отсутствует механика station construction;
   - присутствуют lease + slot pricing.
@@ -690,23 +692,25 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - Core API для player loop:
   - `command_fly_to_station`
   - `player_buy`, `player_sell`
-  - `player_contract_load`, `player_contract_unload`
+  - `accept_mission_offer`, `cancel_mission`
+  - `player_load_mission_cargo`, `player_unload_mission_cargo`
   - `is_ship_docked_at`
 - Ошибки/результаты действий:
   - `CommandError`
   - `TradeError`
   - `TradeReceipt`
-  - `ContractActionError`
+  - `MissionOfferError`
+  - `MissionActionError`
 - Snapshot:
-  - сохранение: версия `v3`
-  - загрузка: только `v3`
+  - сохранение: версия `v5`
+  - загрузка: только `v5` и совместимые mission-era payloads
 
 ---
 
 ## 19) Примеры “возникающего геймплея” (что должно случаться само)
 1) Ворота перегружены -> игрок ставит склад перед воротами -> продаёт storage + стабилизирует поставки -> зарабатывает.
 2) Топливо подорожало -> bulk-перевозки становятся невыгодны -> игрок переключается на высокомаржинальные грузы -> NPC банкротятся/перестраиваются.
-3) Игрок покупает factory slot рядом с хабом -> получает преимущество на времени доставки -> выигрывает supply-контракты.
+3) Игрок покупает factory slot рядом с хабом -> получает преимущество на времени доставки -> быстрее закрывает inbound/outbound missions и удерживает маржинальные маршруты.
 
 ---
 
@@ -717,7 +721,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 - лизинг кораблей
 - саботаж/пиратство (как экономический риск без тактической боевой системы)
 - апгрейды ворот (capacity)
-- биржа контрактов/аукционы
+- биржа миссий/аукционы
 - репутация компаний и “чёрные списки”
 
 ---
@@ -734,13 +738,14 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ### 22.1) Текущее состояние
 - **Реализовано**
   - single-player baseline: ровно 1 игроковый корабль (остальные только NPC), старт в уже работающем рынке;
-  - command-based player loop: `Fly to station` + явные `Load/Unload` и `Buy/Sell` без автозавершения контрактов;
-  - `CargoSource`-lock: контрактный груз нельзя продать как spot;
-  - snapshot: сохранение/загрузка только формата `v3`;
+  - command-based player loop: `Fly to station` + явные `Load/Unload` и `Buy/Sell` с миссионной доставкой через station loop;
+  - missions-first flow: F1 `Missions`, station tab `Missions`, auto-complete по полной выгрузке в destination;
+  - `CargoSource`-lock: миссионный груз нельзя продать как spot;
+  - snapshot: сохранение/загрузка только формата `v5`;
   - risk-injection hotkeys для Stage A рисков: `G` (gate congestion), `D` (dock congestion), `F` (fuel shock);
   - time controls в HUD: Pause/Resume + `1x/2x/4x`.
   - **UI/UX уже реализовано (Stage A)**
-    - окна/панели: `Contracts Board`, `Fleet Manager` (только player-корабли), `Markets`, `Finance`, `Autopilot Policies`, `Station Card`, `NPC Corporations`, `Systems`, `Ship Card`;
+    - окна/панели: `Missions Board`, `Fleet Manager` (только player-корабли), `Markets`, `Finance`, `Autopilot Policies`, `Station Card`, `NPC Corporations`, `Systems`, `Ship Card`;
     - контекстные меню: `Ship Context` и `Station Context` (действия `Fly to station`, `Track ship`, `Open ship card`, `Open station card`);
     - camera UX: double-click по системе -> `System View`, `Esc` -> `Galaxy View`, right-drag pan только в galaxy, zoom отключён в system view;
     - правая системная панель (`System Panel`) с owner/economy метриками, списком локальных станций и кораблей;
@@ -752,7 +757,7 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
   - расширение интеграционных UI-тестов station-loop.
 - **Перспектива**
   - масштабирование gameplay от single-ship command loop к multi-ship orchestration;
-  - расширение контрактного рынка и инфраструктурной экономики без ломки текущей архитектуры.
+  - расширение mission market и инфраструктурной экономики без ломки текущей архитектуры.
 
 #### Синхронизация с `docs/todo.md`
 - `docs/todo.md` — первичный источник открытых задач Stage A (по приоритетам High/Medium/Low).
@@ -762,16 +767,16 @@ P_next        = clamp(P * (1 + delta), price_floor, price_ceiling)
 ### 22.2) Перспективы (Roadmap)
 - **Ближайшие итерации (Stage A+)**
   - UX и тесты station loop (для уже реализованного Stage A UI/UX — только polish), чтобы снизить friction ручных операций;
-  - более прозрачный прогресс контрактов в UI (pickup/in-transit/unload), чтобы повысить управляемость;
+  - более прозрачный прогресс миссий в UI (origin storage / in-transit / delivered), чтобы повысить управляемость;
   - QoL для single-ship flow (быстрые действия и меньше лишних кликов), опираясь на текущие core API.
 - **Stage B**
-  - multi-ship player fleet и диспетчеризация нескольких кораблей; ценность: рост масштаба решений, зависимость: текущие контрактные и route API;
-  - Route/Service contracts; ценность: новые бизнес-модели, зависимость: текущая модель Delivery/Supply + market loop;
+  - multi-ship player fleet и диспетчеризация нескольких кораблей; ценность: рост масштаба решений, зависимость: текущие mission и route API;
+  - Route/Service missions; ценность: новые бизнес-модели, зависимость: текущая модель Transport mission + market loop;
   - station construction; ценность: инфраструктурный контроль throughput, зависимость: уже существующие lease/slot механики;
   - масштабирование к full galaxy; ценность: стратегическая глубина, зависимость: детерминированный кластерный simulation core.
 - **Дальний горизонт**
   - расширенные рыночные механики (глубина, инструменты хеджа, сложные профили спроса); ценность: richer economy gameplay, зависимость: текущие market/price/pressure подсистемы;
-  - deeper infrastructure economy (пакеты сервисов, тарифы, контрактные SLA-экосистемы); ценность: долгие стратегии владения узлами, зависимость: текущие slot/gate/dock bottleneck модели;
+  - deeper infrastructure economy (пакеты сервисов, тарифы, mission service-экосистемы); ценность: долгие стратегии владения узлами, зависимость: текущие slot/gate/dock bottleneck модели;
   - крупномасштабная симуляция и аналитика (сценарии 200+ систем, продвинутые KPI/диагностика); ценность: управляемый late-game, зависимость: существующий deterministic tick core и telemetry метрики.
 
 #### Принцип roadmap-синхронизации с `docs/todo.md`

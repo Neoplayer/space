@@ -149,16 +149,62 @@ pub struct WorldRenderSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ContractOfferView {
-    pub offer: ContractOffer,
-    pub destination_intel: Option<MarketIntel>,
+pub struct MissionOfferView {
+    pub offer: MissionOffer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ContractsBoardView {
-    pub active_contracts: Vec<Contract>,
-    pub route_gates: Vec<GateId>,
-    pub offers: Vec<ContractOfferView>,
+pub struct MissionShipCargoView {
+    pub ship_id: ShipId,
+    pub ship_name: String,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionDetailView {
+    pub mission: Mission,
+    pub origin_storage_amount: f64,
+    pub delivered_amount: f64,
+    pub in_transit_amount: f64,
+    pub shipments: Vec<MissionShipCargoView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionsBoardView {
+    pub active_missions: Vec<MissionDetailView>,
+    pub offers: Vec<MissionOfferView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationMissionDirection {
+    Outbound,
+    Inbound,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMissionOfferRowView {
+    pub offer: MissionOffer,
+    pub direction: StationMissionDirection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMissionCargoRowView {
+    pub mission: Mission,
+    pub direction: StationMissionDirection,
+    pub station_storage_amount: f64,
+    pub ship_cargo_amount: f64,
+    pub delivered_amount: f64,
+    pub can_load: bool,
+    pub can_unload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMissionView {
+    pub ship_id: ShipId,
+    pub station_id: StationId,
+    pub docked: bool,
+    pub offers: Vec<StationMissionOfferRowView>,
+    pub mission_rows: Vec<StationMissionCargoRowView>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -393,7 +439,6 @@ pub struct StationOpsView {
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_capacity: f64,
     pub cargo_total_amount: f64,
-    pub active_contract: Option<Contract>,
     pub market_rows: Vec<MarketRowView>,
 }
 
@@ -431,7 +476,6 @@ pub struct StationTradeView {
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_capacity: f64,
     pub cargo_total_amount: f64,
-    pub active_contract: Option<Contract>,
     pub market_fee_rate: f64,
     pub rows: Vec<StationTradeRowView>,
 }
@@ -482,7 +526,7 @@ pub struct ShipCardView {
     pub cargo_capacity: f64,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_total_amount: f64,
-    pub active_contract: Option<Contract>,
+    pub mission_cargo: Vec<MissionDetailView>,
     pub policy: AutopilotPolicy,
     pub route_len: usize,
     pub reroutes: u64,
@@ -499,7 +543,7 @@ pub struct HudOverviewView {
     pub debt: f64,
     pub interest_rate: f64,
     pub reputation: f64,
-    pub active_contracts: usize,
+    pub active_missions: usize,
     pub active_ships: usize,
     pub sla_success_rate: f64,
     pub reroutes: u64,

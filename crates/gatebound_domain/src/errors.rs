@@ -26,11 +26,9 @@ pub enum CreditError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfferError {
+pub enum MissionOfferError {
     UnknownOffer,
     ExpiredOffer,
-    ShipBusy,
-    InvalidAssignment,
     InsufficientStock,
 }
 
@@ -55,7 +53,7 @@ pub enum TradeError {
     InsufficientCargo,
     CargoCapacityExceeded,
     CommodityMismatch,
-    ContractCargoLocked,
+    MissionCargoLocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,22 +67,21 @@ pub enum StorageTransferError {
     InsufficientShipCargo,
     CargoCapacityExceeded,
     CommodityMismatch,
-    ContractCargoLocked,
+    MissionCargoLocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContractActionError {
+pub enum MissionActionError {
     UnknownShip,
-    UnknownContract,
-    InvalidAssignment,
-    NotAssignedShip,
+    UnknownMission,
+    UnknownStation,
     NotDocked,
     InvalidQuantity,
-    ContractState,
-    InsufficientStock,
+    MissionState,
+    WrongStation,
+    InsufficientStoredCargo,
     InsufficientCargo,
     CargoCapacityExceeded,
-    CommodityMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq)]

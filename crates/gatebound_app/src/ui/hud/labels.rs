@@ -1,11 +1,8 @@
 use gatebound_domain::{
-    CargoSource, CommandError, Commodity, CompanyArchetype, ContractActionError, ContractProgress,
-    CreditError, MilestoneId, MilestoneStatus, OfferError, OfferProblemTag, PriorityMode,
-    ShipClass, ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, StorageTransferError,
-    TradeError,
+    CargoSource, CommandError, Commodity, CompanyArchetype, CreditError, MilestoneId,
+    MilestoneStatus, MissionActionError, MissionOfferError, MissionStatus, PriorityMode, ShipClass,
+    ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, StorageTransferError, TradeError,
 };
-
-use crate::runtime::sim::OfferSortMode;
 pub(super) fn commodity_label(commodity: Commodity) -> &'static str {
     match commodity {
         Commodity::Ore => "Ore",
@@ -28,7 +25,7 @@ pub(super) fn station_profile_label(profile: StationProfile) -> &'static str {
 
 pub(super) fn ship_role_label(role: ShipRole) -> &'static str {
     match role {
-        ShipRole::PlayerContract => "player_contract",
+        ShipRole::Player => "player",
         ShipRole::NpcTrade => "npc_trade",
     }
 }
@@ -77,14 +74,6 @@ pub(super) fn milestone_label(milestone: &MilestoneStatus) -> &'static str {
     }
 }
 
-pub(super) fn sort_mode_label(mode: OfferSortMode) -> &'static str {
-    match mode {
-        OfferSortMode::MarginDesc => "Margin desc",
-        OfferSortMode::RiskAsc => "Risk asc",
-        OfferSortMode::EtaAsc => "ETA asc",
-    }
-}
-
 pub(super) fn priority_mode_label(mode: PriorityMode) -> &'static str {
     match mode {
         PriorityMode::Profit => "profit",
@@ -99,16 +88,6 @@ pub(super) fn credit_error_label(err: CreditError) -> &'static str {
         CreditError::InvalidAmount => "invalid_amount",
         CreditError::NoActiveLoan => "no_active_loan",
         CreditError::InsufficientCapital => "insufficient_capital",
-    }
-}
-
-pub(super) fn offer_error_label(err: OfferError) -> &'static str {
-    match err {
-        OfferError::UnknownOffer => "unknown_offer",
-        OfferError::ExpiredOffer => "expired_offer",
-        OfferError::ShipBusy => "ship_busy",
-        OfferError::InvalidAssignment => "invalid_assignment",
-        OfferError::InsufficientStock => "insufficient_stock",
     }
 }
 
@@ -134,23 +113,7 @@ pub(super) fn trade_error_label(err: TradeError) -> &'static str {
         TradeError::InsufficientCargo => "insufficient_cargo",
         TradeError::CargoCapacityExceeded => "cargo_capacity_exceeded",
         TradeError::CommodityMismatch => "commodity_mismatch",
-        TradeError::ContractCargoLocked => "contract_cargo_locked",
-    }
-}
-
-pub(super) fn contract_action_error_label(err: ContractActionError) -> &'static str {
-    match err {
-        ContractActionError::UnknownShip => "unknown_ship",
-        ContractActionError::UnknownContract => "unknown_contract",
-        ContractActionError::InvalidAssignment => "invalid_assignment",
-        ContractActionError::NotAssignedShip => "not_assigned_ship",
-        ContractActionError::NotDocked => "not_docked",
-        ContractActionError::InvalidQuantity => "invalid_quantity",
-        ContractActionError::ContractState => "contract_state",
-        ContractActionError::InsufficientStock => "insufficient_stock",
-        ContractActionError::InsufficientCargo => "insufficient_cargo",
-        ContractActionError::CargoCapacityExceeded => "cargo_capacity_exceeded",
-        ContractActionError::CommodityMismatch => "commodity_mismatch",
+        TradeError::MissionCargoLocked => "mission_cargo_locked",
     }
 }
 
@@ -165,31 +128,45 @@ pub(super) fn storage_transfer_error_label(err: StorageTransferError) -> &'stati
         StorageTransferError::InsufficientShipCargo => "insufficient_ship_cargo",
         StorageTransferError::CargoCapacityExceeded => "cargo_capacity_exceeded",
         StorageTransferError::CommodityMismatch => "commodity_mismatch",
-        StorageTransferError::ContractCargoLocked => "contract_cargo_locked",
+        StorageTransferError::MissionCargoLocked => "mission_cargo_locked",
     }
 }
 
-pub(super) fn contract_progress_label(progress: ContractProgress) -> &'static str {
-    match progress {
-        ContractProgress::AwaitPickup => "await_pickup",
-        ContractProgress::InTransit => "in_transit",
-        ContractProgress::Completed => "completed",
-        ContractProgress::Failed => "failed",
+pub(super) fn mission_offer_error_label(err: MissionOfferError) -> &'static str {
+    match err {
+        MissionOfferError::UnknownOffer => "unknown_offer",
+        MissionOfferError::ExpiredOffer => "expired_offer",
+        MissionOfferError::InsufficientStock => "insufficient_stock",
+    }
+}
+
+pub(super) fn mission_action_error_label(err: MissionActionError) -> &'static str {
+    match err {
+        MissionActionError::UnknownShip => "unknown_ship",
+        MissionActionError::UnknownMission => "unknown_mission",
+        MissionActionError::UnknownStation => "unknown_station",
+        MissionActionError::NotDocked => "not_docked",
+        MissionActionError::InvalidQuantity => "invalid_quantity",
+        MissionActionError::MissionState => "mission_state",
+        MissionActionError::WrongStation => "wrong_station",
+        MissionActionError::InsufficientStoredCargo => "insufficient_stored_cargo",
+        MissionActionError::InsufficientCargo => "insufficient_cargo",
+        MissionActionError::CargoCapacityExceeded => "cargo_capacity_exceeded",
     }
 }
 
 pub(super) fn cargo_source_label(source: CargoSource) -> &'static str {
     match source {
         CargoSource::Spot => "spot",
-        CargoSource::Contract { .. } => "contract",
+        CargoSource::Mission { .. } => "mission",
     }
 }
 
-pub(super) fn problem_label(problem: OfferProblemTag) -> &'static str {
-    match problem {
-        OfferProblemTag::HighRisk => "high_risk",
-        OfferProblemTag::CongestedRoute => "congested_route",
-        OfferProblemTag::LowMargin => "low_margin",
-        OfferProblemTag::FuelVolatility => "fuel_volatility",
+pub(super) fn mission_status_label(status: MissionStatus) -> &'static str {
+    match status {
+        MissionStatus::Accepted => "accepted",
+        MissionStatus::InProgress => "in_progress",
+        MissionStatus::Completed => "completed",
+        MissionStatus::Cancelled => "cancelled",
     }
 }
