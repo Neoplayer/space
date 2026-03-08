@@ -1,4 +1,128 @@
+use serde::{Deserialize, Serialize};
+
 use gatebound_domain::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlannerMode {
+    GreedyCurrent,
+    GlobalOnly,
+    HybridRecommended,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlannerSettings {
+    pub planning_interval_ticks: u64,
+    pub emergency_stock_coverage: f64,
+    pub reservation_safety_buffer: f64,
+    pub dispatch_window_ticks: u64,
+    pub minimum_load_factor: f64,
+    pub lane_saturation_cap: usize,
+}
+
+impl Default for PlannerSettings {
+    fn default() -> Self {
+        Self {
+            planning_interval_ticks: 10,
+            emergency_stock_coverage: 0.10,
+            reservation_safety_buffer: 1.0,
+            dispatch_window_ticks: 20,
+            minimum_load_factor: 0.70,
+            lane_saturation_cap: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreightDemand {
+    pub station_id: StationId,
+    pub commodity: Commodity,
+    pub required_amount: f64,
+    pub reserved_amount: f64,
+    pub coverage: f64,
+    pub urgency_score: f64,
+    pub is_critical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreightSupply {
+    pub station_id: StationId,
+    pub commodity: Commodity,
+    pub available_amount: f64,
+    pub reserved_amount: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreightOrder {
+    pub order_id: u64,
+    pub source_station: StationId,
+    pub destination_station: StationId,
+    pub commodity: Commodity,
+    pub total_amount: f64,
+    pub reserved_amount: f64,
+    pub remaining_amount: f64,
+    pub urgency_score: f64,
+    pub is_critical: bool,
+    pub dispatch_after_tick: u64,
+    pub assigned_ships: usize,
+    pub lane_ship_cap: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrderReservation {
+    pub order_id: Option<u64>,
+    pub ship_id: Option<ShipId>,
+    pub source_station: StationId,
+    pub destination_station: StationId,
+    pub commodity: Commodity,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipBid {
+    pub ship_id: ShipId,
+    pub order_id: u64,
+    pub amount: f64,
+    pub score: f64,
+    pub reposition_eta_ticks: u32,
+    pub delivery_eta_ticks: u32,
+    pub load_factor: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PlannerDiagnostics {
+    pub mode: Option<PlannerMode>,
+    pub demands: Vec<FreightDemand>,
+    pub supplies: Vec<FreightSupply>,
+    pub orders: Vec<FreightOrder>,
+    pub reservations: Vec<OrderReservation>,
+    pub bids: Vec<ShipBid>,
+    pub total_reserved_amount: f64,
+    pub unmatched_critical_demands: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EconomyLabSnapshot {
+    pub tick: u64,
+    pub cycle: u64,
+    pub planner_mode: PlannerMode,
+    pub system_count: usize,
+    pub station_count: usize,
+    pub avg_price_index: f64,
+    pub aggregate_stock_coverage: f64,
+    pub zero_stock_ratio: f64,
+    pub critical_shortage_ratio: f64,
+    pub critical_shortage_count: usize,
+    pub order_fill_ratio: f64,
+    pub avg_ship_load_factor: f64,
+    pub npc_idle_ratio: f64,
+    pub convoy_index: f64,
+    pub lane_concentration: f64,
+    pub p95_gate_load: f64,
+    pub avg_price_spread_pct: f64,
+    pub unmatched_critical_demands: usize,
+    pub active_trade_orders: usize,
+    pub total_reserved_amount: f64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSettingsView {

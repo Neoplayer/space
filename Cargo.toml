@@ -3,6 +3,7 @@ members = [
     "crates/gatebound_domain",
     "crates/gatebound_sim",
     "crates/gatebound_app",
+    "crates/gatebound_lab",
 ]
 resolver = "2"
 

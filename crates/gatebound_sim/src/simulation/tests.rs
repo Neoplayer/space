@@ -2002,6 +2002,305 @@ fn company_planner_prefers_positive_profit_over_short_eta() {
 }
 
 #[test]
+fn hybrid_planner_prioritizes_zero_stock_destination() {
+    let mut sim = Simulation::new(stage_a_config(), 501);
+    sim.set_planner_mode(PlannerMode::HybridRecommended);
+
+    let company_id = CompanyId(1);
+    let ship_id = sim
+        .ships
+        .values()
+        .find(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .map(|ship| ship.id)
+        .expect("company ship should exist");
+    sim.ships.retain(|id, _| *id == ShipId(0) || *id == ship_id);
+
+    let source_station = sim.ships[&ship_id]
+        .current_station
+        .expect("ship should start docked");
+    let destinations = sim
+        .world
+        .stations
+        .iter()
+        .map(|station| station.id)
+        .filter(|station_id| *station_id != source_station)
+        .take(2)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destinations.len(),
+        2,
+        "fixture should provide two destinations"
+    );
+    let zero_stock_destination = destinations[0];
+    let profitable_destination = destinations[1];
+
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 180.0;
+        state.target_stock = 100.0;
+        state.price = 20.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&zero_stock_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 0.0;
+        state.target_stock = 100.0;
+        state.price = 55.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&profitable_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 25.0;
+        state.target_stock = 100.0;
+        state.price = 65.0;
+    }
+
+    sim.plan_company_orders(company_id);
+
+    let order_id = sim.ships[&ship_id]
+        .trade_order_id
+        .expect("hybrid planner should assign an order");
+    let order = sim
+        .trade_orders
+        .get(&order_id)
+        .expect("trade order should exist");
+    assert_eq!(order.destination_station, zero_stock_destination);
+}
+
+#[test]
+fn hybrid_planner_reserves_lane_capacity_between_ships() {
+    let mut sim = Simulation::new(stage_a_config(), 503);
+    sim.set_planner_mode(PlannerMode::HybridRecommended);
+
+    let company_id = CompanyId(1);
+    let mut ship_ids = sim
+        .ships
+        .values()
+        .filter(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .map(|ship| ship.id)
+        .take(2)
+        .collect::<Vec<_>>();
+    ship_ids.sort_by_key(|ship_id| ship_id.0);
+    assert_eq!(
+        ship_ids.len(),
+        2,
+        "fixture should provide two company ships"
+    );
+    sim.ships
+        .retain(|id, _| *id == ShipId(0) || ship_ids.contains(id));
+
+    let source_station = sim.ships[&ship_ids[0]]
+        .current_station
+        .expect("ship should start docked");
+    let destinations = sim
+        .world
+        .stations
+        .iter()
+        .map(|station| station.id)
+        .filter(|station_id| *station_id != source_station)
+        .take(2)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destinations.len(),
+        2,
+        "fixture should provide two destinations"
+    );
+    let primary_destination = destinations[0];
+    let secondary_destination = destinations[1];
+
+    for ship_id in &ship_ids {
+        if let Some(ship) = sim.ships.get_mut(ship_id) {
+            ship.current_station = Some(source_station);
+            ship.location = sim
+                .world
+                .stations
+                .iter()
+                .find(|station| station.id == source_station)
+                .map(|station| station.system_id)
+                .expect("source station should have a system");
+        }
+    }
+
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 170.0;
+        state.target_stock = 100.0;
+        state.price = 18.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&primary_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 0.0;
+        state.target_stock = 18.0;
+        state.price = 42.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&secondary_destination)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 0.0;
+        state.target_stock = 60.0;
+        state.price = 40.0;
+    }
+
+    sim.plan_company_orders(company_id);
+
+    let destinations = ship_ids
+        .iter()
+        .filter_map(|ship_id| sim.ships.get(ship_id).and_then(|ship| ship.trade_order_id))
+        .filter_map(|order_id| sim.trade_orders.get(&order_id))
+        .map(|order| order.destination_station)
+        .collect::<Vec<_>>();
+
+    assert_eq!(destinations.len(), 2, "both ships should be assigned");
+    assert_eq!(
+        destinations
+            .iter()
+            .filter(|station_id| **station_id == primary_destination)
+            .count(),
+        1,
+        "only one ship should consume the small primary lane reservation"
+    );
+}
+
+#[test]
+fn planner_diagnostics_expose_reserved_and_unmatched_critical_demand() {
+    let mut sim = Simulation::new(stage_a_config(), 505);
+    sim.set_planner_mode(PlannerMode::HybridRecommended);
+
+    let company_id = CompanyId(1);
+    sim.ships.retain(|id, ship| {
+        *id == ShipId(0) || (ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+    });
+
+    let source_station = sim
+        .ships
+        .values()
+        .find(|ship| ship.company_id == company_id && ship.role == ShipRole::NpcTrade)
+        .and_then(|ship| ship.current_station)
+        .expect("company ship should start docked");
+    let destination_station = sim
+        .world
+        .stations
+        .iter()
+        .map(|station| station.id)
+        .find(|station_id| *station_id != source_station)
+        .expect("fixture should provide a destination");
+
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&source_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 120.0;
+        state.target_stock = 100.0;
+        state.price = 20.0;
+    }
+    if let Some(state) = sim
+        .markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Fuel))
+    {
+        state.stock = 0.0;
+        state.target_stock = 140.0;
+        state.price = 60.0;
+    }
+
+    sim.plan_company_orders(company_id);
+
+    let diagnostics = sim.planner_diagnostics();
+    assert!(
+        diagnostics
+            .demands
+            .iter()
+            .any(|demand| demand.station_id == destination_station && demand.is_critical),
+        "critical destination should appear in planner demand diagnostics"
+    );
+    assert!(
+        diagnostics.total_reserved_amount > 0.0,
+        "hybrid planner should record at least one reservation"
+    );
+}
+
+#[test]
+fn economy_lab_snapshot_is_deterministic_for_same_seed_and_settings() {
+    let mut left = Simulation::new(stage_a_config(), 507);
+    let mut right = Simulation::new(stage_a_config(), 507);
+    left.set_planner_mode(PlannerMode::HybridRecommended);
+    right.set_planner_mode(PlannerMode::HybridRecommended);
+
+    let settings = PlannerSettings {
+        planning_interval_ticks: 6,
+        dispatch_window_ticks: 12,
+        ..PlannerSettings::default()
+    };
+    left.set_planner_settings(settings);
+    right.set_planner_settings(settings);
+
+    for _ in 0..90 {
+        left.step_tick();
+        right.step_tick();
+    }
+
+    assert_eq!(left.economy_lab_snapshot(), right.economy_lab_snapshot());
+}
+
+#[test]
+fn set_npc_trade_ship_count_rebalances_lab_roster() {
+    let mut sim = Simulation::new(stage_a_config(), 509);
+
+    sim.set_npc_trade_ship_count(12);
+
+    assert_eq!(
+        sim.ships
+            .values()
+            .filter(|ship| ship.role == ShipRole::NpcTrade)
+            .count(),
+        12
+    );
+}
+
+#[test]
 fn npc_trade_order_applies_partial_fill_and_realized_loss() {
     let mut sim = Simulation::new(stage_a_config(), 145);
     let company_id = CompanyId(1);

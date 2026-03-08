@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::views::{PlannerDiagnostics, PlannerMode, PlannerSettings};
 use gatebound_domain::*;
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,11 @@ pub struct Simulation {
     pub(crate) ship_profit_earned: BTreeMap<ShipId, f64>,
     pub(crate) previous_cycle_prices: BTreeMap<(StationId, Commodity), f64>,
     pub(crate) modifiers: Vec<ActiveModifier>,
+    pub(crate) planner_mode: PlannerMode,
+    pub(crate) planner_settings: PlannerSettings,
+    pub(crate) planner_diagnostics: PlannerDiagnostics,
+    pub(crate) backlog_started_at: BTreeMap<(StationId, Commodity), u64>,
+    pub(crate) last_service_tick: BTreeMap<(StationId, Commodity), u64>,
 }
 
 #[derive(Debug, Clone)]

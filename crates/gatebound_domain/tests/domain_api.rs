@@ -1,7 +1,8 @@
 use gatebound_domain::{
     AutopilotPolicy, Cluster, ClusterId, Faction, FactionId, GateEdge, GateId, GateNode,
-    PriorityMode, RepeatMode, RouteSegment, RoutingGraphView, RoutingRequest, RoutingService,
-    SegmentKind, StationAnchor, StationId, StationProfile, SystemId, SystemNode, World,
+    PriorityMode, RepeatMode, RouteSegment, RoutingError, RoutingGraphView, RoutingRequest,
+    RoutingService, SegmentKind, StationAnchor, StationId, StationProfile, SystemId, SystemNode,
+    World,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,6 +64,103 @@ fn routing_service_plans_multihop_warp_segments() {
             },
         ]
     );
+}
+
+#[test]
+fn routing_service_prefers_lower_risk_path_for_stability_policy() {
+    let mut adjacency = BTreeMap::new();
+    adjacency.insert(
+        SystemId(0),
+        vec![(SystemId(1), GateId(1)), (SystemId(2), GateId(2))],
+    );
+    adjacency.insert(
+        SystemId(1),
+        vec![(SystemId(0), GateId(1)), (SystemId(3), GateId(3))],
+    );
+    adjacency.insert(
+        SystemId(2),
+        vec![(SystemId(0), GateId(2)), (SystemId(3), GateId(4))],
+    );
+    adjacency.insert(
+        SystemId(3),
+        vec![(SystemId(1), GateId(3)), (SystemId(2), GateId(4))],
+    );
+
+    let graph = RoutingGraphView {
+        adjacency,
+        gate_eta_ticks: BTreeMap::from([
+            (GateId(1), 3),
+            (GateId(2), 4),
+            (GateId(3), 3),
+            (GateId(4), 4),
+        ]),
+        gate_risk: BTreeMap::from([
+            (GateId(1), 1.8),
+            (GateId(2), 0.2),
+            (GateId(3), 1.8),
+            (GateId(4), 0.2),
+        ]),
+        blocked_edges: BTreeSet::new(),
+    };
+
+    let stable_route = RoutingService::plan_route(
+        &graph,
+        &RoutingRequest {
+            origin: SystemId(0),
+            destination: SystemId(3),
+            policy: AutopilotPolicy {
+                min_margin: 0.0,
+                max_risk_score: 5.0,
+                max_hops: 4,
+                priority_mode: PriorityMode::Stability,
+                waypoints: vec![SystemId(0)],
+                repeat_mode: RepeatMode::Loop,
+            },
+        },
+    )
+    .expect("stability route should exist");
+
+    assert_eq!(
+        stable_route
+            .segments
+            .iter()
+            .filter_map(|segment| segment.edge)
+            .collect::<Vec<_>>(),
+        vec![GateId(2), GateId(4)]
+    );
+    assert!((stable_route.risk_score - 0.4).abs() < 1e-9);
+}
+
+#[test]
+fn routing_service_rejects_paths_above_max_risk_score() {
+    let graph = RoutingGraphView {
+        adjacency: BTreeMap::from([
+            (SystemId(0), vec![(SystemId(1), GateId(7))]),
+            (SystemId(1), vec![(SystemId(0), GateId(7))]),
+        ]),
+        gate_eta_ticks: BTreeMap::from([(GateId(7), 5)]),
+        gate_risk: BTreeMap::from([(GateId(7), 2.5)]),
+        blocked_edges: BTreeSet::new(),
+    };
+
+    let err = RoutingService::plan_route(
+        &graph,
+        &RoutingRequest {
+            origin: SystemId(0),
+            destination: SystemId(1),
+            policy: AutopilotPolicy {
+                min_margin: 0.0,
+                max_risk_score: 1.0,
+                max_hops: 2,
+                priority_mode: PriorityMode::Hybrid,
+                waypoints: vec![SystemId(0)],
+                repeat_mode: RepeatMode::Loop,
+            },
+        },
+    )
+    .expect_err("risk ceiling should make route unreachable");
+
+    assert!(matches!(err, RoutingError::Unreachable));
 }
 
 #[test]

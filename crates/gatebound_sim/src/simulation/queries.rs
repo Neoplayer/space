@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 
 impl Simulation {
@@ -10,6 +12,195 @@ impl Simulation {
             days_per_month: self.config.time.days_per_month,
             months_per_year: self.config.time.months_per_year,
             start_year: self.config.time.start_year,
+        }
+    }
+
+    pub fn planner_mode(&self) -> PlannerMode {
+        self.planner_mode
+    }
+
+    pub fn set_planner_mode(&mut self, mode: PlannerMode) {
+        self.planner_mode = mode;
+        self.planner_diagnostics.mode = Some(mode);
+    }
+
+    pub fn planner_settings(&self) -> PlannerSettings {
+        self.planner_settings
+    }
+
+    pub fn set_planner_settings(&mut self, mut settings: PlannerSettings) {
+        settings.planning_interval_ticks = settings.planning_interval_ticks.max(1);
+        settings.emergency_stock_coverage = settings.emergency_stock_coverage.clamp(0.0, 1.0);
+        settings.reservation_safety_buffer = settings.reservation_safety_buffer.max(0.0);
+        settings.minimum_load_factor = settings.minimum_load_factor.clamp(0.0, 1.0);
+        settings.lane_saturation_cap = settings.lane_saturation_cap.max(1);
+        self.planner_settings = settings;
+    }
+
+    pub fn planner_diagnostics(&self) -> PlannerDiagnostics {
+        self.planner_diagnostics.clone()
+    }
+
+    pub fn economy_lab_snapshot(&self) -> EconomyLabSnapshot {
+        let market_panel = self.market_panel_view(
+            self.world
+                .systems
+                .first()
+                .map(|system| system.id)
+                .unwrap_or(SystemId(0)),
+            None,
+            Commodity::Fuel,
+        );
+        let total_goods = self
+            .markets
+            .values()
+            .map(|market| market.goods.len())
+            .sum::<usize>();
+        let zero_stock_count = self
+            .markets
+            .values()
+            .flat_map(|market| market.goods.values())
+            .filter(|state| state.stock <= 1e-9)
+            .count();
+        let critical_shortage_count = self
+            .markets
+            .values()
+            .flat_map(|market| market.goods.values())
+            .filter(|state| {
+                let coverage = if state.target_stock <= 0.0 {
+                    0.0
+                } else {
+                    state.stock / state.target_stock
+                };
+                coverage <= self.planner_settings.emergency_stock_coverage
+            })
+            .count();
+
+        let npc_ships = self
+            .ships
+            .values()
+            .filter(|ship| ship.role == ShipRole::NpcTrade)
+            .collect::<Vec<_>>();
+        let npc_idle = npc_ships
+            .iter()
+            .filter(|ship| {
+                ship.trade_order_id.is_none()
+                    && ship.segment_eta_remaining == 0
+                    && ship.movement_queue.is_empty()
+                    && ship.current_segment_kind.is_none()
+            })
+            .count();
+        let avg_ship_load_factor = if npc_ships.is_empty() {
+            0.0
+        } else {
+            npc_ships
+                .iter()
+                .map(|ship| {
+                    if ship.cargo_capacity <= 0.0 {
+                        0.0
+                    } else {
+                        ship.cargo_total_amount() / ship.cargo_capacity
+                    }
+                })
+                .sum::<f64>()
+                / npc_ships.len() as f64
+        };
+
+        let lane_counts = self.trade_orders.values().fold(
+            BTreeMap::<(StationId, StationId, Commodity), usize>::new(),
+            |mut counts, order| {
+                *counts
+                    .entry((
+                        order.source_station,
+                        order.destination_station,
+                        order.commodity,
+                    ))
+                    .or_insert(0) += 1;
+                counts
+            },
+        );
+        let active_trade_orders = self.trade_orders.len();
+        let convoy_index = if active_trade_orders == 0 {
+            0.0
+        } else {
+            lane_counts.values().copied().max().unwrap_or(0) as f64 / active_trade_orders as f64
+        };
+        let lane_concentration = if active_trade_orders == 0 {
+            0.0
+        } else {
+            lane_counts
+                .values()
+                .map(|count| {
+                    let share = *count as f64 / active_trade_orders as f64;
+                    share * share
+                })
+                .sum::<f64>()
+        };
+
+        let mut gate_loads = self.gate_queue_load.values().copied().collect::<Vec<_>>();
+        gate_loads.sort_by(|left, right| left.total_cmp(right));
+        let p95_gate_load = if gate_loads.is_empty() {
+            0.0
+        } else {
+            let idx = ((gate_loads.len() as f64) * 0.95).floor() as usize;
+            gate_loads[idx.min(gate_loads.len() - 1)]
+        };
+
+        let avg_price_spread_pct = if market_panel.commodity_rows.is_empty() {
+            0.0
+        } else {
+            market_panel
+                .commodity_rows
+                .iter()
+                .map(|row| row.spread_pct.abs())
+                .sum::<f64>()
+                / market_panel.commodity_rows.len() as f64
+        };
+        let total_order_amount = self
+            .planner_diagnostics
+            .orders
+            .iter()
+            .map(|order| order.total_amount)
+            .sum::<f64>();
+        let order_fill_ratio = if total_order_amount <= 1e-9 {
+            0.0
+        } else {
+            self.planner_diagnostics.total_reserved_amount / total_order_amount
+        };
+
+        EconomyLabSnapshot {
+            tick: self.tick,
+            cycle: self.cycle,
+            planner_mode: self.planner_mode,
+            system_count: self.world.systems.len(),
+            station_count: self.world.stations.len(),
+            avg_price_index: self.average_price_index(),
+            aggregate_stock_coverage: market_panel.global_kpis.aggregate_stock_coverage,
+            zero_stock_ratio: if total_goods == 0 {
+                0.0
+            } else {
+                zero_stock_count as f64 / total_goods as f64
+            },
+            critical_shortage_ratio: if total_goods == 0 {
+                0.0
+            } else {
+                critical_shortage_count as f64 / total_goods as f64
+            },
+            critical_shortage_count,
+            order_fill_ratio,
+            avg_ship_load_factor,
+            npc_idle_ratio: if npc_ships.is_empty() {
+                0.0
+            } else {
+                npc_idle as f64 / npc_ships.len() as f64
+            },
+            convoy_index,
+            lane_concentration,
+            p95_gate_load,
+            avg_price_spread_pct,
+            unmatched_critical_demands: self.planner_diagnostics.unmatched_critical_demands,
+            active_trade_orders,
+            total_reserved_amount: self.planner_diagnostics.total_reserved_amount,
         }
     }
 
@@ -1211,7 +1402,9 @@ impl Simulation {
         })
     }
 
-    fn system_market_stress_rows(&self) -> Vec<SystemMarketStressRowView> {
+    pub(in crate::simulation) fn system_market_stress_rows(
+        &self,
+    ) -> Vec<SystemMarketStressRowView> {
         let mut rows = self
             .world
             .systems

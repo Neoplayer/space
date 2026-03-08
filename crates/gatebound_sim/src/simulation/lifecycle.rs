@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use super::*;
 
 impl Simulation {
@@ -70,6 +72,11 @@ impl Simulation {
             ship_profit_earned: BTreeMap::new(),
             previous_cycle_prices,
             modifiers: Vec::new(),
+            planner_mode: PlannerMode::GreedyCurrent,
+            planner_settings: PlannerSettings::default(),
+            planner_diagnostics: PlannerDiagnostics::default(),
+            backlog_started_at: BTreeMap::new(),
+            last_service_tick: BTreeMap::new(),
         };
         simulation.milestones = vec![
             MilestoneStatus {
@@ -202,6 +209,95 @@ impl Simulation {
 
     pub fn config(&self) -> &RuntimeConfig {
         &self.config
+    }
+
+    pub fn set_npc_trade_ship_count(&mut self, count: usize) {
+        let mut npc_ship_ids = self
+            .ships
+            .values()
+            .filter(|ship| ship.role == ShipRole::NpcTrade)
+            .map(|ship| ship.id)
+            .collect::<Vec<_>>();
+        npc_ship_ids.sort_by_key(|ship_id| ship_id.0);
+
+        let mut removed_ship_ids = Vec::new();
+        while npc_ship_ids.len() > count {
+            if let Some(ship_id) = npc_ship_ids.pop() {
+                removed_ship_ids.push(ship_id);
+            }
+        }
+        if !removed_ship_ids.is_empty() {
+            self.trade_orders
+                .retain(|_, order| !removed_ship_ids.contains(&order.ship_id));
+            self.ships
+                .retain(|ship_id, _| !removed_ship_ids.contains(ship_id));
+            for ship_id in &removed_ship_ids {
+                self.ship_idle_ticks_cycle.remove(ship_id);
+                self.ship_delay_ticks_cycle.remove(ship_id);
+                self.ship_runs_completed.remove(ship_id);
+                self.ship_profit_earned.remove(ship_id);
+            }
+        }
+
+        if npc_ship_ids.len() >= count {
+            return;
+        }
+
+        let spawn_systems = super::stage_a_station_systems(&self.world);
+        if spawn_systems.is_empty() {
+            return;
+        }
+        let hop_limit = super::stage_a_route_hop_limit(&self.world);
+        let mut next_ship_id = self
+            .ships
+            .keys()
+            .map(|ship_id| ship_id.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        while npc_ship_ids.len() < count {
+            let ship_id = ShipId(next_ship_id);
+            let company_id = CompanyId(npc_ship_ids.len() % 6 + 1);
+            let location = spawn_systems[npc_ship_ids.len() % spawn_systems.len()];
+            let current_station = self.world.first_station(location);
+            let (descriptor, modules, technical_state) =
+                super::stage_a_ship_metadata(ship_id, company_id, ShipRole::NpcTrade);
+            self.ships.insert(
+                ship_id,
+                Ship {
+                    id: ship_id,
+                    company_id,
+                    role: ShipRole::NpcTrade,
+                    location,
+                    current_station,
+                    eta_ticks_remaining: 0,
+                    sub_light_speed: 18.0,
+                    cargo_capacity: 18.0,
+                    cargo: CargoManifest::default(),
+                    trade_order_id: None,
+                    movement_queue: VecDeque::new(),
+                    segment_eta_remaining: 0,
+                    segment_progress_total: 0,
+                    current_segment_kind: None,
+                    route_cursor: 0,
+                    policy: AutopilotPolicy {
+                        max_hops: hop_limit,
+                        waypoints: Vec::new(),
+                        ..AutopilotPolicy::default()
+                    },
+                    planned_path: Vec::new(),
+                    current_target: None,
+                    last_gate_arrival: None,
+                    last_risk_score: 0.0,
+                    reroutes: 0,
+                    descriptor,
+                    modules,
+                    technical_state,
+                },
+            );
+            npc_ship_ids.push(ship_id);
+            next_ship_id = next_ship_id.saturating_add(1);
+        }
     }
 
     pub fn tick(&self) -> u64 {

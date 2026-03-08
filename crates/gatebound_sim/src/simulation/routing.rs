@@ -98,12 +98,45 @@ impl Simulation {
         self.build_station_route_with_speed(origin_station, destination_station, policy, 18.0)
     }
 
+    pub(in crate::simulation) fn build_station_route_with_speed_legacy(
+        &self,
+        origin_station: StationId,
+        destination_station: StationId,
+        policy: AutopilotPolicy,
+        sub_light_speed: f64,
+    ) -> Option<RoutePlan> {
+        self.build_station_route_internal(
+            origin_station,
+            destination_station,
+            policy,
+            sub_light_speed,
+            true,
+        )
+    }
+
     pub(in crate::simulation) fn build_station_route_with_speed(
         &self,
         origin_station: StationId,
         destination_station: StationId,
         policy: AutopilotPolicy,
         sub_light_speed: f64,
+    ) -> Option<RoutePlan> {
+        self.build_station_route_internal(
+            origin_station,
+            destination_station,
+            policy,
+            sub_light_speed,
+            false,
+        )
+    }
+
+    fn build_station_route_internal(
+        &self,
+        origin_station: StationId,
+        destination_station: StationId,
+        policy: AutopilotPolicy,
+        sub_light_speed: f64,
+        legacy: bool,
     ) -> Option<RoutePlan> {
         let origin_anchor = self
             .world
@@ -122,7 +155,11 @@ impl Simulation {
             policy,
         };
         let graph = self.world.to_graph_view(self.tick, &self.gate_queue_load);
-        let system_route = RoutingService::plan_route(&graph, &request).ok()?;
+        let system_route = if legacy {
+            RoutingService::plan_route_legacy(&graph, &request).ok()?
+        } else {
+            RoutingService::plan_route(&graph, &request).ok()?
+        };
 
         let mut segments = Vec::new();
         let mut eta_total = 0_u32;

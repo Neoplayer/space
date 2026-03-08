@@ -2725,6 +2725,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gatebound_lab"
+version = "0.1.0"
+dependencies = [
+ "gatebound_domain",
+ "gatebound_sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gatebound_sim"
 version = "0.1.0"
 dependencies = [
