@@ -1,4 +1,5 @@
 use gatebound_domain::{CargoLoad, CargoManifest, CargoSource, Commodity, ShipId, SystemId};
+use gatebound_sim::PopulationTrend;
 use gatebound_sim::test_support::{MarketStatePatch, ShipPatch, SimulationScenarioBuilder};
 
 use crate::input::camera::CameraMode;
@@ -287,6 +288,73 @@ fn mission_modal_snapshot_switches_between_offer_and_active_actions() {
         (active_modal.destination_storage_amount.unwrap_or_default() - offer.offer.quantity).abs()
             < 1e-9
     );
+}
+
+#[test]
+fn hud_snapshot_exposes_population_across_station_system_and_market_views() {
+    let mut builder = SimulationScenarioBuilder::stage_a(904);
+    let ship_id = player_ship_id(&builder);
+    let station_id = first_station_in_system(&builder, SystemId(0));
+    builder.dock_ship_at(ship_id, station_id);
+    let mut sim = builder.build();
+
+    sim.step_cycle();
+
+    let snapshot = build_hud_snapshot(
+        &sim,
+        false,
+        1,
+        CameraMode::System(SystemId(0)),
+        SystemId(0),
+        Some(station_id),
+        Some(station_id),
+        Commodity::Gas,
+        Some(station_id),
+        Some(ship_id),
+        Some(ship_id),
+        None,
+        &UiKpiTracker::default(),
+    );
+
+    let card = snapshot
+        .station_card
+        .as_ref()
+        .expect("station card snapshot should exist");
+    assert!(card.population > 0.0);
+    assert!(card.population_ratio > 1.0);
+    assert_eq!(card.population_trend, PopulationTrend::Growing);
+
+    let system_station = snapshot
+        .system_panel
+        .as_ref()
+        .expect("system panel should exist")
+        .stations
+        .iter()
+        .find(|station| station.station_id == station_id)
+        .expect("system station snapshot should exist");
+    assert!(system_station.population > 0.0);
+    assert!(system_station.population_ratio > 1.0);
+    assert_eq!(system_station.population_trend, PopulationTrend::Growing);
+
+    let anomaly = snapshot
+        .markets
+        .station_anomaly_rows
+        .iter()
+        .find(|row| row.station_id == station_id)
+        .expect("station anomaly snapshot should exist");
+    assert!(anomaly.population > 0.0);
+    assert!(anomaly.population_ratio > 1.0);
+    assert_eq!(anomaly.population_trend, PopulationTrend::Growing);
+
+    let detail = snapshot
+        .markets
+        .station_detail
+        .as_ref()
+        .expect("station detail snapshot should exist");
+    assert_eq!(detail.station_id, station_id);
+    assert!(detail.population > 0.0);
+    assert!(detail.population_ratio > 1.0);
+    assert_eq!(detail.population_trend, PopulationTrend::Growing);
 }
 
 #[test]

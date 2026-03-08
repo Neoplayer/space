@@ -2,7 +2,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use gatebound_domain::{CargoLoad, CargoSource, Commodity, PriorityMode, ShipId};
-use gatebound_sim::TradePriceTone;
+use gatebound_sim::{PopulationTrend, TradePriceTone};
 
 use crate::runtime::save::{
     apply_loaded_simulation, format_save_timestamp, refresh_save_entries, toggle_save_menu,
@@ -1435,6 +1435,18 @@ fn render_station_info_tab(ui: &mut egui::Ui, card: &StationCardSnapshot) {
                     ui.monospace(format!("Host body: {}", card.host_body_name));
                     ui.monospace(format!("Orbit band: {}", card.orbit_label));
                     ui.monospace(format!(
+                        "Population: {}",
+                        format_population(card.population)
+                    ));
+                    ui.monospace(format!(
+                        "Baseline load: {:.0}%",
+                        card.population_ratio * 100.0
+                    ));
+                    ui.monospace(format!(
+                        "Trend: {}",
+                        population_trend_label(card.population_trend)
+                    ));
+                    ui.monospace(format!(
                         "Dock status: {}",
                         if card.docked {
                             "ready for cargo handling"
@@ -2105,7 +2117,7 @@ fn render_system_stations(
 
             for station in &panel.stations {
                 let response = ui.add_sized(
-                    [ui.available_width(), 54.0],
+                    [ui.available_width(), 72.0],
                     egui::Button::new(system_station_button_text(station))
                         .selected(current_station_id == Some(station.station_id)),
                 );
@@ -2190,10 +2202,17 @@ fn system_station_button_text(station: &SystemStationSnapshot) -> String {
             .map(commodity_label)
             .unwrap_or("-"),
     );
+    let population = format!(
+        "Pop {}  {:.0}%  {}",
+        format_population(station.population),
+        station.population_ratio * 100.0,
+        population_trend_label(station.population_trend)
+    );
     format!(
-        "{} ({})\n{} • {} • {} • {} • {}",
+        "{} ({})\n{}\n{} • {} • {} • {} • {}",
         station.station_name,
         station_profile_label(station.profile),
+        population,
         station.host_body_name,
         station.orbit_label,
         trading,
@@ -2621,6 +2640,8 @@ fn render_markets_dashboard(
                             .striped(true)
                             .show(ui, |ui| {
                                 ui.strong("Station");
+                                ui.strong("Pop");
+                                ui.strong("Trend");
                                 ui.strong("Score");
                                 ui.strong("Index");
                                 ui.strong("Cov");
@@ -2628,6 +2649,8 @@ fn render_markets_dashboard(
                                 ui.end_row();
                                 for row in markets.station_anomaly_rows.iter().take(10) {
                                     ui.label(format!("{} / {}", row.station_name, row.system_name));
+                                    ui.monospace(format_population(row.population));
+                                    ui.monospace(population_trend_label(row.population_trend));
                                     ui.monospace(format!("{:.2}", row.anomaly_score));
                                     ui.monospace(format!("{:.2}", row.price_index));
                                     ui.monospace(format!("{:.0}%", row.stock_coverage * 100.0));
@@ -2652,6 +2675,9 @@ fn render_markets_station_detail(ui: &mut egui::Ui, detail: &MarketsStationDetai
             station_profile_label(detail.profile)
         ));
         ui.horizontal_wrapped(|ui| {
+            ui.monospace(format!("pop {}", format_population(detail.population)));
+            ui.monospace(format!("{:.0}% baseline", detail.population_ratio * 100.0));
+            ui.monospace(population_trend_label(detail.population_trend));
             ui.monospace(format!("index {:.2}", detail.price_index));
             ui.monospace(format!("coverage {:.0}%", detail.stock_coverage * 100.0));
             ui.monospace(format!("net {:+.1}", detail.net_flow));
@@ -2879,4 +2905,16 @@ fn storage_unload_disabled_reason(
         return Some("matching spot cargo is below the minimum transferable lot");
     }
     Some("selected storage row does not match any spot cargo loaded")
+}
+
+fn format_population(population: f64) -> String {
+    format!("{:.0}", population)
+}
+
+fn population_trend_label(trend: PopulationTrend) -> &'static str {
+    match trend {
+        PopulationTrend::Growing => "Rising",
+        PopulationTrend::Stable => "Stable",
+        PopulationTrend::Shrinking => "Falling",
+    }
 }

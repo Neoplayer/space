@@ -9,7 +9,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const SNAPSHOT_VERSION: u32 = 6;
+const SNAPSHOT_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotEnvelope {
@@ -42,6 +42,7 @@ pub(crate) struct SnapshotState {
     pub companies: Vec<Company>,
     pub company_runtimes: Vec<NpcCompanyRuntime>,
     pub markets: Vec<MarketBookSnapshot>,
+    pub station_populations: Vec<StationPopulationSnapshot>,
     #[serde(default)]
     pub player_station_storage: Vec<StationStorageSnapshot>,
     #[serde(default)]
@@ -78,6 +79,13 @@ pub(crate) struct MarketBookSnapshot {
 pub(crate) struct MarketGoodSnapshot {
     pub commodity: Commodity,
     pub state: MarketState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct StationPopulationSnapshot {
+    pub station_id: StationId,
+    pub current: f64,
+    pub previous: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

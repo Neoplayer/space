@@ -20,6 +20,58 @@ fn all_station_ids(sim: &Simulation) -> Vec<StationId> {
         .collect()
 }
 
+fn station_profile(sim: &Simulation, station_id: StationId) -> StationProfile {
+    sim.world
+        .stations
+        .iter()
+        .find(|station| station.id == station_id)
+        .map(|station| station.profile)
+        .expect("station should exist")
+}
+
+fn baseline_population(profile: StationProfile) -> f64 {
+    match profile {
+        StationProfile::Civilian => 12_000.0,
+        StationProfile::Industrial => 9_000.0,
+        StationProfile::Research => 7_500.0,
+    }
+}
+
+fn essential_commodities(profile: StationProfile) -> &'static [Commodity] {
+    match profile {
+        StationProfile::Civilian => {
+            &[Commodity::Ice, Commodity::Fuel, Commodity::Electronics]
+        }
+        StationProfile::Industrial => {
+            &[Commodity::Ore, Commodity::Metal, Commodity::Parts, Commodity::Fuel]
+        }
+        StationProfile::Research => {
+            &[Commodity::Electronics, Commodity::Parts, Commodity::Fuel]
+        }
+    }
+}
+
+fn expected_target_stock_after_population_change(
+    profile: StationProfile,
+    population_multiplier: f64,
+) -> f64 {
+    let population = baseline_population(profile) * population_multiplier;
+    let ratio = population / baseline_population(profile);
+    100.0 * ratio.powf(1.15)
+}
+
+fn reset_markets_to_nominal(sim: &mut Simulation) {
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 100.0;
+            state.target_stock = 100.0;
+            state.price = state.base_price;
+            state.cycle_inflow = 0.0;
+            state.cycle_outflow = 0.0;
+        }
+    }
+}
+
 fn last_station_system(sim: &Simulation) -> SystemId {
     sim.world
         .systems_with_stations()
@@ -1489,6 +1541,206 @@ fn legacy_snapshot_versions_are_rejected() {
     assert!(
         err.to_string().contains("unsupported snapshot version"),
         "legacy versions should be rejected explicitly"
+    );
+}
+
+#[test]
+fn healthy_station_growth_increases_target_stock() {
+    let mut sim = Simulation::new(stage_a_config(), 611);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let profile = station_profile(&sim, station_id);
+    reset_markets_to_nominal(&mut sim);
+
+    for commodity in essential_commodities(profile) {
+        let state = sim
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(commodity))
+            .expect("essential commodity should exist");
+        state.stock = 100.0;
+        state.target_stock = 100.0;
+    }
+
+    sim.step_cycle();
+
+    let gas_state = sim
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Gas))
+        .expect("gas market should exist");
+    let expected = expected_target_stock_after_population_change(profile, 1.005);
+    assert!(
+        (gas_state.target_stock - expected).abs() < 1e-6,
+        "healthy stations should grow population and raise target stock"
+    );
+}
+
+#[test]
+fn critical_shortage_shrinks_population_and_target_stock() {
+    let mut sim = Simulation::new(stage_a_config(), 613);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let profile = station_profile(&sim, station_id);
+    reset_markets_to_nominal(&mut sim);
+
+    for commodity in essential_commodities(profile) {
+        let state = sim
+            .markets
+            .get_mut(&station_id)
+            .and_then(|book| book.goods.get_mut(commodity))
+            .expect("essential commodity should exist");
+        state.stock = 0.0;
+        state.target_stock = 100.0;
+    }
+
+    sim.step_cycle();
+
+    let gas_state = sim
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Gas))
+        .expect("gas market should exist");
+    let expected = expected_target_stock_after_population_change(profile, 0.98);
+    assert!(
+        (gas_state.target_stock - expected).abs() < 1e-6,
+        "critical shortages should shrink population and lower target stock"
+    );
+}
+
+#[test]
+fn neutral_band_shortage_holds_population_steady() {
+    let mut sim = Simulation::new(stage_a_config(), 617);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let profile = station_profile(&sim, station_id);
+    reset_markets_to_nominal(&mut sim);
+
+    let neutral_commodity = essential_commodities(profile)[0];
+    let state = sim
+        .markets
+        .get_mut(&station_id)
+        .and_then(|book| book.goods.get_mut(&neutral_commodity))
+        .expect("essential commodity should exist");
+    state.stock = 90.0;
+    state.target_stock = 100.0;
+
+    sim.step_cycle();
+
+    let gas_state = sim
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Gas))
+        .expect("gas market should exist");
+    assert!(
+        (gas_state.target_stock - 100.0).abs() < 1e-9,
+        "stations in the neutral band should hold population steady"
+    );
+}
+
+#[test]
+fn snapshot_round_trip_preserves_population_progression() {
+    let cfg = stage_a_config();
+    let mut sim = Simulation::new(cfg.clone(), 619);
+    let station_id = station_for_system(&sim, SystemId(0));
+    let profile = station_profile(&sim, station_id);
+    reset_markets_to_nominal(&mut sim);
+
+    sim.step_cycle();
+
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_population_progression.json");
+    sim.save_snapshot(&tmp).expect("snapshot save should pass");
+    let mut loaded = Simulation::load_snapshot(&tmp, cfg).expect("snapshot load should pass");
+    for book in loaded.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 500.0;
+        }
+    }
+
+    loaded.step_cycle();
+    let target_after_second_cycle = loaded
+        .markets
+        .get(&station_id)
+        .and_then(|book| book.goods.get(&Commodity::Gas))
+        .expect("gas market should exist")
+        .target_stock;
+    let expected = expected_target_stock_after_population_change(profile, 1.005 * 1.005);
+
+    assert!(
+        (target_after_second_cycle - expected).abs() < 1e-6,
+        "population state should continue from the saved value after load"
+    );
+}
+
+#[test]
+fn mission_generation_uses_population_adjusted_target_stock() {
+    let mut sim = Simulation::new(stage_a_config(), 631);
+    let origin_station = station_for_system(&sim, SystemId(0));
+    let destination_station = station_for_system(&sim, last_station_system(&sim));
+    reset_markets_to_nominal(&mut sim);
+    for book in sim.markets.values_mut() {
+        for state in book.goods.values_mut() {
+            state.stock = 500.0;
+        }
+    }
+
+    for _ in 0..40 {
+        sim.step_cycle();
+    }
+
+    let origin_gas = sim
+        .markets
+        .get_mut(&origin_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Gas))
+        .expect("origin gas state should exist");
+    origin_gas.stock = 200.0;
+
+    let destination_gas = sim
+        .markets
+        .get_mut(&destination_station)
+        .and_then(|book| book.goods.get_mut(&Commodity::Gas))
+        .expect("destination gas state should exist");
+    destination_gas.stock = 90.0;
+
+    sim.refresh_mission_offers();
+
+    assert!(
+        sim.mission_offers.values().any(|offer| {
+            offer.origin_station == origin_station
+                && offer.destination_station == destination_station
+                && offer.commodity == Commodity::Gas
+        }),
+        "population-adjusted targets should create gas delivery demand"
+    );
+}
+
+#[test]
+fn npc_planner_uses_population_adjusted_target_stock() {
+    let mut sim = Simulation::new(stage_a_config(), 641);
+    sim.set_planner_mode(PlannerMode::HybridRecommended);
+    let company_id = CompanyId(1);
+    let station_id = station_for_system(&sim, SystemId(0));
+    reset_markets_to_nominal(&mut sim);
+
+    for _ in 0..12 {
+        sim.step_cycle();
+    }
+
+    let gas_state = sim
+        .markets
+        .get_mut(&station_id)
+        .and_then(|book| book.goods.get_mut(&Commodity::Gas))
+        .expect("gas state should exist");
+    gas_state.stock = 90.0;
+
+    sim.plan_company_orders(company_id);
+
+    let diagnostics = sim.planner_diagnostics();
+    let gas_demand = diagnostics
+        .demands
+        .iter()
+        .find(|demand| demand.station_id == station_id && demand.commodity == Commodity::Gas)
+        .expect("gas demand should be present");
+    assert!(
+        gas_demand.required_amount > 10.5,
+        "planner demand should expand with population-adjusted target stock"
     );
 }
 

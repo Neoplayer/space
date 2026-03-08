@@ -178,12 +178,22 @@ pub struct SystemDetailsView {
     pub ships: Vec<SystemShipSummaryView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopulationTrend {
+    Growing,
+    Stable,
+    Shrinking,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemStationSummaryView {
     pub station_id: StationId,
     pub profile: StationProfile,
     pub x: f64,
     pub y: f64,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub price_index: f64,
     pub stock_coverage: f64,
     pub strongest_shortage_commodity: Option<Commodity>,
@@ -328,6 +338,9 @@ pub struct StationMissionView {
     pub ship_id: ShipId,
     pub station_id: StationId,
     pub docked: bool,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub offers: Vec<StationMissionOfferRowView>,
     pub mission_rows: Vec<StationMissionCargoRowView>,
 }
@@ -470,6 +483,9 @@ pub struct CommodityHotspotsView {
 pub struct StationMarketAnomalyRowView {
     pub station_id: StationId,
     pub system_id: SystemId,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub price_index: f64,
     pub stock_coverage: f64,
     pub net_flow: f64,
@@ -500,6 +516,9 @@ pub struct StationCommodityDetailView {
 pub struct StationMarketDetailView {
     pub station_id: StationId,
     pub system_id: SystemId,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub price_index: f64,
     pub avg_price_deviation: f64,
     pub total_stock: f64,
@@ -561,6 +580,9 @@ pub struct StationOpsView {
     pub ship_id: ShipId,
     pub station_id: StationId,
     pub docked: bool,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_capacity: f64,
     pub cargo_total_amount: f64,
@@ -598,6 +620,9 @@ pub struct StationTradeView {
     pub ship_id: ShipId,
     pub station_id: StationId,
     pub docked: bool,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_capacity: f64,
     pub cargo_total_amount: f64,
@@ -621,6 +646,9 @@ pub struct StationStorageView {
     pub ship_id: ShipId,
     pub station_id: StationId,
     pub docked: bool,
+    pub population: f64,
+    pub population_ratio: f64,
+    pub population_trend: PopulationTrend,
     pub cargo_lots: Vec<CargoLoad>,
     pub cargo_capacity: f64,
     pub cargo_total_amount: f64,

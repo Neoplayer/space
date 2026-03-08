@@ -20,6 +20,7 @@ pub struct MarketStatePatch {
     pub base_price: Option<f64>,
     pub price: Option<f64>,
     pub stock: Option<f64>,
+    pub base_target_stock: Option<f64>,
     pub target_stock: Option<f64>,
     pub cycle_inflow: Option<f64>,
     pub cycle_outflow: Option<f64>,
@@ -314,6 +315,9 @@ impl SimulationScenarioBuilder {
             }
             if let Some(stock) = patch.stock {
                 state.stock = stock;
+            }
+            if let Some(base_target_stock) = patch.base_target_stock {
+                state.base_target_stock = base_target_stock;
             }
             if let Some(target_stock) = patch.target_stock {
                 state.target_stock = target_stock;

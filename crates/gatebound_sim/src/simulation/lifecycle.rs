@@ -1,12 +1,14 @@
 use std::collections::VecDeque;
 
 use super::*;
+use super::state::StationPopulationState;
 
 impl Simulation {
     pub fn new(mut config: RuntimeConfig, seed: u64) -> Self {
         config.galaxy.seed = seed;
         let world = World::generate(&config.galaxy, seed);
         let mut markets = BTreeMap::new();
+        let mut station_populations = BTreeMap::new();
         for station in &world.stations {
             let mut goods = BTreeMap::new();
             for commodity in Commodity::ALL {
@@ -17,6 +19,7 @@ impl Simulation {
                         base_price,
                         price: base_price,
                         stock: 100.0,
+                        base_target_stock: 100.0,
                         target_stock: 100.0,
                         cycle_inflow: 0.0,
                         cycle_outflow: 0.0,
@@ -24,6 +27,14 @@ impl Simulation {
                 );
             }
             markets.insert(station.id, MarketBook { goods });
+            let baseline_population = super::economy::baseline_population(station.profile);
+            station_populations.insert(
+                station.id,
+                StationPopulationState {
+                    current: baseline_population,
+                    previous: baseline_population,
+                },
+            );
         }
         let mut previous_cycle_prices = BTreeMap::new();
         for (station_id, book) in &markets {
@@ -46,6 +57,7 @@ impl Simulation {
             companies,
             npc_company_runtimes,
             markets,
+            station_populations,
             player_station_storage: BTreeMap::new(),
             missions: BTreeMap::new(),
             mission_offers: BTreeMap::new(),
@@ -154,6 +166,7 @@ impl Simulation {
         self.cycle = self.cycle.saturating_add(1);
         self.capture_previous_cycle_prices();
         self.update_market_prices();
+        self.update_station_populations();
         self.roll_gate_traversal_window();
         self.expire_mission_offers();
         if self
@@ -422,6 +435,17 @@ impl Simulation {
                         .collect(),
                 })
                 .collect(),
+            station_populations: self
+                .station_populations
+                .iter()
+                .map(
+                    |(station_id, population)| crate::snapshot::StationPopulationSnapshot {
+                        station_id: *station_id,
+                        current: population.current,
+                        previous: population.previous,
+                    },
+                )
+                .collect(),
             player_station_storage: self
                 .player_station_storage
                 .iter()
@@ -565,6 +589,7 @@ impl Simulation {
             companies,
             company_runtimes,
             markets,
+            station_populations,
             player_station_storage,
             missions,
             mission_offers,
@@ -627,6 +652,18 @@ impl Simulation {
                             .into_iter()
                             .map(|entry| (entry.commodity, entry.state))
                             .collect(),
+                    },
+                )
+            })
+            .collect();
+        simulation.station_populations = station_populations
+            .into_iter()
+            .map(|population| {
+                (
+                    population.station_id,
+                    StationPopulationState {
+                        current: population.current,
+                        previous: population.previous,
                     },
                 )
             })
@@ -725,6 +762,7 @@ impl Simulation {
             })
             .collect();
         simulation.normalize_player_ship_roster();
+        simulation.sync_all_station_target_stocks();
         simulation
     }
 }

@@ -26,6 +26,7 @@ pub struct MarketState {
     pub base_price: f64,
     pub price: f64,
     pub stock: f64,
+    pub base_target_stock: f64,
     pub target_stock: f64,
     pub cycle_inflow: f64,
     pub cycle_outflow: f64,

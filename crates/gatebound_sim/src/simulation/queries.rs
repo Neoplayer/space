@@ -257,11 +257,16 @@ impl Simulation {
             .into_iter()
             .map(|station| {
                 let detail = self.station_market_detail(station.station_id);
+                let (population, population_ratio, population_trend) =
+                    self.station_population_view(station.station_id);
                 SystemStationSummaryView {
                     station_id: station.station_id,
                     profile: station.profile,
                     x: station.x,
                     y: station.y,
+                    population,
+                    population_ratio,
+                    population_trend,
                     price_index: detail.as_ref().map_or(1.0, |detail| detail.price_index),
                     stock_coverage: detail.as_ref().map_or(0.0, |detail| detail.stock_coverage),
                     strongest_shortage_commodity: detail
@@ -441,6 +446,8 @@ impl Simulation {
     ) -> Option<StationMissionView> {
         self.ships.get(&ship_id)?;
         let docked = self.is_ship_docked_at(ship_id, station_id);
+        let (population, population_ratio, population_trend) =
+            self.station_population_view(station_id);
         let mut offers = self
             .mission_offers
             .values()
@@ -465,6 +472,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked,
+            population,
+            population_ratio,
+            population_trend,
             offers,
             mission_rows: Vec::new(),
         })
@@ -656,10 +666,15 @@ impl Simulation {
         station_id: StationId,
     ) -> Option<StationOpsView> {
         let ship = self.ships.get(&ship_id)?;
+        let (population, population_ratio, population_trend) =
+            self.station_population_view(station_id);
         Some(StationOpsView {
             ship_id,
             station_id,
             docked: self.is_ship_docked_at(ship_id, station_id),
+            population,
+            population_ratio,
+            population_trend,
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
             cargo_total_amount: ship.cargo_total_amount(),
@@ -675,6 +690,8 @@ impl Simulation {
         let ship = self.ships.get(&ship_id)?;
         let docked = self.is_ship_docked_at(ship_id, station_id);
         let market_fee_rate = self.config.pressure.market_fee_rate;
+        let (population, population_ratio, population_trend) =
+            self.station_population_view(station_id);
 
         let rows = self
             .markets
@@ -746,6 +763,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked,
+            population,
+            population_ratio,
+            population_trend,
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
             cargo_total_amount: ship.cargo_total_amount(),
@@ -770,6 +790,8 @@ impl Simulation {
         }
 
         let docked = self.is_ship_docked_at(ship_id, station_id);
+        let (population, population_ratio, population_trend) =
+            self.station_population_view(station_id);
         let mut commodities = self
             .player_station_storage
             .get(&station_id)
@@ -832,6 +854,9 @@ impl Simulation {
             ship_id,
             station_id,
             docked,
+            population,
+            population_ratio,
+            population_trend,
             cargo_lots: ship.cargo_lots().to_vec(),
             cargo_capacity: ship.cargo_capacity,
             cargo_total_amount: ship.cargo_total_amount(),
@@ -1660,10 +1685,15 @@ impl Simulation {
                     + max_shortage * 0.6
                     + max_surplus * 0.3
                     + (price_index - 1.0).abs() * 0.25;
+                let (population, population_ratio, population_trend) =
+                    self.station_population_view(station.id);
 
                 Some(StationMarketAnomalyRowView {
                     station_id: station.id,
                     system_id: station.system_id,
+                    population,
+                    population_ratio,
+                    population_trend,
                     price_index,
                     stock_coverage,
                     net_flow: inflow - outflow,
@@ -1686,6 +1716,8 @@ impl Simulation {
     fn station_market_detail(&self, station_id: StationId) -> Option<StationMarketDetailView> {
         let market = self.markets.get(&station_id)?;
         let system_id = self.station_system_id(station_id)?;
+        let (population, population_ratio, population_trend) =
+            self.station_population_view(station_id);
         let mut commodity_rows = Vec::new();
         let mut price_index_sum = 0.0;
         let mut price_index_count = 0.0;
@@ -1791,6 +1823,9 @@ impl Simulation {
         Some(StationMarketDetailView {
             station_id,
             system_id,
+            population,
+            population_ratio,
+            population_trend,
             price_index,
             avg_price_deviation,
             total_stock,
@@ -1819,6 +1854,25 @@ impl Simulation {
             .iter()
             .find(|station| station.id == station_id)
             .map(|station| station.system_id)
+    }
+
+    fn station_population_view(&self, station_id: StationId) -> (f64, f64, PopulationTrend) {
+        let baseline = self.station_population_baseline(station_id).unwrap_or(1.0);
+        let population_state = self.station_population(station_id);
+        let population = population_state
+            .map(|state| state.current)
+            .unwrap_or(baseline);
+        let population_ratio = if baseline <= 0.0 {
+            1.0
+        } else {
+            population / baseline
+        };
+        let population_trend = match population_state {
+            Some(state) if state.current > state.previous + 1e-6 => PopulationTrend::Growing,
+            Some(state) if state.current + 1e-6 < state.previous => PopulationTrend::Shrinking,
+            _ => PopulationTrend::Stable,
+        };
+        (population, population_ratio, population_trend)
     }
 
     fn previous_price_for(

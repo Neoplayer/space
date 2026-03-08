@@ -3,6 +3,12 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::views::{PlannerDiagnostics, PlannerMode, PlannerSettings};
 use gatebound_domain::*;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StationPopulationState {
+    pub(crate) current: f64,
+    pub(crate) previous: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Simulation {
     pub(crate) config: RuntimeConfig,
@@ -12,6 +18,7 @@ pub struct Simulation {
     pub(crate) companies: BTreeMap<CompanyId, Company>,
     pub(crate) npc_company_runtimes: BTreeMap<CompanyId, NpcCompanyRuntime>,
     pub(crate) markets: BTreeMap<StationId, MarketBook>,
+    pub(crate) station_populations: BTreeMap<StationId, StationPopulationState>,
     pub(crate) player_station_storage: BTreeMap<StationId, BTreeMap<Commodity, f64>>,
     pub(crate) missions: BTreeMap<MissionId, Mission>,
     pub(crate) mission_offers: BTreeMap<u64, MissionOffer>,
