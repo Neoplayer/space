@@ -3,6 +3,7 @@ use gatebound_domain::{
     MilestoneStatus, MissionActionError, MissionOfferError, MissionStatus, PriorityMode, ShipClass,
     ShipModuleSlot, ShipModuleStatus, ShipRole, StationProfile, StorageTransferError, TradeError,
 };
+use gatebound_sim::PopulationTrend;
 pub(super) fn commodity_label(commodity: Commodity) -> &'static str {
     match commodity {
         Commodity::Ore => "Ore",
@@ -168,5 +169,17 @@ pub(super) fn mission_status_label(status: MissionStatus) -> &'static str {
         MissionStatus::InProgress => "in_progress",
         MissionStatus::Completed => "completed",
         MissionStatus::Cancelled => "cancelled",
+    }
+}
+
+pub(super) fn format_population(population: f64) -> String {
+    format!("{population:.0}")
+}
+
+pub(super) fn population_trend_label(trend: PopulationTrend) -> &'static str {
+    match trend {
+        PopulationTrend::Growing => "Rising",
+        PopulationTrend::Stable => "Stable",
+        PopulationTrend::Shrinking => "Falling",
     }
 }

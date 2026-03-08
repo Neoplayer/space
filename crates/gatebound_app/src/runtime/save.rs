@@ -10,11 +10,15 @@ use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
+use crate::features::finance::FinanceUiState;
+use crate::features::markets::MarketsUiState;
+use crate::features::missions::MissionsPanelState;
+use crate::features::ships::ShipUiState;
+use crate::features::stations::StationUiState;
 use crate::input::camera::CameraUiState;
 use crate::runtime::sim::{
-    FinanceUiState, MarketsUiState, MissionsPanelState, SelectedShip, SelectedStation,
-    SelectedSystem, ShipUiState, SimClock, SimResource, StationUiState, TrackedShip, UiKpiTracker,
-    UiPanelState,
+    SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, TrackedShip,
+    UiKpiTracker, UiPanelState,
 };
 use crate::ui::hud::HudMessages;
 

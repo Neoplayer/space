@@ -1,10 +1,9 @@
 use bevy::prelude::*;
-use gatebound_domain::{
-    Commodity, CycleReport, LoanOfferId, MissionId, ShipId, StationId, SystemId, TickReport,
-};
+use gatebound_domain::{Commodity, CycleReport, ShipId, StationId, SystemId, TickReport};
 use gatebound_sim::Simulation;
 use std::collections::VecDeque;
 
+use crate::features::stations::{open_station_card, StationUiState};
 use crate::input::camera::{CameraMode, CameraUiState};
 use crate::runtime::save::SaveMenuState;
 use crate::ui::hud::HudMessages;
@@ -89,18 +88,6 @@ pub fn panel_is_open(panels: &UiPanelState, index: u8) -> bool {
     }
 }
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MissionsPanelState {
-    pub selected_mission_id: Option<MissionId>,
-    pub modal_selection: Option<MissionModalSelection>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MissionModalSelection {
-    Offer(u64),
-    Active(MissionId),
-}
-
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct UiKpiTracker {
     pub manual_action_ticks: VecDeque<u64>,
@@ -178,92 +165,9 @@ pub struct SelectedStation {
     pub station_id: Option<StationId>,
 }
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MarketsUiState {
-    pub detail_station_id: Option<StationId>,
-    pub focused_commodity: Commodity,
-    pub seeded_from_world_selection: bool,
-}
-
-impl Default for MarketsUiState {
-    fn default() -> Self {
-        Self {
-            detail_station_id: None,
-            focused_commodity: Commodity::Fuel,
-            seeded_from_world_selection: false,
-        }
-    }
-}
-
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TrackedShip {
     pub ship_id: Option<ShipId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShipCardTab {
-    Overview,
-    Cargo,
-    Modules,
-    Technical,
-}
-
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShipUiState {
-    pub context_ship_id: Option<ShipId>,
-    pub card_ship_id: Option<ShipId>,
-    pub context_menu_open: bool,
-    pub card_open: bool,
-    pub card_tab: ShipCardTab,
-}
-
-impl Default for ShipUiState {
-    fn default() -> Self {
-        Self {
-            context_ship_id: None,
-            card_ship_id: None,
-            context_menu_open: false,
-            card_open: false,
-            card_tab: ShipCardTab::Overview,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StationCardTab {
-    Info,
-    Trade,
-    Storage,
-    Missions,
-}
-
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-pub struct StationUiState {
-    pub context_station_id: Option<StationId>,
-    pub card_station_id: Option<StationId>,
-    pub context_menu_open: bool,
-    pub station_panel_open: bool,
-    pub card_tab: StationCardTab,
-    pub trade_commodity: Commodity,
-    pub trade_quantity: f64,
-    pub storage_commodity: Commodity,
-    pub storage_quantity: f64,
-}
-
-impl Default for StationUiState {
-    fn default() -> Self {
-        Self {
-            context_station_id: None,
-            card_station_id: None,
-            context_menu_open: false,
-            station_panel_open: false,
-            card_tab: StationCardTab::Info,
-            trade_commodity: Commodity::Fuel,
-            trade_quantity: 5.0,
-            storage_commodity: Commodity::Fuel,
-            storage_quantity: 5.0,
-        }
-    }
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -342,21 +246,6 @@ pub fn hotkey_to_risk(ch: char) -> Option<RiskHotkey> {
     }
 }
 
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-pub struct FinanceUiState {
-    pub pending_offer: Option<LoanOfferId>,
-    pub repayment_amount: f64,
-}
-
-impl Default for FinanceUiState {
-    fn default() -> Self {
-        Self {
-            pending_offer: None,
-            repayment_amount: 25.0,
-        }
-    }
-}
-
 pub fn selected_system_from_camera(mode: CameraMode) -> SystemId {
     match mode {
         CameraMode::System(system_id) => system_id,
@@ -366,29 +255,6 @@ pub fn selected_system_from_camera(mode: CameraMode) -> SystemId {
 
 pub fn player_ship_ids(simulation: &Simulation) -> Vec<ShipId> {
     simulation.fleet_panel_view().player_ship_ids
-}
-
-pub fn seed_markets_ui_state(
-    state: &mut MarketsUiState,
-    simulation: &Simulation,
-    selected_system_id: SystemId,
-    selected_station_id: Option<StationId>,
-) {
-    if state.seeded_from_world_selection && state.detail_station_id.is_some() {
-        return;
-    }
-
-    let topology = simulation.camera_topology_view();
-    let fallback_station = selected_station_id.or_else(|| {
-        topology
-            .systems
-            .iter()
-            .find(|system| system.system_id == selected_system_id)
-            .and_then(|system| system.stations.first().map(|station| station.station_id))
-    });
-
-    state.detail_station_id = fallback_station;
-    state.seeded_from_world_selection = true;
 }
 
 pub fn cycle_selected_ship(
@@ -442,57 +308,6 @@ pub fn apply_panel_toggle(panels: &mut UiPanelState, index: u8) {
 
 pub fn open_system_view(mode: &mut CameraMode, system_id: SystemId) {
     *mode = CameraMode::System(system_id);
-}
-
-pub fn open_station_card(
-    state: &mut StationUiState,
-    station_id: StationId,
-    preferred_commodity: Option<Commodity>,
-) {
-    state.station_panel_open = true;
-    state.card_station_id = Some(station_id);
-    state.context_station_id = Some(station_id);
-    state.card_tab = StationCardTab::Info;
-    if let Some(commodity) = preferred_commodity {
-        state.trade_commodity = commodity;
-        state.storage_commodity = commodity;
-    }
-}
-
-pub fn open_system_station_inspector_selection(
-    selected_station: &mut SelectedStation,
-    panels: &mut UiPanelState,
-    station_ui: &mut StationUiState,
-    station_id: StationId,
-    preferred_commodity: Option<Commodity>,
-) {
-    selected_station.station_id = Some(station_id);
-    panels.station_ops = true;
-    open_station_card(station_ui, station_id, preferred_commodity);
-}
-
-pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
-    state.card_open = true;
-    state.card_ship_id = Some(ship_id);
-    state.context_ship_id = Some(ship_id);
-    state.card_tab = ShipCardTab::Overview;
-}
-
-pub fn open_mission_offer(missions_panel: &mut MissionsPanelState, offer_id: u64) {
-    missions_panel.modal_selection = Some(MissionModalSelection::Offer(offer_id));
-}
-
-pub fn open_active_mission(missions_panel: &mut MissionsPanelState, mission_id: MissionId) {
-    missions_panel.selected_mission_id = Some(mission_id);
-    missions_panel.modal_selection = Some(MissionModalSelection::Active(mission_id));
-}
-
-pub fn open_system_ship_inspector_selection(
-    _selected_ship: &mut SelectedShip,
-    ship_ui: &mut ShipUiState,
-    ship_id: ShipId,
-) {
-    open_ship_card(ship_ui, ship_id);
 }
 
 pub fn preferred_trade_commodity(

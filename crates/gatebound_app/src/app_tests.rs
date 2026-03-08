@@ -1,14 +1,31 @@
-use gatebound_domain::{CargoLoad, CargoManifest, CargoSource, Commodity, ShipId, SystemId};
+use bevy::prelude::*;
+use gatebound_domain::{
+    CargoLoad, CargoManifest, CargoSource, Commodity, RuntimeConfig, ShipId, SystemId,
+};
 use gatebound_sim::test_support::{MarketStatePatch, ShipPatch, SimulationScenarioBuilder};
 use gatebound_sim::PopulationTrend;
 
+use crate::app_shell::GateboundAppShellPlugin;
+use crate::features::finance::FinanceUiState;
+use crate::features::markets::{seed_markets_ui_state, MarketsUiState};
+use crate::features::missions::{
+    open_active_mission, open_mission_offer, MissionModalSelection, MissionsPanelState,
+};
+use crate::features::ships::{apply_ship_context_open, open_ship_card, ShipCardTab, ShipUiState};
+use crate::features::stations::{
+    apply_station_context_open, open_station_card, StationCardTab, StationUiState,
+};
 use crate::input::camera::CameraMode;
+use crate::input::camera::CameraUiState;
+use crate::render::world::ShipMotionCache;
+use crate::runtime::save::{SaveMenuState, SaveStorage};
 use crate::runtime::sim::{
-    apply_panel_toggle, panel_button_specs, MissionModalSelection, MissionsPanelState,
-    UiKpiTracker, UiPanelState,
+    apply_panel_toggle, panel_button_specs, SelectedShip, SelectedStation, SelectedSystem,
+    SimClock, SimResource, TrackedShip, UiKpiTracker, UiPanelState,
 };
 use crate::ui::hud::{
     build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
+    HudMessages,
 };
 
 fn first_station_in_system(
@@ -22,6 +39,173 @@ fn first_station_in_system(
 
 fn player_ship_id(builder: &SimulationScenarioBuilder) -> ShipId {
     builder.player_ship_id().expect("player ship should exist")
+}
+
+#[test]
+fn app_shell_plugin_registers_core_resources() {
+    let mut app = App::new();
+    app.add_plugins(GateboundAppShellPlugin::new(RuntimeConfig::default(), 77));
+
+    assert!(app.world().contains_resource::<SimResource>());
+    assert!(app.world().contains_resource::<SimClock>());
+    assert!(app.world().contains_resource::<CameraUiState>());
+    assert!(app.world().contains_resource::<ShipMotionCache>());
+    assert!(app.world().contains_resource::<UiPanelState>());
+    assert!(app.world().contains_resource::<MissionsPanelState>());
+    assert!(app.world().contains_resource::<SelectedShip>());
+    assert!(app.world().contains_resource::<SelectedSystem>());
+    assert!(app.world().contains_resource::<SelectedStation>());
+    assert!(app.world().contains_resource::<FinanceUiState>());
+    assert!(app.world().contains_resource::<MarketsUiState>());
+    assert!(app.world().contains_resource::<TrackedShip>());
+    assert!(app.world().contains_resource::<ShipUiState>());
+    assert!(app.world().contains_resource::<StationUiState>());
+    assert!(app.world().contains_resource::<UiKpiTracker>());
+    assert!(app.world().contains_resource::<HudMessages>());
+    assert!(app.world().contains_resource::<SaveStorage>());
+    assert!(app.world().contains_resource::<SaveMenuState>());
+    assert_eq!(app.world().resource::<SimClock>().speed_multiplier, 1);
+    assert_eq!(
+        app.world().resource::<CameraUiState>().mode,
+        CameraMode::Galaxy
+    );
+    assert!(!app.world().resource::<UiPanelState>().missions);
+}
+
+#[test]
+fn mission_feature_actions_update_state() {
+    let mut state = MissionsPanelState::default();
+
+    open_mission_offer(&mut state, 42);
+    assert_eq!(
+        state.modal_selection,
+        Some(MissionModalSelection::Offer(42))
+    );
+
+    open_active_mission(&mut state, gatebound_domain::MissionId(7));
+    assert_eq!(
+        state.selected_mission_id,
+        Some(gatebound_domain::MissionId(7))
+    );
+    assert_eq!(
+        state.modal_selection,
+        Some(MissionModalSelection::Active(gatebound_domain::MissionId(
+            7
+        )))
+    );
+}
+
+#[test]
+fn station_feature_open_station_card_updates_station_ui() {
+    let mut state = StationUiState::default();
+
+    open_station_card(
+        &mut state,
+        gatebound_domain::StationId(9),
+        Some(Commodity::Ore),
+    );
+
+    assert!(state.station_panel_open);
+    assert_eq!(state.card_station_id, Some(gatebound_domain::StationId(9)));
+    assert_eq!(
+        state.context_station_id,
+        Some(gatebound_domain::StationId(9))
+    );
+    assert_eq!(state.card_tab, StationCardTab::Info);
+    assert_eq!(state.trade_commodity, Commodity::Ore);
+    assert_eq!(state.storage_commodity, Commodity::Ore);
+}
+
+#[test]
+fn station_feature_context_open_sets_context_menu() {
+    let mut state = StationUiState::default();
+
+    apply_station_context_open(&mut state, gatebound_domain::StationId(12));
+
+    assert_eq!(
+        state.context_station_id,
+        Some(gatebound_domain::StationId(12))
+    );
+    assert!(state.context_menu_open);
+}
+
+#[test]
+fn ship_feature_open_ship_card_updates_ship_ui() {
+    let mut state = ShipUiState::default();
+
+    open_ship_card(&mut state, gatebound_domain::ShipId(5));
+
+    assert!(state.card_open);
+    assert_eq!(state.card_ship_id, Some(gatebound_domain::ShipId(5)));
+    assert_eq!(state.context_ship_id, Some(gatebound_domain::ShipId(5)));
+    assert_eq!(state.card_tab, ShipCardTab::Overview);
+}
+
+#[test]
+fn ship_feature_context_open_sets_context_menu() {
+    let mut state = ShipUiState::default();
+
+    apply_ship_context_open(&mut state, gatebound_domain::ShipId(17));
+
+    assert_eq!(state.context_ship_id, Some(gatebound_domain::ShipId(17)));
+    assert!(state.context_menu_open);
+}
+
+#[test]
+fn ship_feature_system_selection_updates_selected_ship_and_card() {
+    let mut selected_ship = SelectedShip::default();
+    let mut ship_ui = ShipUiState::default();
+
+    crate::features::ships::open_system_ship_inspector_selection(
+        &mut selected_ship,
+        &mut ship_ui,
+        gatebound_domain::ShipId(23),
+    );
+
+    assert_eq!(selected_ship.ship_id, Some(gatebound_domain::ShipId(23)));
+    assert!(ship_ui.card_open);
+    assert_eq!(ship_ui.card_ship_id, Some(gatebound_domain::ShipId(23)));
+}
+
+#[test]
+fn markets_feature_seed_prefers_selected_station() {
+    let builder = SimulationScenarioBuilder::stage_a(411);
+    let station_id = first_station_in_system(&builder, SystemId(0));
+    let sim = builder.build();
+    let mut state = MarketsUiState::default();
+
+    seed_markets_ui_state(&mut state, &sim, SystemId(0), Some(station_id));
+
+    assert_eq!(state.detail_station_id, Some(station_id));
+    assert!(state.seeded_from_world_selection);
+    assert_eq!(state.focused_commodity, Commodity::Fuel);
+}
+
+#[test]
+fn markets_feature_seed_preserves_existing_seeded_selection() {
+    let builder = SimulationScenarioBuilder::stage_a(412);
+    let current_station = first_station_in_system(&builder, SystemId(1));
+    let incoming_station = first_station_in_system(&builder, SystemId(0));
+    let sim = builder.build();
+    let mut state = MarketsUiState {
+        detail_station_id: Some(current_station),
+        focused_commodity: Commodity::Ore,
+        seeded_from_world_selection: true,
+    };
+
+    seed_markets_ui_state(&mut state, &sim, SystemId(0), Some(incoming_station));
+
+    assert_eq!(state.detail_station_id, Some(current_station));
+    assert_eq!(state.focused_commodity, Commodity::Ore);
+    assert!(state.seeded_from_world_selection);
+}
+
+#[test]
+fn finance_feature_defaults_remain_stable() {
+    let state = FinanceUiState::default();
+
+    assert_eq!(state.pending_offer, None);
+    assert_eq!(state.repayment_amount, 25.0);
 }
 
 #[test]

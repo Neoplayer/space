@@ -2,14 +2,14 @@ use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::input::EguiWantsInput;
-use gatebound_domain::{ShipId, StationId, SystemId};
+use gatebound_domain::{StationId, SystemId};
 use gatebound_sim::CameraTopologyView;
 
+use crate::features::ships::{apply_ship_context_open, ShipUiState};
+use crate::features::stations::{apply_station_context_open, StationUiState};
 use crate::render::world::{pick_visible_ship, ShipMotionCache};
 use crate::runtime::save::SaveMenuState;
-use crate::runtime::sim::{
-    open_system_view, SelectedStation, ShipUiState, SimResource, StationUiState,
-};
+use crate::runtime::sim::{open_system_view, SelectedStation, SimResource};
 
 const GALAXY_PAN_MARGIN_FACTOR: f32 = 1.2;
 const CAMERA_ZOOM_STEP: f32 = 0.08;
@@ -352,11 +352,6 @@ pub fn station_select_input_system(
     }
 }
 
-pub fn apply_station_context_open(state: &mut StationUiState, station_id: StationId) {
-    state.context_station_id = Some(station_id);
-    state.context_menu_open = true;
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn ship_context_input_system(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -405,11 +400,6 @@ pub fn ship_context_input_system(
         ship_ui.context_menu_open = false;
         ship_ui.context_ship_id = None;
     }
-}
-
-pub fn apply_ship_context_open(state: &mut ShipUiState, ship_id: ShipId) {
-    state.context_ship_id = Some(ship_id);
-    state.context_menu_open = true;
 }
 
 pub fn apply_zoom_controls(

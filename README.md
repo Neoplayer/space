@@ -117,6 +117,14 @@ cargo run -p gatebound_app
 cargo test -q
 ```
 
+### Run Full Quality Checks
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test -q
+```
+
 ### Stage A Configuration
 
 Runtime configuration is loaded from:

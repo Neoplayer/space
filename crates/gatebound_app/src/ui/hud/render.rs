@@ -2,34 +2,40 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use gatebound_domain::{CargoLoad, CargoSource, Commodity, PriorityMode, ShipId};
-use gatebound_sim::{PopulationTrend, TradePriceTone};
+use gatebound_sim::TradePriceTone;
 
+use crate::features::finance::FinanceUiState;
+use crate::features::markets::{seed_markets_ui_state, MarketsUiState};
+use crate::features::missions::MissionsPanelState;
+use crate::features::ships::{
+    open_ship_card, open_system_ship_inspector_selection, ShipCardTab, ShipUiState,
+};
+use crate::features::stations::{
+    open_station_card, open_system_station_inspector_selection, StationCardTab, StationUiState,
+};
 use crate::runtime::save::{
     apply_loaded_simulation, format_save_timestamp, refresh_save_entries, toggle_save_menu,
     toggle_save_menu_with_storage, PendingSaveAction, SaveMenuState, SaveStorage,
 };
 use crate::runtime::sim::{
-    open_active_mission, open_mission_offer, open_ship_card, open_station_card,
-    open_system_ship_inspector_selection, open_system_station_inspector_selection,
-    open_system_view, panel_button_specs, panel_is_open, preferred_trade_commodity,
-    seed_markets_ui_state, set_time_speed, toggle_pause, track_ship, FinanceUiState,
-    MarketsUiState, MissionsPanelState, SelectedShip, SelectedStation, SelectedSystem, ShipCardTab,
-    ShipUiState, SimClock, SimResource, StationCardTab, StationUiState, TrackedShip, UiKpiTracker,
-    UiPanelState,
+    open_system_view, panel_button_specs, panel_is_open, preferred_trade_commodity, set_time_speed,
+    toggle_pause, track_ship, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource,
+    TrackedShip, UiKpiTracker, UiPanelState,
 };
 
 use super::labels::{
     cargo_source_label, command_error_label, commodity_label, company_archetype_label,
-    credit_error_label, milestone_label, mission_action_error_label, mission_offer_error_label,
+    credit_error_label, format_population, milestone_label, population_trend_label,
     priority_mode_label, ship_class_label, ship_module_slot_label, ship_module_status_label,
     ship_role_label, station_profile_label, storage_transfer_error_label, trade_error_label,
 };
+use super::markets::render_markets_dashboard;
 use super::messages::HudMessages;
+use super::missions::{render_missions_windows, render_station_missions_tab, MissionHudAccess};
 use super::snapshot::{
     build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
-    MarketsDashboardSnapshot, MarketsStationDetailSnapshot, MissionModalKind, ShipCardSnapshot,
-    StationCardSnapshot, StationRefSnapshot, SystemPanelSnapshot, SystemRefSnapshot,
-    SystemShipSnapshot, SystemStationSnapshot, SystemsListRowSnapshot,
+    ShipCardSnapshot, StationCardSnapshot, SystemPanelSnapshot, SystemShipSnapshot,
+    SystemStationSnapshot, SystemsListRowSnapshot,
 };
 
 #[derive(SystemParam)]
@@ -363,216 +369,19 @@ pub fn draw_hud_panel(
         station_ui.context_menu_open = open && station_ui.context_menu_open;
     }
 
-    if !save_menu_open && panels.missions {
-        let mut open = panels.missions;
-        egui::Window::new("Missions")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 56.0))
-            .default_width(520.0)
-            .default_height(560.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                if missions_panel.selected_mission_id.is_none() {
-                    missions_panel.selected_mission_id = snapshot
-                        .active_mission_rows
-                        .first()
-                        .map(|row| row.mission_id);
-                }
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("Active: {}", snapshot.active_mission_rows.len()));
-                    ui.separator();
-                    ui.label(format!(
-                        "Selected ship: {}",
-                        selected_ship
-                            .ship_id
-                            .map(|ship_id| format!("#{}", ship_id.0))
-                            .unwrap_or_else(|| "none".to_string())
-                    ));
-                });
-                ui.separator();
-
-                ui.heading("Active Missions");
-                ui.add_space(6.0);
-                if snapshot.active_mission_rows.is_empty() {
-                    ui.small("No active missions");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .id_salt("missions_board_active")
-                        .max_height(420.0)
-                        .show(ui, |ui| {
-                            for row in &snapshot.active_mission_rows {
-                                let selected =
-                                    missions_panel.selected_mission_id == Some(row.mission_id);
-                                egui::Frame::group(ui.style())
-                                    .fill(if selected {
-                                        egui::Color32::from_rgb(28, 38, 46)
-                                    } else {
-                                        egui::Color32::from_rgb(16, 21, 28)
-                                    })
-                                    .show(ui, |ui| {
-                                        if ui
-                                            .selectable_label(selected, &row.summary.summary_line)
-                                            .clicked()
-                                        {
-                                            missions_panel.selected_mission_id =
-                                                Some(row.mission_id);
-                                        }
-                                        ui.small(format!(
-                                            "{} • {} {:.1} • penalty {:.1}",
-                                            row.status_label,
-                                            commodity_label(row.commodity),
-                                            row.quantity,
-                                            row.penalty
-                                        ));
-                                        if ui.button("Открыть").clicked() {
-                                            open_active_mission(
-                                                &mut missions_panel,
-                                                row.mission_id,
-                                            );
-                                        }
-                                    });
-                                ui.add_space(6.0);
-                            }
-                        });
-                }
-            });
-        panels.missions = open;
-    }
-
-    if !save_menu_open && missions_panel.modal_selection.is_some() {
-        let mut open = true;
-        if let Some(modal) = snapshot.mission_modal.as_ref() {
-            egui::Window::new("Mission")
-                .default_width(420.0)
-                .resizable(false)
-                .collapsible(false)
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.heading(&modal.title);
-                    ui.add_space(4.0);
-                    ui.monospace(&modal.summary.summary_line);
-                    ui.small(format!(
-                        "{} {:.1} • reward {:.1} • penalty {:.1}",
-                        commodity_label(modal.commodity),
-                        modal.quantity,
-                        modal.reward,
-                        modal.penalty
-                    ));
-                    if let Some(status_label) = modal.status_label.as_ref() {
-                        ui.small(format!("Status: {status_label}"));
-                    }
-                    if let (Some(stored), Some(required)) =
-                        (modal.destination_storage_amount, modal.required_quantity)
-                    {
-                        ui.small(format!(
-                            "Destination storage: {:.1} / {:.1}",
-                            stored, required
-                        ));
-                    }
-                    if let Some(reason) = modal.complete_disabled_reason.as_ref() {
-                        if !modal.can_complete {
-                            ui.colored_label(egui::Color32::from_rgb(232, 194, 88), reason);
-                        }
-                    }
-
-                    ui.add_space(10.0);
-                    match modal.kind {
-                        MissionModalKind::Offer => {
-                            if ui.button("Принять миссию").clicked() {
-                                kpi.record_manual_action(sim.simulation.tick());
-                                let offer_id = match modal.selection {
-                                    crate::runtime::sim::MissionModalSelection::Offer(offer_id) => {
-                                        offer_id
-                                    }
-                                    crate::runtime::sim::MissionModalSelection::Active(_) => {
-                                        unreachable!(
-                                            "offer modal should always carry offer selection"
-                                        )
-                                    }
-                                };
-                                match sim.simulation.accept_mission_offer(offer_id) {
-                                    Ok(mission_id) => {
-                                        open_active_mission(&mut missions_panel, mission_id);
-                                        panels.missions = true;
-                                        messages.push(format!(
-                                            "Accepted mission offer {} as mission {}",
-                                            offer_id, mission_id.0
-                                        ));
-                                    }
-                                    Err(err) => messages.push(format!(
-                                        "Mission accept failed: {}",
-                                        mission_offer_error_label(err)
-                                    )),
-                                }
-                            }
-                        }
-                        MissionModalKind::Active => {
-                            let action_ship_id =
-                                selected_ship.ship_id.or(snapshot.default_player_ship_id);
-                            if ui
-                                .add_enabled(
-                                    modal.can_complete,
-                                    egui::Button::new("Завершить миссию"),
-                                )
-                                .clicked()
-                            {
-                                if let Some(ship_id) = action_ship_id {
-                                    let mission_id = match modal.selection {
-                                        crate::runtime::sim::MissionModalSelection::Active(
-                                            mission_id,
-                                        ) => mission_id,
-                                        crate::runtime::sim::MissionModalSelection::Offer(_) => {
-                                            unreachable!(
-                                                "active modal should carry mission selection"
-                                            )
-                                        }
-                                    };
-                                    kpi.record_manual_action(sim.simulation.tick());
-                                    match sim.simulation.complete_mission(ship_id, mission_id) {
-                                        Ok(()) => {
-                                            messages.push(format!(
-                                                "Completed mission {}",
-                                                mission_id.0
-                                            ));
-                                            missions_panel.modal_selection = None;
-                                        }
-                                        Err(err) => messages.push(format!(
-                                            "Mission completion failed: {}",
-                                            mission_action_error_label(err)
-                                        )),
-                                    }
-                                }
-                            }
-                            if ui.button("Отменить миссию").clicked() {
-                                let mission_id = match modal.selection {
-                                    crate::runtime::sim::MissionModalSelection::Active(
-                                        mission_id,
-                                    ) => mission_id,
-                                    crate::runtime::sim::MissionModalSelection::Offer(_) => {
-                                        unreachable!("active modal should carry mission selection")
-                                    }
-                                };
-                                kpi.record_manual_action(sim.simulation.tick());
-                                match sim.simulation.cancel_mission(mission_id) {
-                                    Ok(()) => {
-                                        messages
-                                            .push(format!("Cancelled mission {}", mission_id.0));
-                                        missions_panel.modal_selection = None;
-                                    }
-                                    Err(err) => messages.push(format!(
-                                        "Mission cancel failed: {}",
-                                        mission_action_error_label(err)
-                                    )),
-                                }
-                            }
-                        }
-                    }
-                });
-        }
-        if !open {
-            missions_panel.modal_selection = None;
-        }
-    }
+    render_missions_windows(
+        ctx,
+        &snapshot,
+        save_menu_open,
+        MissionHudAccess {
+            sim: &mut sim,
+            selected_ship: &selected_ship,
+            panels: &mut panels,
+            missions_panel: &mut missions_panel,
+            kpi: &mut kpi,
+            messages: &mut messages,
+        },
+    );
 
     if !save_menu_open && panels.fleet {
         let mut open = panels.fleet;
@@ -835,23 +644,15 @@ pub fn draw_hud_panel(
                         );
                     }
                     StationCardTab::Missions => {
-                        let Some(ship_id) =
-                            selected_ship.ship_id.or(snapshot.default_player_ship_id)
-                        else {
+                        if selected_ship
+                            .ship_id
+                            .or(snapshot.default_player_ship_id)
+                            .is_none()
+                        {
                             ui.label("No player ship available");
                             return;
-                        };
-                        render_station_missions_tab(
-                            ui,
-                            &mut sim,
-                            &mut kpi,
-                            &mut messages,
-                            &mut panels,
-                            &mut missions_panel,
-                            &mut station_ui,
-                            ship_id,
-                            card,
-                        );
+                        }
+                        render_station_missions_tab(ui, missions_panel.as_mut(), card);
                     }
                 }
             });
@@ -1879,58 +1680,6 @@ fn render_station_storage_tab(
         });
 }
 
-fn render_station_missions_tab(
-    ui: &mut egui::Ui,
-    _sim: &mut ResMut<SimResource>,
-    _kpi: &mut ResMut<UiKpiTracker>,
-    _messages: &mut ResMut<HudMessages>,
-    _panels: &mut ResMut<UiPanelState>,
-    mut missions_panel: &mut ResMut<MissionsPanelState>,
-    _station_ui: &mut ResMut<StationUiState>,
-    _ship_id: ShipId,
-    card: &StationCardSnapshot,
-) {
-    let missions = &card.missions;
-
-    ui.horizontal_wrapped(|ui| {
-        ui.monospace(format!(
-            "Docked: {}",
-            if missions.docked { "yes" } else { "no" }
-        ));
-        ui.separator();
-        ui.monospace(format!("Offers: {}", missions.offers.len()));
-    });
-
-    ui.add_space(8.0);
-    ui.heading("Available Offers");
-    if missions.offers.is_empty() {
-        ui.small("No mission offers for this station right now.");
-    } else {
-        egui::ScrollArea::vertical()
-            .id_salt("station_mission_offers")
-            .max_height(320.0)
-            .show(ui, |ui| {
-                for row in &missions.offers {
-                    egui::Frame::group(ui.style())
-                        .fill(egui::Color32::from_rgb(16, 21, 28))
-                        .show(ui, |ui| {
-                            ui.monospace(&row.summary.summary_line);
-                            ui.small(format!(
-                                "{} {:.1} • penalty {:.1}",
-                                commodity_label(row.commodity),
-                                row.quantity,
-                                row.penalty
-                            ));
-                            if ui.button("Открыть").clicked() {
-                                open_mission_offer(&mut missions_panel, row.offer_id);
-                            }
-                        });
-                    ui.add_space(6.0);
-                }
-            });
-    }
-}
-
 fn render_ship_card_header(ui: &mut egui::Ui, card: &ShipCardSnapshot) {
     egui::Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(15, 22, 28))
@@ -2375,406 +2124,6 @@ fn render_ship_condition_bar(ui: &mut egui::Ui, label: &str, value: f64) {
     });
 }
 
-fn render_markets_dashboard(
-    ui: &mut egui::Ui,
-    markets: &MarketsDashboardSnapshot,
-    markets_ui: &mut MarketsUiState,
-    kpi: &mut UiKpiTracker,
-    current_tick: u64,
-) {
-    ui.horizontal_wrapped(|ui| {
-        render_market_metric_card(
-            ui,
-            "Avg Index",
-            format!("{:.2}", markets.global_kpis.avg_price_index),
-            format!(
-                "{} systems / {} stations",
-                markets.global_kpis.system_count, markets.global_kpis.station_count
-            ),
-        );
-        render_market_metric_card(
-            ui,
-            "Coverage",
-            format!(
-                "{:.0}%",
-                markets.global_kpis.aggregate_stock_coverage * 100.0
-            ),
-            format!(
-                "{:.0}/{:.0} stock",
-                markets.global_kpis.aggregate_stock, markets.global_kpis.aggregate_target_stock
-            ),
-        );
-        render_market_metric_card(
-            ui,
-            "Net Flow",
-            format!("{:+.1}", markets.global_kpis.aggregate_net_flow),
-            "inflow - outflow".to_string(),
-        );
-        render_market_metric_card(
-            ui,
-            "Market Share",
-            format!("{:.0}%", markets.global_kpis.player_market_share * 100.0),
-            format!(
-                "{} window flow",
-                markets.global_kpis.rolling_window_total_flow
-            ),
-        );
-        render_market_metric_card(
-            ui,
-            "Market Fee",
-            format!("{:.1}%", markets.global_kpis.market_fee_rate * 100.0),
-            "read-only analytics".to_string(),
-        );
-    });
-
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Pressure:");
-        let mut any_pressure = false;
-        for (label, active) in [
-            (
-                "Gate congestion",
-                markets.global_kpis.gate_congestion_active,
-            ),
-            (
-                "Dock congestion",
-                markets.global_kpis.dock_congestion_active,
-            ),
-            ("Fuel shock", markets.global_kpis.fuel_shock_active),
-        ] {
-            let color = if active {
-                any_pressure = true;
-                egui::Color32::from_rgb(224, 136, 92)
-            } else {
-                egui::Color32::from_rgb(112, 168, 135)
-            };
-            ui.colored_label(color, label);
-        }
-        if !any_pressure {
-            ui.colored_label(egui::Color32::from_rgb(112, 168, 135), "Stable");
-        }
-    });
-
-    ui.separator();
-    ui.columns(2, |columns| {
-        columns[0].vertical(|ui| {
-            ui.heading("Galaxy Commodity Matrix");
-            egui::ScrollArea::both()
-                .id_salt("markets_commodity_matrix")
-                .max_height(300.0)
-                .show(ui, |ui| {
-                    egui::Grid::new("markets_commodity_grid")
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Commodity");
-                            ui.strong("Avg");
-                            ui.strong("Min");
-                            ui.strong("Max");
-                            ui.strong("Spread");
-                            ui.strong("Sys low");
-                            ui.strong("Sys high");
-                            ui.strong("Stock");
-                            ui.strong("Cov");
-                            ui.strong("Net");
-                            ui.strong("Trend");
-                            ui.strong("Next");
-                            ui.strong("Base");
-                            ui.strong("<");
-                            ui.strong(">");
-                            ui.end_row();
-
-                            for row in &markets.commodity_rows {
-                                let selected = markets_ui.focused_commodity == row.commodity;
-                                if ui
-                                    .selectable_label(selected, commodity_label(row.commodity))
-                                    .clicked()
-                                {
-                                    markets_ui.focused_commodity = row.commodity;
-                                    kpi.record_manual_action(current_tick);
-                                }
-                                ui.monospace(format!("{:.2}", row.galaxy_avg_price));
-                                ui.label(station_ref_label(row.min_price_station.as_ref()));
-                                ui.label(station_ref_label(row.max_price_station.as_ref()));
-                                ui.monospace(format!(
-                                    "{:.2} / {:.0}%",
-                                    row.spread_abs,
-                                    row.spread_pct * 100.0
-                                ));
-                                ui.label(system_ref_label(row.cheapest_system.as_ref()));
-                                ui.label(system_ref_label(row.priciest_system.as_ref()));
-                                ui.monospace(format!("{:.0}", row.total_stock));
-                                ui.monospace(format!("{:.0}%", row.stock_coverage * 100.0));
-                                ui.monospace(format!("{:+.1}", row.net_flow));
-                                ui.monospace(format!("{:+.2}", row.trend_delta));
-                                ui.monospace(format!("{:.2}", row.forecast_next_avg));
-                                ui.monospace(format!("{:.0}%", row.price_vs_base * 100.0));
-                                ui.monospace(row.stations_below_target.to_string());
-                                ui.monospace(row.stations_above_target.to_string());
-                                ui.end_row();
-                            }
-                        });
-                });
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.heading("Station Drilldown");
-                let selected_station_text = markets
-                    .station_detail
-                    .as_ref()
-                    .map(|detail| format!("{} / {}", detail.station_name, detail.system_name))
-                    .unwrap_or_else(|| "No station".to_string());
-                egui::ComboBox::from_id_salt("markets_detail_station")
-                    .selected_text(selected_station_text)
-                    .show_ui(ui, |ui| {
-                        for row in &markets.station_anomaly_rows {
-                            let label = format!("{} / {}", row.station_name, row.system_name);
-                            if ui
-                                .selectable_label(
-                                    markets_ui.detail_station_id == Some(row.station_id),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                markets_ui.detail_station_id = Some(row.station_id);
-                                markets_ui.seeded_from_world_selection = true;
-                                kpi.record_manual_action(current_tick);
-                            }
-                        }
-                    });
-            });
-
-            if let Some(detail) = markets.station_detail.as_ref() {
-                render_markets_station_detail(ui, detail);
-            } else {
-                ui.label("No station detail available");
-            }
-        });
-
-        columns[1].vertical(|ui| {
-            ui.heading(format!(
-                "Focused Commodity: {}",
-                commodity_label(markets.focused_commodity)
-            ));
-
-            ui.group(|ui| {
-                ui.heading("System Stress");
-                egui::Grid::new("markets_system_stress_grid")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("System");
-                        ui.strong("Stress");
-                        ui.strong("Index");
-                        ui.strong("Cov");
-                        ui.strong("Cong");
-                        ui.strong("Fuel");
-                        ui.end_row();
-                        for row in markets.system_stress_rows.iter().take(6) {
-                            ui.label(&row.system_name);
-                            ui.monospace(format!("{:.2}", row.stress_score));
-                            ui.monospace(format!("{:.2}", row.avg_price_index));
-                            ui.monospace(format!("{:.0}%", row.stock_coverage * 100.0));
-                            ui.monospace(format!("{:.2}", row.congestion));
-                            ui.monospace(format!("{:.2}", row.fuel_stress));
-                            ui.end_row();
-                        }
-                    });
-            });
-
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.heading("Hotspots");
-                ui.label("Cheapest stations");
-                for row in &markets.hotspots.cheapest_stations {
-                    ui.monospace(format!(
-                        "{} / {}  {:.2}  cov={:.0}%  net={:+.1}",
-                        row.station_name,
-                        row.system_name,
-                        row.price,
-                        row.stock_coverage * 100.0,
-                        row.net_flow
-                    ));
-                }
-                ui.separator();
-                ui.label("Priciest stations");
-                for row in &markets.hotspots.priciest_stations {
-                    ui.monospace(format!(
-                        "{} / {}  {:.2}  cov={:.0}%  net={:+.1}",
-                        row.station_name,
-                        row.system_name,
-                        row.price,
-                        row.stock_coverage * 100.0,
-                        row.net_flow
-                    ));
-                }
-                ui.separator();
-                ui.label("Cheapest systems");
-                for row in &markets.hotspots.cheapest_systems {
-                    ui.monospace(format!(
-                        "{}  {:.2}  cov={:.0}%  net={:+.1}",
-                        row.system_name,
-                        row.avg_price,
-                        row.stock_coverage * 100.0,
-                        row.net_flow
-                    ));
-                }
-                ui.separator();
-                ui.label("Priciest systems");
-                for row in &markets.hotspots.priciest_systems {
-                    ui.monospace(format!(
-                        "{}  {:.2}  cov={:.0}%  net={:+.1}",
-                        row.system_name,
-                        row.avg_price,
-                        row.stock_coverage * 100.0,
-                        row.net_flow
-                    ));
-                }
-            });
-
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.heading("Station Anomalies");
-                egui::ScrollArea::vertical()
-                    .id_salt("markets_anomaly_scroll")
-                    .max_height(240.0)
-                    .show(ui, |ui| {
-                        egui::Grid::new("markets_anomaly_grid")
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.strong("Station");
-                                ui.strong("Pop");
-                                ui.strong("Trend");
-                                ui.strong("Score");
-                                ui.strong("Index");
-                                ui.strong("Cov");
-                                ui.strong("Dev");
-                                ui.end_row();
-                                for row in markets.station_anomaly_rows.iter().take(10) {
-                                    ui.label(format!("{} / {}", row.station_name, row.system_name));
-                                    ui.monospace(format_population(row.population));
-                                    ui.monospace(population_trend_label(row.population_trend));
-                                    ui.monospace(format!("{:.2}", row.anomaly_score));
-                                    ui.monospace(format!("{:.2}", row.price_index));
-                                    ui.monospace(format!("{:.0}%", row.stock_coverage * 100.0));
-                                    ui.monospace(format!(
-                                        "{:.0}%",
-                                        row.avg_price_deviation * 100.0
-                                    ));
-                                    ui.end_row();
-                                }
-                            });
-                    });
-            });
-        });
-    });
-}
-
-fn render_markets_station_detail(ui: &mut egui::Ui, detail: &MarketsStationDetailSnapshot) {
-    ui.group(|ui| {
-        ui.heading(format!("{} / {}", detail.station_name, detail.system_name));
-        ui.label(format!(
-            "Profile: {}",
-            station_profile_label(detail.profile)
-        ));
-        ui.horizontal_wrapped(|ui| {
-            ui.monospace(format!("pop {}", format_population(detail.population)));
-            ui.monospace(format!("{:.0}% baseline", detail.population_ratio * 100.0));
-            ui.monospace(population_trend_label(detail.population_trend));
-            ui.monospace(format!("index {:.2}", detail.price_index));
-            ui.monospace(format!("coverage {:.0}%", detail.stock_coverage * 100.0));
-            ui.monospace(format!("net {:+.1}", detail.net_flow));
-            ui.monospace(format!(
-                "deviation {:.0}%",
-                detail.avg_price_deviation * 100.0
-            ));
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "Best buy: {}",
-                detail
-                    .best_buy_commodity
-                    .map(commodity_label)
-                    .unwrap_or("-")
-            ));
-            ui.separator();
-            ui.label(format!(
-                "Best sell: {}",
-                detail
-                    .best_sell_commodity
-                    .map(commodity_label)
-                    .unwrap_or("-")
-            ));
-            ui.separator();
-            ui.label(format!(
-                "Shortage: {}",
-                detail
-                    .strongest_shortage_commodity
-                    .map(commodity_label)
-                    .unwrap_or("-")
-            ));
-            ui.separator();
-            ui.label(format!(
-                "Surplus: {}",
-                detail
-                    .strongest_surplus_commodity
-                    .map(commodity_label)
-                    .unwrap_or("-")
-            ));
-        });
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("markets_station_detail_scroll")
-            .max_height(250.0)
-            .show(ui, |ui| {
-                egui::Grid::new("markets_station_detail_grid")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Commodity");
-                        ui.strong("Local");
-                        ui.strong("Galaxy");
-                        ui.strong("Delta");
-                        ui.strong("Stock");
-                        ui.strong("Cov");
-                        ui.strong("Net");
-                        ui.strong("Trend");
-                        ui.strong("Next");
-                        ui.end_row();
-                        for row in &detail.commodity_rows {
-                            ui.label(commodity_label(row.commodity));
-                            ui.monospace(format!("{:.2}", row.local_price));
-                            ui.monospace(format!("{:.2}", row.galaxy_avg_price));
-                            ui.monospace(format!("{:+.2}", row.price_delta));
-                            ui.monospace(format!("{:.0}", row.local_stock));
-                            ui.monospace(format!("{:.0}%", row.stock_coverage * 100.0));
-                            ui.monospace(format!("{:+.1}", row.net_flow));
-                            ui.monospace(format!("{:+.2}", row.trend_delta));
-                            ui.monospace(format!("{:.2}", row.forecast_next));
-                            ui.end_row();
-                        }
-                    });
-            });
-    });
-}
-
-fn render_market_metric_card(ui: &mut egui::Ui, title: &str, value: String, detail: String) {
-    ui.group(|ui| {
-        ui.set_min_width(150.0);
-        ui.small(title);
-        ui.heading(value);
-        ui.small(detail);
-    });
-}
-
-fn station_ref_label(reference: Option<&StationRefSnapshot>) -> String {
-    reference
-        .map(|station| format!("{} / {}", station.station_name, station.system_name))
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn system_ref_label(reference: Option<&SystemRefSnapshot>) -> String {
-    reference
-        .map(|system| system.system_name.clone())
-        .unwrap_or_else(|| "-".to_string())
-}
-
 fn tab_button(label: &'static str, selected: bool) -> egui::Button<'static> {
     let mut button = egui::Button::new(label);
     if selected {
@@ -2905,16 +2254,4 @@ fn storage_unload_disabled_reason(
         return Some("matching spot cargo is below the minimum transferable lot");
     }
     Some("selected storage row does not match any spot cargo loaded")
-}
-
-fn format_population(population: f64) -> String {
-    format!("{:.0}", population)
-}
-
-fn population_trend_label(trend: PopulationTrend) -> &'static str {
-    match trend {
-        PopulationTrend::Growing => "Rising",
-        PopulationTrend::Stable => "Stable",
-        PopulationTrend::Shrinking => "Falling",
-    }
 }
