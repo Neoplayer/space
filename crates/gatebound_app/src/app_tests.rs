@@ -1,6 +1,6 @@
 use gatebound_domain::{CargoLoad, CargoManifest, CargoSource, Commodity, ShipId, SystemId};
-use gatebound_sim::PopulationTrend;
 use gatebound_sim::test_support::{MarketStatePatch, ShipPatch, SimulationScenarioBuilder};
+use gatebound_sim::PopulationTrend;
 
 use crate::input::camera::CameraMode;
 use crate::runtime::sim::{

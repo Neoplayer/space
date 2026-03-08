@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use super::*;
 use super::state::StationPopulationState;
+use super::*;
 
 impl Simulation {
     pub fn new(mut config: RuntimeConfig, seed: u64) -> Self {

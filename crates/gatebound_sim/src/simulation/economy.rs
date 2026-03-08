@@ -348,12 +348,13 @@ pub(super) fn baseline_population(profile: StationProfile) -> f64 {
 pub(super) fn essential_commodities(profile: StationProfile) -> &'static [Commodity] {
     match profile {
         StationProfile::Civilian => &[Commodity::Ice, Commodity::Fuel, Commodity::Electronics],
-        StationProfile::Industrial => {
-            &[Commodity::Ore, Commodity::Metal, Commodity::Parts, Commodity::Fuel]
-        }
-        StationProfile::Research => {
-            &[Commodity::Electronics, Commodity::Parts, Commodity::Fuel]
-        }
+        StationProfile::Industrial => &[
+            Commodity::Ore,
+            Commodity::Metal,
+            Commodity::Parts,
+            Commodity::Fuel,
+        ],
+        StationProfile::Research => &[Commodity::Electronics, Commodity::Parts, Commodity::Fuel],
     }
 }
 

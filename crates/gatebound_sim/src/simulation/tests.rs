@@ -39,15 +39,14 @@ fn baseline_population(profile: StationProfile) -> f64 {
 
 fn essential_commodities(profile: StationProfile) -> &'static [Commodity] {
     match profile {
-        StationProfile::Civilian => {
-            &[Commodity::Ice, Commodity::Fuel, Commodity::Electronics]
-        }
-        StationProfile::Industrial => {
-            &[Commodity::Ore, Commodity::Metal, Commodity::Parts, Commodity::Fuel]
-        }
-        StationProfile::Research => {
-            &[Commodity::Electronics, Commodity::Parts, Commodity::Fuel]
-        }
+        StationProfile::Civilian => &[Commodity::Ice, Commodity::Fuel, Commodity::Electronics],
+        StationProfile::Industrial => &[
+            Commodity::Ore,
+            Commodity::Metal,
+            Commodity::Parts,
+            Commodity::Fuel,
+        ],
+        StationProfile::Research => &[Commodity::Electronics, Commodity::Parts, Commodity::Fuel],
     }
 }
 
@@ -1439,17 +1438,17 @@ fn snapshot_round_trip_preserves_active_loan() {
 }
 
 #[test]
-fn snapshot_save_writes_v6_json_envelope() {
+fn snapshot_save_writes_v7_json_envelope() {
     let cfg = stage_a_config();
     let sim = Simulation::new(cfg.clone(), 97);
-    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v6.json");
+    let tmp = std::env::temp_dir().join("gatebound_stage_a_snapshot_v7.json");
 
     crate::snapshot::save_snapshot(&sim, &tmp).expect("snapshot save should pass");
     let payload = fs::read_to_string(&tmp).expect("snapshot file should exist");
 
     assert!(
-        payload.contains("\"version\": 6"),
-        "snapshot payload should use v6 envelope"
+        payload.contains("\"version\": 7"),
+        "snapshot payload should use v7 envelope"
     );
     assert!(
         payload.contains("\"state\""),
