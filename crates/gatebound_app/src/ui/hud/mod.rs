@@ -1,3 +1,5 @@
+mod chrome;
+mod context;
 mod corporations;
 mod finance;
 mod fleet;
@@ -8,11 +10,17 @@ mod missions;
 mod missions_snapshot;
 mod policies;
 mod render;
+mod save_menu;
+mod shared;
 mod ships;
 mod snapshot;
 mod stations;
 mod systems;
 
+#[cfg(test)]
+pub(crate) use chrome::sync_station_panel_toggle;
+#[cfg(test)]
+pub(crate) use context::resolve_station_context_ship_id;
 pub use messages::HudMessages;
 #[cfg(test)]
 pub(crate) use policies::resolve_policy_ship_id;

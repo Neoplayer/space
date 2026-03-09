@@ -8,7 +8,7 @@ use super::labels::{
     cargo_source_label, commodity_label, company_archetype_label, priority_mode_label,
     ship_class_label, ship_module_slot_label, ship_module_status_label, ship_role_label,
 };
-use super::render::{cargo_summary_line, sorted_cargo_lots, tab_button};
+use super::shared::{cargo_summary_line, sorted_cargo_lots, tab_button};
 use super::snapshot::{ShipCardSnapshot, SystemPanelSnapshot, SystemShipSnapshot};
 
 pub(super) fn render_ship_window(

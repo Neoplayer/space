@@ -159,6 +159,55 @@ fn station_hud_system_selection_updates_runtime_and_station_ui() {
 }
 
 #[test]
+fn station_sidebar_toggle_opens_selected_station_card() {
+    let builder = SimulationScenarioBuilder::stage_a(713);
+    let station_id = first_station_in_system(&builder, SystemId(0));
+    let ship_id = player_ship_id(&builder);
+    let sim = builder.build();
+    let mut station_ui = StationUiState::default();
+
+    assert_eq!(
+        crate::ui::hud::sync_station_panel_toggle(
+            &sim,
+            true,
+            Some(station_id),
+            None,
+            Some(ship_id),
+            &mut station_ui,
+        ),
+        Some(station_id)
+    );
+    assert!(station_ui.station_panel_open);
+    assert_eq!(station_ui.card_station_id, Some(station_id));
+}
+
+#[test]
+fn station_sidebar_toggle_closes_station_panel_without_resetting_selection() {
+    let builder = SimulationScenarioBuilder::stage_a(714);
+    let station_id = first_station_in_system(&builder, SystemId(0));
+    let sim = builder.build();
+    let mut station_ui = StationUiState {
+        station_panel_open: true,
+        card_station_id: Some(station_id),
+        ..StationUiState::default()
+    };
+
+    assert_eq!(
+        crate::ui::hud::sync_station_panel_toggle(
+            &sim,
+            false,
+            Some(station_id),
+            None,
+            None,
+            &mut station_ui,
+        ),
+        None
+    );
+    assert!(!station_ui.station_panel_open);
+    assert_eq!(station_ui.card_station_id, Some(station_id));
+}
+
+#[test]
 fn ship_feature_open_ship_card_updates_ship_ui() {
     let mut state = ShipUiState::default();
 

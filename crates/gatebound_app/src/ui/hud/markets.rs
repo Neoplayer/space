@@ -302,6 +302,28 @@ pub(super) fn render_markets_dashboard(
     });
 }
 
+pub(super) fn render_markets_window(
+    ctx: &egui::Context,
+    save_menu_open: bool,
+    open: &mut bool,
+    markets: &MarketsDashboardSnapshot,
+    markets_ui: &mut MarketsUiState,
+    kpi: &mut UiKpiTracker,
+    current_tick: u64,
+) {
+    if save_menu_open || !*open {
+        return;
+    }
+
+    egui::Window::new("Markets")
+        .default_width(1120.0)
+        .default_height(760.0)
+        .open(open)
+        .show(ctx, |ui| {
+            render_markets_dashboard(ui, markets, markets_ui, kpi, current_tick);
+        });
+}
+
 fn render_markets_station_detail(ui: &mut egui::Ui, detail: &MarketsStationDetailSnapshot) {
     ui.group(|ui| {
         ui.heading(format!("{} / {}", detail.station_name, detail.system_name));

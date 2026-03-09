@@ -15,7 +15,7 @@ use super::labels::{
 };
 use super::messages::HudMessages;
 use super::missions::render_station_missions_tab;
-use super::render::{
+use super::shared::{
     buy_disabled_reason, cargo_summary_line, price_tone_color, sell_disabled_reason,
     storage_load_disabled_reason, storage_unload_disabled_reason, tab_button,
 };

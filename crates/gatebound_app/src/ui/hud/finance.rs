@@ -7,6 +7,13 @@ use super::labels::credit_error_label;
 use super::messages::HudMessages;
 use super::snapshot::HudSnapshot;
 
+pub(super) struct FinancePanelAccess<'a> {
+    pub finance_ui: &'a mut FinanceUiState,
+    pub sim: &'a mut SimResource,
+    pub kpi: &'a mut UiKpiTracker,
+    pub messages: &'a mut HudMessages,
+}
+
 pub(super) fn render_finance_window(
     ctx: &egui::Context,
     open: &mut bool,
@@ -120,4 +127,25 @@ pub(super) fn render_finance_window(
             }
         }
     });
+}
+
+pub(super) fn render_finance_panel(
+    ctx: &egui::Context,
+    save_menu_open: bool,
+    open: &mut bool,
+    snapshot: &HudSnapshot,
+    access: FinancePanelAccess<'_>,
+) {
+    if save_menu_open || !*open {
+        return;
+    }
+
+    let FinancePanelAccess {
+        finance_ui,
+        sim,
+        kpi,
+        messages,
+    } = access;
+
+    render_finance_window(ctx, open, snapshot, finance_ui, sim, kpi, messages);
 }
