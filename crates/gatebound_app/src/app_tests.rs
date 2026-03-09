@@ -130,6 +130,35 @@ fn station_feature_context_open_sets_context_menu() {
 }
 
 #[test]
+fn station_hud_system_selection_updates_runtime_and_station_ui() {
+    let mut selected_station = SelectedStation::default();
+    let mut panels = UiPanelState::default();
+    let mut station_ui = StationUiState::default();
+
+    crate::ui::hud::open_system_station_panel(
+        &mut selected_station,
+        &mut panels,
+        &mut station_ui,
+        gatebound_domain::StationId(14),
+        Some(Commodity::Electronics),
+    );
+
+    assert_eq!(
+        selected_station.station_id,
+        Some(gatebound_domain::StationId(14))
+    );
+    assert!(panels.station_ops);
+    assert!(station_ui.station_panel_open);
+    assert_eq!(
+        station_ui.card_station_id,
+        Some(gatebound_domain::StationId(14))
+    );
+    assert_eq!(station_ui.card_tab, StationCardTab::Info);
+    assert_eq!(station_ui.trade_commodity, Commodity::Electronics);
+    assert_eq!(station_ui.storage_commodity, Commodity::Electronics);
+}
+
+#[test]
 fn ship_feature_open_ship_card_updates_ship_ui() {
     let mut state = ShipUiState::default();
 
@@ -152,17 +181,14 @@ fn ship_feature_context_open_sets_context_menu() {
 }
 
 #[test]
-fn ship_feature_system_selection_updates_selected_ship_and_card() {
-    let mut selected_ship = SelectedShip::default();
+fn ship_feature_system_selection_opens_card() {
     let mut ship_ui = ShipUiState::default();
 
     crate::features::ships::open_system_ship_inspector_selection(
-        &mut selected_ship,
         &mut ship_ui,
         gatebound_domain::ShipId(23),
     );
 
-    assert_eq!(selected_ship.ship_id, Some(gatebound_domain::ShipId(23)));
     assert!(ship_ui.card_open);
     assert_eq!(ship_ui.card_ship_id, Some(gatebound_domain::ShipId(23)));
 }

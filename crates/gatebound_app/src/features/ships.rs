@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use gatebound_domain::ShipId;
 
-use crate::runtime::sim::SelectedShip;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShipCardTab {
     Overview,
@@ -44,12 +42,7 @@ pub fn open_ship_card(state: &mut ShipUiState, ship_id: ShipId) {
     state.card_tab = ShipCardTab::Overview;
 }
 
-pub fn open_system_ship_inspector_selection(
-    selected_ship: &mut SelectedShip,
-    ship_ui: &mut ShipUiState,
-    ship_id: ShipId,
-) {
-    selected_ship.ship_id = Some(ship_id);
+pub fn open_system_ship_inspector_selection(ship_ui: &mut ShipUiState, ship_id: ShipId) {
     open_ship_card(ship_ui, ship_id);
 }
 

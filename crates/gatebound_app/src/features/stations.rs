@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use gatebound_domain::{Commodity, StationId};
 
-use crate::runtime::sim::{SelectedStation, UiPanelState};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StationCardTab {
     Info,
@@ -58,18 +56,6 @@ pub fn open_station_card(
         state.trade_commodity = commodity;
         state.storage_commodity = commodity;
     }
-}
-
-pub fn open_system_station_inspector_selection(
-    selected_station: &mut SelectedStation,
-    panels: &mut UiPanelState,
-    station_ui: &mut StationUiState,
-    station_id: StationId,
-    preferred_commodity: Option<Commodity>,
-) {
-    selected_station.station_id = Some(station_id);
-    panels.station_ops = true;
-    open_station_card(station_ui, station_id, preferred_commodity);
 }
 
 pub struct StationsFeaturePlugin;
