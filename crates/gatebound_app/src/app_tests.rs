@@ -235,6 +235,49 @@ fn finance_feature_defaults_remain_stable() {
 }
 
 #[test]
+fn policies_hud_resolves_selected_ship_before_default() {
+    assert_eq!(
+        crate::ui::hud::resolve_policy_ship_id(
+            Some(gatebound_domain::ShipId(5)),
+            Some(gatebound_domain::ShipId(9)),
+        ),
+        Some(gatebound_domain::ShipId(5))
+    );
+}
+
+#[test]
+fn policies_hud_falls_back_to_default_ship() {
+    assert_eq!(
+        crate::ui::hud::resolve_policy_ship_id(None, Some(gatebound_domain::ShipId(9))),
+        Some(gatebound_domain::ShipId(9))
+    );
+    assert_eq!(crate::ui::hud::resolve_policy_ship_id(None, None), None);
+}
+
+#[test]
+fn station_context_hud_resolves_selected_ship_before_default() {
+    assert_eq!(
+        crate::ui::hud::resolve_station_context_ship_id(
+            Some(gatebound_domain::ShipId(7)),
+            Some(gatebound_domain::ShipId(11)),
+        ),
+        Some(gatebound_domain::ShipId(7))
+    );
+}
+
+#[test]
+fn station_context_hud_falls_back_to_default_ship() {
+    assert_eq!(
+        crate::ui::hud::resolve_station_context_ship_id(None, Some(gatebound_domain::ShipId(11))),
+        Some(gatebound_domain::ShipId(11))
+    );
+    assert_eq!(
+        crate::ui::hud::resolve_station_context_ship_id(None, None),
+        None
+    );
+}
+
+#[test]
 fn missions_panel_uses_f1_slot() {
     let specs = panel_button_specs();
     assert_eq!(specs[0].label, "Missions");

@@ -1,7 +1,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use gatebound_domain::{CargoLoad, CargoSource, Commodity, PriorityMode};
+use gatebound_domain::{CargoLoad, CargoSource, Commodity};
 use gatebound_sim::TradePriceTone;
 
 use crate::features::finance::FinanceUiState;
@@ -14,25 +14,28 @@ use crate::runtime::save::{
     toggle_save_menu_with_storage, PendingSaveAction, SaveMenuState, SaveStorage,
 };
 use crate::runtime::sim::{
-    open_system_view, panel_button_specs, panel_is_open, preferred_trade_commodity, set_time_speed,
-    toggle_pause, track_ship, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource,
-    TrackedShip, UiKpiTracker, UiPanelState,
+    panel_button_specs, panel_is_open, preferred_trade_commodity, set_time_speed, toggle_pause,
+    track_ship, SelectedShip, SelectedStation, SelectedSystem, SimClock, SimResource, TrackedShip,
+    UiKpiTracker, UiPanelState,
 };
 
+use super::corporations::render_corporations_window;
 use super::finance::render_finance_window;
+use super::fleet::render_fleet_window;
 use super::labels::{
     cargo_source_label, command_error_label, commodity_label, company_archetype_label,
-    milestone_label, priority_mode_label, ship_class_label, ship_role_label,
+    ship_class_label, ship_role_label,
 };
 use super::markets::render_markets_dashboard;
 use super::messages::HudMessages;
 use super::missions::{render_missions_windows, MissionHudAccess};
-use super::ships::{render_ship_window, render_system_ships};
+use super::policies::render_policies_window;
+use super::ships::render_ship_window;
 use super::snapshot::{
     build_hud_snapshot, build_ship_card_snapshot_for_ui, build_station_card_snapshot_for_ui,
-    SystemPanelSnapshot, SystemsListRowSnapshot,
 };
-use super::stations::{render_station_window, render_system_stations, StationHudAccess};
+use super::stations::{render_station_window, StationHudAccess};
+use super::systems::{render_system_side_panel, render_systems_window, SystemPanelHudAccess};
 
 #[derive(SystemParam)]
 pub struct HudUiState<'w> {
@@ -202,47 +205,25 @@ pub fn draw_hud_panel(
             }
         });
 
-    if !save_menu_open {
-        if let Some(system_panel) = snapshot.system_panel.as_ref() {
-            let current_station_id = selected_station.station_id;
-            let current_ship_id = selected_ship.ship_id;
-            let preferred_ship_id = selected_ship.ship_id.or(snapshot.default_player_ship_id);
-            let current_tick = sim.simulation.tick();
-            egui::SidePanel::right("gatebound_system_hud")
-                .resizable(false)
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    render_system_panel_header(ui, system_panel);
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .id_salt("system_panel_scroll")
-                        .show(ui, |ui| {
-                            render_system_overview(ui, system_panel);
-                            ui.add_space(10.0);
-                            render_system_stations(
-                                ui,
-                                system_panel,
-                                preferred_ship_id,
-                                current_station_id,
-                                &sim.simulation,
-                                &mut selected_station,
-                                &mut panels,
-                                &mut station_ui,
-                                &mut kpi,
-                            );
-                            ui.add_space(10.0);
-                            render_system_ships(
-                                ui,
-                                system_panel,
-                                current_ship_id,
-                                current_tick,
-                                &mut ship_ui,
-                                &mut kpi,
-                            );
-                        });
-                });
-        }
-    }
+    let current_station_id = selected_station.station_id;
+    let current_ship_id = selected_ship.ship_id;
+    let preferred_ship_id = selected_ship.ship_id.or(snapshot.default_player_ship_id);
+    render_system_side_panel(
+        ctx,
+        save_menu_open,
+        snapshot.system_panel.as_ref(),
+        SystemPanelHudAccess {
+            simulation: &sim.simulation,
+            current_station_id,
+            current_ship_id,
+            preferred_ship_id,
+            selected_station: &mut selected_station,
+            panels: &mut panels,
+            station_ui: &mut station_ui,
+            ship_ui: &mut ship_ui,
+            kpi: &mut kpi,
+        },
+    );
 
     let live_ship_card = ship_ui
         .card_ship_id
@@ -378,89 +359,24 @@ pub fn draw_hud_panel(
         },
     );
 
-    if !save_menu_open && panels.fleet {
-        let mut open = panels.fleet;
-        egui::Window::new("Fleet Manager")
-            .default_width(560.0)
-            .default_height(420.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(format!("Ships: {}", snapshot.fleet_list_rows.len()));
-                ui.separator();
+    render_fleet_window(
+        ctx,
+        save_menu_open,
+        &mut panels.fleet,
+        &snapshot.fleet_list_rows,
+        &mut ship_ui,
+    );
 
-                if snapshot.fleet_list_rows.is_empty() {
-                    ui.label("No player ships available");
-                    return;
-                }
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for row in &snapshot.fleet_list_rows {
-                            egui::Frame::group(ui.style())
-                                .fill(egui::Color32::from_rgb(16, 21, 28))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 72, 88)))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(egui::RichText::new(&row.ship_name).strong());
-                                            ui.label(&row.location_text);
-                                            ui.label(
-                                                egui::RichText::new(&row.status_text)
-                                                    .color(egui::Color32::from_rgb(143, 185, 255)),
-                                            );
-                                        });
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if ui.button("Open card").clicked() {
-                                                    open_ship_card(&mut ship_ui, row.ship_id);
-                                                }
-                                            },
-                                        );
-                                    });
-                                });
-                            ui.add_space(6.0);
-                        }
-                    });
-            });
-        panels.fleet = open;
-    }
-
-    if !save_menu_open && panels.systems {
-        let mut open = panels.systems;
-        let current_mode = camera.mode;
-        egui::Window::new("Systems")
-            .default_width(520.0)
-            .default_height(480.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(format!("Systems: {}", snapshot.systems_list_rows.len()));
-                ui.separator();
-
-                if snapshot.systems_list_rows.is_empty() {
-                    ui.label("No systems available");
-                    return;
-                }
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for row in &snapshot.systems_list_rows {
-                            render_systems_list_row(
-                                ui,
-                                row,
-                                current_mode,
-                                &mut camera,
-                                &mut kpi,
-                                sim.simulation.tick(),
-                            );
-                            ui.add_space(6.0);
-                        }
-                    });
-            });
-        panels.systems = open;
-    }
+    let current_tick = sim.simulation.tick();
+    render_systems_window(
+        ctx,
+        save_menu_open,
+        &mut panels.systems,
+        &snapshot.systems_list_rows,
+        &mut camera,
+        &mut kpi,
+        current_tick,
+    );
 
     if !save_menu_open && panels.markets {
         let mut open = panels.markets;
@@ -512,150 +428,22 @@ pub fn draw_hud_panel(
         panels.assets = open;
     }
 
-    if !save_menu_open && panels.policies {
-        let mut open = panels.policies;
-        egui::Window::new("Autopilot Policies")
-            .open(&mut open)
-            .show(ctx, |ui| {
-                if selected_ship.ship_id.is_none() {
-                    selected_ship.ship_id = snapshot.default_player_ship_id;
-                }
-                let Some(ship_id) = selected_ship.ship_id else {
-                    ui.label("No player ship available");
-                    return;
-                };
-                ui.label(format!("Selected ship: #{}", ship_id.0));
-                let tick_now = sim.simulation.tick();
-                if let Some(policy_view) = sim.simulation.ship_policy_view(ship_id) {
-                    let mut policy = policy_view.policy;
-                    let mut policy_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("min_margin");
-                        policy_changed |= ui
-                            .add(egui::DragValue::new(&mut policy.min_margin).speed(0.1))
-                            .changed();
-                        ui.label("max_risk");
-                        policy_changed |= ui
-                            .add(egui::DragValue::new(&mut policy.max_risk_score).speed(0.1))
-                            .changed();
-                        ui.label("max_hops");
-                        policy_changed |= ui
-                            .add(egui::DragValue::new(&mut policy.max_hops).speed(1.0))
-                            .changed();
-                    });
-                    egui::ComboBox::from_label("priority_mode")
-                        .selected_text(priority_mode_label(policy.priority_mode))
-                        .show_ui(ui, |ui| {
-                            policy_changed |= ui
-                                .selectable_value(
-                                    &mut policy.priority_mode,
-                                    PriorityMode::Profit,
-                                    priority_mode_label(PriorityMode::Profit),
-                                )
-                                .changed();
-                            policy_changed |= ui
-                                .selectable_value(
-                                    &mut policy.priority_mode,
-                                    PriorityMode::Stability,
-                                    priority_mode_label(PriorityMode::Stability),
-                                )
-                                .changed();
-                            policy_changed |= ui
-                                .selectable_value(
-                                    &mut policy.priority_mode,
-                                    PriorityMode::Hybrid,
-                                    priority_mode_label(PriorityMode::Hybrid),
-                                )
-                                .changed();
-                        });
-                    if policy_changed
-                        && sim
-                            .simulation
-                            .update_ship_policy(ship_id, policy.clone())
-                            .is_ok()
-                    {
-                        kpi.record_manual_action(tick_now);
-                        kpi.record_policy_edit(tick_now);
-                    }
-                    ui.label(format!(
-                        "waypoints={}",
-                        policy
-                            .waypoints
-                            .iter()
-                            .map(|system_id| system_id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" -> ")
-                    ));
-                } else {
-                    ui.label("Selected ship not found");
-                }
+    render_policies_window(
+        ctx,
+        &snapshot,
+        save_menu_open,
+        &mut panels,
+        &selected_ship,
+        &mut sim,
+        &mut kpi,
+    );
 
-                ui.separator();
-                ui.heading("Manual vs Policy KPI");
-                ui.monospace(format!(
-                    "manual/min={:.1} policy_edits/min={:.1} avg_route_hops={:.2}",
-                    snapshot.manual_actions_per_min,
-                    snapshot.policy_edits_per_min,
-                    snapshot.avg_route_hops_player
-                ));
-                ui.separator();
-                ui.heading("Milestones");
-                for milestone in &snapshot.milestones {
-                    ui.monospace(format!(
-                        "{} current={:.2} target={:.2} completed={} cycle={}",
-                        milestone_label(milestone),
-                        milestone.current,
-                        milestone.target,
-                        milestone.completed,
-                        milestone
-                            .completed_cycle
-                            .map(|cycle| cycle.to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    ));
-                }
-            });
-        panels.policies = open;
-    }
-
-    if !save_menu_open && panels.corporations {
-        let mut open = panels.corporations;
-        egui::Window::new("NPC Corporations")
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "Tracked corporations: {}",
-                    snapshot.corporation_rows.len()
-                ));
-                ui.separator();
-                egui::Grid::new("corporation_panel_grid")
-                    .num_columns(8)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Corp");
-                        ui.strong("Type");
-                        ui.strong("Balance");
-                        ui.strong("Last P&L");
-                        ui.strong("Idle");
-                        ui.strong("Transit");
-                        ui.strong("Orders");
-                        ui.strong("Next Tick");
-                        ui.end_row();
-
-                        for row in &snapshot.corporation_rows {
-                            ui.label(&row.name);
-                            ui.monospace(company_archetype_label(row.archetype));
-                            ui.monospace(format!("{:.1}", row.balance));
-                            ui.monospace(format!("{:.1}", row.last_realized_profit));
-                            ui.monospace(format!("{}", row.idle_ships));
-                            ui.monospace(format!("{}", row.in_transit_ships));
-                            ui.monospace(format!("{}", row.active_orders));
-                            ui.monospace(format!("{}", row.next_plan_tick));
-                            ui.end_row();
-                        }
-                    });
-            });
-        panels.corporations = open;
-    }
+    render_corporations_window(
+        ctx,
+        save_menu_open,
+        &mut panels.corporations,
+        &snapshot.corporation_rows,
+    );
 
     render_save_menu(
         ctx,
@@ -911,118 +699,6 @@ fn render_save_menu(
     if !open && save_menu.open {
         toggle_save_menu(save_menu, clock);
     }
-}
-
-fn render_system_panel_header(ui: &mut egui::Ui, panel: &SystemPanelSnapshot) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(14, 20, 27))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 78, 94)))
-        .show(ui, |ui| {
-            ui.heading(&panel.system_name);
-            ui.horizontal_wrapped(|ui| {
-                ui.monospace(format!("System #{}", panel.system_id.0));
-                ui.separator();
-                ui.colored_label(
-                    egui::Color32::from_rgb(
-                        panel.owner_faction_color_rgb[0],
-                        panel.owner_faction_color_rgb[1],
-                        panel.owner_faction_color_rgb[2],
-                    ),
-                    &panel.owner_faction_name,
-                );
-            });
-        });
-}
-
-fn render_systems_list_row(
-    ui: &mut egui::Ui,
-    row: &SystemsListRowSnapshot,
-    current_mode: crate::input::camera::CameraMode,
-    camera: &mut crate::input::camera::CameraUiState,
-    kpi: &mut UiKpiTracker,
-    current_tick: u64,
-) {
-    let is_open = matches!(
-        current_mode,
-        crate::input::camera::CameraMode::System(system_id) if system_id == row.system_id
-    );
-    let fill = if is_open {
-        egui::Color32::from_rgb(24, 35, 44)
-    } else {
-        egui::Color32::from_rgb(16, 21, 28)
-    };
-
-    egui::Frame::group(ui.style())
-        .fill(fill)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 72, 88)))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(&row.system_name).strong());
-                    ui.colored_label(
-                        egui::Color32::from_rgb(
-                            row.owner_faction_color_rgb[0],
-                            row.owner_faction_color_rgb[1],
-                            row.owner_faction_color_rgb[2],
-                        ),
-                        &row.owner_faction_name,
-                    );
-                    ui.label(format!(
-                        "Stations {}  Ships {}  Gates {}",
-                        row.station_count, row.ship_count, row.outgoing_gate_count
-                    ));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Open system").clicked() {
-                        open_system_view(&mut camera.mode, row.system_id);
-                        kpi.record_manual_action(current_tick);
-                    }
-                });
-            });
-        });
-}
-
-fn render_system_overview(ui: &mut egui::Ui, panel: &SystemPanelSnapshot) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(18, 25, 32))
-        .show(ui, |ui| {
-            ui.heading("Overview");
-            egui::Grid::new("system_overview_grid")
-                .num_columns(2)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    ui.monospace("Stations");
-                    ui.monospace(panel.station_count.to_string());
-                    ui.end_row();
-                    ui.monospace("Ships");
-                    ui.monospace(panel.ship_count.to_string());
-                    ui.end_row();
-                    ui.monospace("Gates");
-                    ui.monospace(panel.outgoing_gate_count.to_string());
-                    ui.end_row();
-                    ui.monospace("Dock cap");
-                    ui.monospace(format!("{:.1}", panel.dock_capacity));
-                    ui.end_row();
-                    ui.monospace("Price idx");
-                    ui.monospace(format!("{:.2}", panel.avg_price_index));
-                    ui.end_row();
-                    ui.monospace("Stock cov");
-                    ui.monospace(format!("{:.2}", panel.stock_coverage));
-                    ui.end_row();
-                    ui.monospace("Net flow");
-                    ui.monospace(format!("{:.1}", panel.net_flow));
-                    ui.end_row();
-                    ui.monospace("Congestion");
-                    ui.monospace(format!("{:.2}", panel.congestion));
-                    ui.end_row();
-                    ui.monospace("Fuel stress");
-                    ui.monospace(format!("{:.2}", panel.fuel_stress));
-                    ui.end_row();
-                    ui.monospace("Stress");
-                    ui.monospace(format!("{:.2}", panel.stress_score));
-                    ui.end_row();
-                });
-        });
 }
 
 pub(super) fn tab_button(label: &'static str, selected: bool) -> egui::Button<'static> {
